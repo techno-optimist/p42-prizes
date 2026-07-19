@@ -192,6 +192,7 @@ P42_MULTIBOARD_CEREMONY_CONFIG=/absolute/path/release-evidence/ceremony.json \
 P42_PRODUCTION_IMAGE_DOSSIER_SHA256=sha256:<independent-dossier-file-digest> \
 P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_PATH=/absolute/path/release-evidence/verifier-image-publication.journal.json \
 P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_SHA256=sha256:<independent-journal-file-digest> \
+P42_ADMISSION_HOST_SET_BUNDLES_JSON='[{"path":"host-a.bundle","hostSetHash":"sha256:<hash>"},{"path":"host-b.bundle","hostSetHash":"sha256:<hash>"},{"path":"host-c.bundle","hostSetHash":"sha256:<hash>"},{"path":"host-d.bundle","hostSetHash":"sha256:<hash>"}]' \
 P42_RELEASE_EVIDENCE_ROOT=/absolute/path/release-evidence \
 P42_RELEASE_OUTPUT_ROOT=/absolute/path/release-output \
 P42_RELEASE_CAPSULE=/absolute/path/release-output/capsules/<digest>.json \

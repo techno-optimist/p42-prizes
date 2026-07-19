@@ -140,7 +140,7 @@ problem requirement.
 - Verifier images: the exact-commit, all-ten OCI release ceremony is implemented,
   schema-bound, restart-safe, locally tested, and plan-rehearsed on DGX for all
   ten boards and both target platforms. Historical v1 images for source
-  `1b65b84` were published and reinspected, but no current S/R-bound v2 image
+  `1b65b84` were published and reinspected, but no current S/R-bound v3 image
   release or admissible production dossier exists. Publication requires a provisioned
   immutable registry policy and a narrowly scoped registry write credential;
   independent four-host profiles and matrices remain separately uncollected.

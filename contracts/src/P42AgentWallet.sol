@@ -47,6 +47,8 @@ contract P42AgentWallet {
     uint256 public perCallValueCapWei;
     uint256 public totalSpendCapWei;
     uint256 public spentWei;
+    uint256 public allowlistedPolicyCount;
+    uint256 public policyMutationEpoch;
     bool private _entered;
 
     mapping(address => mapping(bytes4 => bool)) public allowed;
@@ -147,8 +149,9 @@ contract P42AgentWallet {
     /// exact calldata hash before the session key can execute them.
     function setAllowed(address target, bytes4 selector, bool ok) external onlyOwner {
         require(target != address(0), "P42_TARGET_ZERO");
-        allowed[target][selector] = ok;
+        _setAllowedState(target, selector, ok);
         delete callPolicies[target][selector];
+        policyMutationEpoch += 1;
         emit AllowedSet(target, selector, ok);
     }
 
@@ -188,12 +191,23 @@ contract P42AgentWallet {
         bytes32 calldataHash,
         bytes32 scopeHash
     ) private {
+        if (target == address(0) || selector == bytes4(0)) revert BadCallPolicy();
+        if (!ok) {
+            _setAllowedState(target, selector, false);
+            delete callPolicies[target][selector];
+            policyMutationEpoch += 1;
+            emit AllowedSet(target, selector, false);
+            emit CallPolicySet(
+                target, selector, false, chainId, expiresAt, maxCalls, calldataHash, scopeHash
+            );
+            return;
+        }
         if (
-            target == address(0) || selector == bytes4(0) || chainId != block.chainid
-                || expiresAt <= block.timestamp || maxCalls == 0 || calldataHash == bytes32(0)
+            chainId != block.chainid || expiresAt <= block.timestamp
+                || maxCalls == 0 || calldataHash == bytes32(0)
                 || scopeHash == bytes32(0)
         ) revert BadCallPolicy();
-        allowed[target][selector] = ok;
+        _setAllowedState(target, selector, true);
         callPolicies[target][selector] = CallPolicy({
             configured: true,
             expiresAt: expiresAt,
@@ -203,8 +217,20 @@ contract P42AgentWallet {
             calldataHash: calldataHash,
             scopeHash: scopeHash
         });
+        policyMutationEpoch += 1;
         emit AllowedSet(target, selector, ok);
         emit CallPolicySet(target, selector, ok, chainId, expiresAt, maxCalls, calldataHash, scopeHash);
+    }
+
+    function _setAllowedState(address target, bytes4 selector, bool ok) private {
+        bool wasAllowed = allowed[target][selector];
+        if (wasAllowed == ok) return;
+        allowed[target][selector] = ok;
+        if (ok) {
+            allowlistedPolicyCount += 1;
+        } else {
+            allowlistedPolicyCount -= 1;
+        }
     }
 
     function withdraw(address payable to, uint256 amount) external onlyOwner nonReentrant {

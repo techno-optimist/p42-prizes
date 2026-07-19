@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.ai/schemas/resolver-rerun-request-v1.schema.json",
+  "title": "P42 resolver rerun request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "packet_hash", "decision_digest", "challenge_instance_hash",
+    "orchestrator_nonce", "issued_at_utc", "expires_at_utc", "quorum", "manager",
+    "board_id", "manifest_path", "manifest_sha256", "published_transcript_hash",
+    "chain_claim", "request_hash", "request_authorization"
+  ],
+  "properties": {
+    "schema_version": { "const": "p42-resolver-rerun-request/v1" },
+    "packet_hash": { "$ref": "#/$defs/sha256" },
+    "decision_digest": { "$ref": "#/$defs/bytes32" },
+    "challenge_instance_hash": { "$ref": "#/$defs/bytes32" },
+    "orchestrator_nonce": { "$ref": "#/$defs/bytes32" },
+    "issued_at_utc": { "type": "string", "format": "date-time" },
+    "expires_at_utc": { "type": "string", "format": "date-time" },
+    "quorum": { "$ref": "#/$defs/address" },
+    "manager": { "$ref": "#/$defs/address" },
+    "board_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{1,191}$" },
+    "manifest_path": { "type": "string", "pattern": "^/opt/p42/" },
+    "manifest_sha256": { "$ref": "#/$defs/sha256" },
+    "published_transcript_hash": { "$ref": "#/$defs/sha256" },
+    "chain_claim": { "type": "object" },
+    "request_hash": { "$ref": "#/$defs/sha256" },
+    "request_authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "signer", "signature"],
+      "properties": {
+        "algorithm": { "const": "eip191" },
+        "signer": { "$ref": "#/$defs/address" },
+        "signature": { "type": "string", "pattern": "^0x[0-9a-f]{130}$" }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "bytes32": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
+    "address": { "type": "string", "pattern": "^0x[0-9a-f]{40}$" }
+  }
+}

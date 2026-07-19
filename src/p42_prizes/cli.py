@@ -365,7 +365,7 @@ def _build_http_chain_reader(rpc_url: str) -> ChainReader:
     request_id = 0
     cached_chain_id: int | None = None
 
-    def rpc_call(method: str, params: list[object]) -> object:
+    def rpc_exchange(method: str, params: list[object]) -> dict[str, Any]:
         nonlocal request_id
         request_id += 1
         payload = json.dumps(
@@ -384,7 +384,13 @@ def _build_http_chain_reader(rpc_url: str) -> ChainReader:
                 max_bytes=_RPC_MAX_RESPONSE_BYTES,
                 max_depth=_RPC_MAX_RESPONSE_DEPTH,
             )
-        if not isinstance(parsed, dict) or "error" in parsed or "result" not in parsed:
+        if not isinstance(parsed, dict):
+            raise ValueError(f"JSON-RPC {method} returned a malformed response")
+        return parsed
+
+    def rpc_call(method: str, params: list[object]) -> object:
+        parsed = rpc_exchange(method, params)
+        if "error" in parsed or "result" not in parsed:
             raise ValueError(f"JSON-RPC {method} returned an error or malformed response")
         return parsed["result"]
 
@@ -404,9 +410,20 @@ def _build_http_chain_reader(rpc_url: str) -> ChainReader:
             or not isinstance(block.get("number"), str)
         ):
             raise ValueError("eth_getBlockByNumber did not return a numbered block hash")
-        return {"block_number": int(block["number"], 16), "block_hash": block["hash"]}
+        checked = {"block_number": int(block["number"], 16), "block_hash": block["hash"]}
+        timestamp = block.get("timestamp")
+        if timestamp is not None:
+            if not isinstance(timestamp, str):
+                raise ValueError("eth_getBlockByNumber returned a malformed timestamp")
+            checked["block_timestamp"] = int(timestamp, 16)
+        return checked
 
-    def read_chain(network: str, chain_id: int, address: str, block_number: int) -> dict[str, str]:
+    def read_chain(
+        network: str,
+        chain_id: int,
+        address: str,
+        block_number: int,
+    ) -> dict[str, Any]:
         del network
         block_tag = hex(block_number)
         block = checked_block(chain_id, block_tag)
@@ -427,6 +444,228 @@ def _build_http_chain_reader(rpc_url: str) -> ChainReader:
         ):
             raise ValueError(f"eth_call {signature} did not return one ABI word")
         return int(result, 16)
+
+    def eth_call_words(address: str, data: str, block_tag: str, count: int) -> list[int]:
+        result = rpc_call("eth_call", [{"to": address, "data": data}, block_tag])
+        if (
+            not isinstance(result, str)
+            or len(result) != 2 + count * 64
+            or not result.startswith("0x")
+            or any(character not in "0123456789abcdefABCDEF" for character in result[2:])
+        ):
+            raise ValueError("eth_call returned malformed ABI words")
+        return [int(result[2 + index * 64:2 + (index + 1) * 64], 16) for index in range(count)]
+
+    def read_wallet_session_state(
+        network: str,
+        chain_id: int,
+        address: str,
+        block_number: int,
+        query: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        del network
+        if set(query) != {"install_transaction_hash", "permissions"}:
+            raise ValueError("wallet session query has unexpected fields")
+        block_tag = hex(block_number)
+        block = checked_block(chain_id, block_tag)
+        if "block_timestamp" not in block:
+            raise ValueError("wallet state block is missing its canonical timestamp")
+        finalized = checked_block(chain_id, "finalized")
+        if block_number > finalized["block_number"] or checked_block(
+            chain_id, hex(finalized["block_number"])
+        ) != finalized:
+            raise ValueError("wallet state block is not canonically finalized")
+        receipt = rpc_call("eth_getTransactionReceipt", [query["install_transaction_hash"]])
+        if not isinstance(receipt, dict):
+            raise ValueError("wallet installation receipt is unavailable")
+        transaction_receipt = {
+            "transaction_hash": str(receipt.get("transactionHash", "")).casefold(),
+            "block_number": int(str(receipt.get("blockNumber", "0x0")), 16),
+            "block_hash": str(receipt.get("blockHash", "")).casefold(),
+            "transaction_index": int(str(receipt.get("transactionIndex", "0x0")), 16),
+            "status": int(str(receipt.get("status", "0x0")), 16),
+        }
+        creation_transaction = rpc_call(
+            "eth_getTransactionByHash", [query["install_transaction_hash"]]
+        )
+        if not isinstance(creation_transaction, dict):
+            raise ValueError("wallet creation transaction is unavailable")
+        install_block = checked_block(chain_id, hex(transaction_receipt["block_number"]))
+        if (
+            transaction_receipt["block_number"] > finalized["block_number"]
+            or install_block["block_hash"].casefold() != transaction_receipt["block_hash"]
+        ):
+            raise ValueError("wallet installation receipt is not canonically finalized")
+        raw_logs = receipt.get("logs")
+        if not isinstance(raw_logs, list):
+            raise ValueError("wallet creation receipt logs are unavailable")
+        creation_logs = []
+        for log in raw_logs:
+            if not isinstance(log, dict) or not isinstance(log.get("topics"), list):
+                raise ValueError("wallet creation receipt contains malformed logs")
+            creation_logs.append({
+                "address": str(log.get("address", "")).casefold(),
+                "topics": [str(topic).casefold() for topic in log["topics"]],
+                "data": str(log.get("data", "")).casefold(),
+            })
+        runtime_bytecode = rpc_call("eth_getCode", [address, block_tag])
+        if (
+            not isinstance(runtime_bytecode, str)
+            or not runtime_bytecode.startswith("0x")
+            or len(runtime_bytecode) % 2 != 0
+        ):
+            raise ValueError("wallet runtime bytecode is malformed")
+        runtime_code_hash = ethereum_keccak256(bytes.fromhex(runtime_bytecode[2:]))
+        owner_address = abi_address(eth_call_word(address, "owner()", block_tag), "owner()")
+        normalized_creation = {
+            "transaction_hash": str(creation_transaction.get("hash", "")).casefold(),
+            "from": str(creation_transaction.get("from", "")).casefold(),
+            "to": creation_transaction.get("to"),
+            "contract_address": str(receipt.get("contractAddress", "")).casefold(),
+            "input": str(creation_transaction.get("input", "")).casefold(),
+        }
+        if (
+            normalized_creation["transaction_hash"] != str(query["install_transaction_hash"]).casefold()
+            or normalized_creation["from"] != owner_address
+            or normalized_creation["to"] is not None
+            or normalized_creation["contract_address"] != address.casefold()
+        ):
+            raise ValueError("wallet creation transaction does not bind owner and created wallet")
+        session_key = abi_address(eth_call_word(address, "sessionKey()", block_tag), "sessionKey()")
+        session_expires = eth_call_word(address, "sessionExpiresAt()", block_tag)
+        deployment_policy_mutation_epoch = eth_call_word(
+            address, "policyMutationEpoch()", hex(transaction_receipt["block_number"])
+        )
+        policies = []
+        permissions = query.get("permissions")
+        if not isinstance(permissions, list):
+            raise ValueError("wallet session permissions query must be an array")
+        for permission in permissions:
+            target = str(permission["target_address"])
+            selector = str(permission["selector"])
+            allowed_data = ethereum_keccak256(b"allowed(address,bytes4)")[:10]
+            allowed_data += target[2:].rjust(64, "0") + selector[2:].ljust(64, "0")
+            if eth_call_words(address, allowed_data, block_tag, 1)[0] != 1:
+                raise ValueError("wallet target/selector is not allowlisted")
+            policy_data = ethereum_keccak256(b"callPolicies(address,bytes4)")[:10]
+            policy_data += target[2:].rjust(64, "0") + selector[2:].ljust(64, "0")
+            configured, expires_at, max_calls, calls, policy_chain, calldata_hash, scope_hash = eth_call_words(
+                address, policy_data, block_tag, 7
+            )
+            if configured != 1:
+                raise ValueError("wallet call policy is not configured")
+            policies.append({
+                **permission,
+                "calldata_hash": "0x" + calldata_hash.to_bytes(32, "big").hex(),
+                "scope_hash": "0x" + scope_hash.to_bytes(32, "big").hex(),
+                "max_calls": max_calls,
+                "current_calls": calls,
+                "policy_expires_at_utc": datetime.fromtimestamp(expires_at, timezone.utc).isoformat().replace("+00:00", "Z"),
+            })
+            if policy_chain != chain_id:
+                raise ValueError("wallet call policy chain ID mismatch")
+        wallet_state = {
+            "wallet_address": address.casefold(),
+            "allowlisted_policy_count": eth_call_word(address, "allowlistedPolicyCount()", block_tag),
+            "policy_mutation_epoch": eth_call_word(address, "policyMutationEpoch()", block_tag),
+            "session_key": session_key,
+            "session_chain_id": eth_call_word(address, "sessionChainId()", block_tag),
+            "session_expires_at_utc": datetime.fromtimestamp(session_expires, timezone.utc).isoformat().replace("+00:00", "Z"),
+            "revoked": bool(eth_call_word(address, "revoked()", block_tag)),
+            "per_call_value_cap_wei": str(eth_call_word(address, "perCallValueCapWei()", block_tag)),
+            "total_spend_cap_wei": str(eth_call_word(address, "totalSpendCapWei()", block_tag)),
+            "spent_wei": str(eth_call_word(address, "spentWei()", block_tag)),
+            "policies": policies,
+        }
+        return {
+            "block_hash": block["block_hash"].casefold(),
+            "block_timestamp": block["block_timestamp"],
+            "install_block_timestamp": install_block.get("block_timestamp"),
+            "deployment_policy_mutation_epoch": deployment_policy_mutation_epoch,
+            "runtime_bytecode": runtime_bytecode.casefold(),
+            "runtime_code_hash": runtime_code_hash,
+            "owner_address": owner_address,
+            "creation_transaction": normalized_creation,
+            "creation_logs": creation_logs,
+            "transaction_receipt": transaction_receipt,
+            "wallet_state": wallet_state,
+        }
+
+    def replay_wallet_call(
+        network: str,
+        chain_id: int,
+        address: str,
+        block_number: int,
+        replay_call: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        del network
+        if str(replay_call.get("to", "")).casefold() != address.casefold():
+            raise ValueError("wallet replay target does not match requested wallet")
+        block_tag = hex(block_number)
+        block = checked_block(chain_id, block_tag)
+        finalized = checked_block(chain_id, "finalized")
+        if block_number > finalized["block_number"] or checked_block(
+            chain_id, hex(finalized["block_number"])
+        ) != finalized:
+            raise ValueError("wallet replay block is not canonically finalized")
+        response = rpc_exchange("eth_call", [dict(replay_call), block_tag])
+        if "error" in response:
+            error = response["error"]
+            raw = error.get("data") if isinstance(error, dict) else None
+            if not isinstance(raw, str):
+                raise ValueError("eth_call revert did not expose canonical raw error data")
+            return {"block_hash": block["block_hash"].casefold(), "reverted": True, "raw_result": raw.casefold()}
+        result = response.get("result")
+        if not isinstance(result, str):
+            raise ValueError("eth_call replay returned a malformed result")
+        return {"block_hash": block["block_hash"].casefold(), "reverted": False, "raw_result": result.casefold()}
+
+    def recheck_operational_wallets(
+        network: str,
+        chain_id: int,
+        issued_at_utc: str,
+        queries: list[Mapping[str, Any]],
+    ) -> Mapping[str, Any]:
+        del network, issued_at_utc
+        finalized = checked_block(chain_id, "finalized")
+        if "block_timestamp" not in finalized or checked_block(
+            chain_id, hex(finalized["block_number"])
+        ) != finalized:
+            raise ValueError("authorization wallet recheck finalized block is not canonical")
+        wallets = []
+        for query in queries:
+            state = read_wallet_session_state(
+                "base-sepolia" if chain_id == 84532 else "base-mainnet",
+                chain_id, query["wallet_address"], finalized["block_number"],
+                {
+                    "install_transaction_hash": query["install_transaction_hash"],
+                    "permissions": query["permissions"],
+                },
+            )
+            wallet = state["wallet_state"]
+            wallets.append({
+                "board_number": query["board_number"],
+                "problem_id": query["problem_id"],
+                "wallet_address": str(query["wallet_address"]).casefold(),
+                "runtime_bytecode": state["runtime_bytecode"],
+                "runtime_code_hash": state["runtime_code_hash"],
+                "owner_address": state["owner_address"],
+                "allowlisted_policy_count": wallet["allowlisted_policy_count"],
+                "policy_mutation_epoch_baseline": state["deployment_policy_mutation_epoch"],
+                "policy_mutation_epoch": wallet["policy_mutation_epoch"],
+                "session_key": wallet["session_key"],
+                "session_chain_id": wallet["session_chain_id"],
+                "session_expires_at_utc": wallet["session_expires_at_utc"],
+                "revoked": wallet["revoked"],
+                "per_call_value_cap_wei": wallet["per_call_value_cap_wei"],
+                "total_spend_cap_wei": wallet["total_spend_cap_wei"],
+                "spent_wei": wallet["spent_wei"],
+                "policies": wallet["policies"],
+            })
+        return {
+            "finalized_block": finalized,
+            "wallets": wallets,
+        }
 
     def abi_address(word: int, signature: str) -> str:
         if word >= 1 << 160:
@@ -476,6 +715,9 @@ def _build_http_chain_reader(rpc_url: str) -> ChainReader:
         }
 
     setattr(read_chain, "read_governance_state", read_governance_state)
+    setattr(read_chain, "read_wallet_session_state", read_wallet_session_state)
+    setattr(read_chain, "replay_wallet_call", replay_wallet_call)
+    setattr(read_chain, "recheck_operational_wallets", recheck_operational_wallets)
 
     return read_chain
 
@@ -598,6 +840,100 @@ class _GovernanceQuorumChainReader:
                 "ownership_groups": [ownership_group for _, ownership_group in providers],
             },
         }
+
+    def read_wallet_session_state(
+        self,
+        network: str,
+        chain_id: int,
+        address: str,
+        block_number: int,
+        query: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        self._check_scope(network, chain_id)
+        def read(reader: Any) -> Mapping[str, Any]:
+            method = getattr(reader, "read_wallet_session_state", None)
+            if not callable(method):
+                raise ValueError("RPC provider cannot query P42AgentWallet state")
+            return method(network, chain_id, address, block_number, query)
+        observations = self._collect(read)
+        observation, providers = self._agreed(observations)
+        if len({group for _, group in providers}) < self._required:
+            raise ValueError("wallet state quorum lacks independent operator ownership")
+        return observation
+
+    def replay_wallet_call(
+        self,
+        network: str,
+        chain_id: int,
+        address: str,
+        block_number: int,
+        replay_call: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        self._check_scope(network, chain_id)
+        def replay(reader: Any) -> Mapping[str, Any]:
+            method = getattr(reader, "replay_wallet_call", None)
+            if not callable(method):
+                raise ValueError("RPC provider cannot replay P42AgentWallet calls")
+            return method(network, chain_id, address, block_number, replay_call)
+        observations = self._collect(replay)
+        observation, providers = self._agreed(observations)
+        if len({group for _, group in providers}) < self._required:
+            raise ValueError("wallet replay quorum lacks independent operator ownership")
+        return observation
+
+    def recheck_operational_wallets(
+        self,
+        network: str,
+        chain_id: int,
+        issued_at_utc: str,
+        queries: list[Mapping[str, Any]],
+    ) -> Mapping[str, Any]:
+        self._check_scope(network, chain_id)
+        def recheck(reader: Any) -> Mapping[str, Any]:
+            method = getattr(reader, "recheck_operational_wallets", None)
+            if not callable(method):
+                raise ValueError("RPC provider cannot recheck exact-ten operational wallets")
+            return method(network, chain_id, issued_at_utc, queries)
+        observations = self._collect(recheck)
+        observation, providers = self._agreed(observations)
+        if len({group for _, group in providers}) < self._required:
+            raise ValueError("authorization wallet recheck lacks independent operator ownership")
+        return {
+            **observation,
+            "rpc_quorum": {
+                "required": self._required,
+                "provider_ids": [provider_id for provider_id, _ in providers],
+                "ownership_groups": [group for _, group in providers],
+            },
+        }
+
+    def post_service_probe(
+        self, endpoint_url: str, probe_request: Mapping[str, Any], max_response_bytes: int
+    ) -> Mapping[str, Any]:
+        class NoRedirect(urllib_request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                del req, fp, code, msg, headers, newurl
+                return None
+
+        payload = (canonical_json(dict(probe_request)) + "\n").encode("ascii")
+        request = urllib_request.Request(
+            endpoint_url, data=payload, method="POST",
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        opener = urllib_request.build_opener(NoRedirect())
+        with opener.open(request, timeout=10) as response:
+            if response.status != 200 or response.geturl() != endpoint_url:
+                raise ValueError("service probe endpoint redirected or returned non-200")
+            declared = response.headers.get("Content-Length")
+            if declared is not None and int(declared) > max_response_bytes:
+                raise ValueError("service probe response exceeds the protected bound")
+            raw = response.read(max_response_bytes + 1)
+        if len(raw) > max_response_bytes:
+            raise ValueError("service probe response exceeds the protected bound")
+        parsed = loads_strict_json(raw)
+        if not isinstance(parsed, dict) or raw != (canonical_json(parsed) + "\n").encode("ascii"):
+            raise ValueError("service probe response is not canonical JSON with one LF")
+        return parsed
 
 
 class _OpenWitnessQuorumChainReader:
@@ -1361,9 +1697,31 @@ def _cmd_legal_memo_validate(args: argparse.Namespace) -> int:
 
 def _cmd_operational_controls_validate(args: argparse.Namespace) -> int:
     try:
-        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        trust_registry = _load_pinned_trust_registry(
+            args.trust_registry,
+            allow_test=args.allow_test_trust_registry,
+        )
+        artifact_root = Path(args.artifact_root).resolve()
+        if not artifact_root.is_dir():
+            raise AdmissionError("--artifact-root must be an existing directory")
+        source_report = load_evidence_file(args.report)
+        if source_report.get("schema_version") == "p42-operational-controls/v3":
+            if args.chain_rpc_url is not None:
+                raise AdmissionError(
+                    "operational controls v3 rejects caller-selected --chain-rpc-url"
+                )
+            policy = _load_governance_rpc_policy(
+                trust_environment=trust_registry["environment"],
+                test_policy_path=args.governance_rpc_policy,
+                test_digest_path=args.governance_rpc_policy_digest,
+            )
+            chain_reader = _GovernanceQuorumChainReader(policy)
+        else:
+            if args.chain_rpc_url is None:
+                raise AdmissionError("historical operational controls require --chain-rpc-url")
+            chain_reader = _build_http_chain_reader(args.chain_rpc_url)
         report = normalize_operational_controls(
-            load_evidence_file(args.report),
+            source_report,
             trust_registry=trust_registry,
             artifact_root=artifact_root,
             chain_reader=chain_reader,
@@ -1416,17 +1774,12 @@ def _cmd_production_launch_authorization_validate(args: argparse.Namespace) -> i
             test_digest_path=args.governance_rpc_policy_digest,
         )
         chain_reader = _GovernanceQuorumChainReader(policy)
-        now_utc = (
-            datetime.fromisoformat(args.now_utc.replace("Z", "+00:00"))
-            if args.now_utc
-            else None
-        )
         report = normalize_launch_authorization(
             load_evidence_file(args.authorization),
             trust_registry=trust_registry,
             artifact_root=artifact_root,
             chain_reader=chain_reader,
-            now_utc=now_utc,
+            now_utc=None,
         )
         _enforce_gate_schema(report, "production-launch-authorization.schema.json")
     except (
@@ -1846,7 +2199,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate and hash Gate 2 wallet/session and abuse-control evidence",
     )
     operational_controls.add_argument("--report", required=True)
-    _add_attestation_validation_args(operational_controls)
+    _add_governance_validation_args(operational_controls)
     operational_controls.add_argument("--output")
     operational_controls.set_defaults(func=_cmd_operational_controls_validate)
 
@@ -1865,7 +2218,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     launch_authorization.add_argument("--authorization", required=True)
     _add_governance_validation_args(launch_authorization)
-    launch_authorization.add_argument("--now-utc")
     launch_authorization.add_argument("--output")
     launch_authorization.set_defaults(
         func=_cmd_production_launch_authorization_validate

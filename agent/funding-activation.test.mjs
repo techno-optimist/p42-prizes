@@ -366,6 +366,7 @@ test("validator invocation is argv-only, bounded, and rejects nonzero exit", () 
   delete process.env.P42_FUNDING_TREASURY_PRIVATE_KEY;
   assert.ok(observed.args.includes("production-launch-authorization-validate"));
   assert.equal(observed.args.includes("--chain-rpc-url"), false);
+  assert.equal(observed.args.includes("--now-utc"), false);
 });
 
 test("launch authorization validation fails closed on blocked or changed SP1 report", () => {

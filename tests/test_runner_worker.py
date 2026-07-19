@@ -496,6 +496,36 @@ def test_worker_reaps_expired_lease_and_runs_the_job(tmp_path: Path) -> None:
     assert "lease_expires_at_utc" not in updated
 
 
+def test_exact_worker_ignores_older_operator_fifo_and_runs_only_bound_rerun(tmp_path: Path) -> None:
+    verifier_body = "import json\nprint(json.dumps({'valid': True}, sort_keys=True, separators=(',', ':')))\n"
+    problem, solution = _write_problem(
+        tmp_path, verifier_name="ok.py", verifier_body=verifier_body, wall_seconds=10,
+    )
+    queue_path = tmp_path / "queue.json"
+    operator = {
+        "job_id": "operator-first", "status": "queued", "required_memory_mb": 64,
+        "source_event_hash": "sha256:" + "1" * 64, "problem": str(problem), "solution": str(solution),
+    }
+    rerun = {
+        "job_id": "resolver-rerun:" + "2" * 64 + ":" + "3" * 64,
+        "status": "queued", "required_memory_mb": 64,
+        "source_event_hash": "sha256:" + "4" * 64, "problem": str(problem), "solution": str(solution),
+    }
+    enqueue_runner_job(queue_path, operator)
+    enqueue_runner_job(queue_path, rerun)
+
+    result = run_next_job_once(
+        queue_path, tmp_path / "transcripts",
+        memory=MemorySnapshot(total_mb=131072, available_mb=64000, swap_used_mb=0),
+        allow_test_identity_derivation=True, exact_job_id=rerun["job_id"],
+        exact_source_event_hash=rerun["source_event_hash"],
+    )
+
+    assert result["job_id"] == rerun["job_id"]
+    states = {job["job_id"]: job["status"] for job in read_runner_queue(queue_path)["jobs"]}
+    assert states == {operator["job_id"]: "queued", rerun["job_id"]: "succeeded"}
+
+
 def test_worker_refuses_lease_shorter_than_enforced_runtime(tmp_path: Path) -> None:
     problem, solution = _write_problem(
         tmp_path,

@@ -311,7 +311,6 @@ export function runProductionAuthorizationValidator({
   trustRegistryPath,
   artifactRoot,
   sp1SecurityReportPath,
-  nowUtc = null,
   spawn = spawnSync,
 }) {
   const executable = exactPath(python, "python interpreter");
@@ -367,7 +366,6 @@ export function runProductionAuthorizationValidator({
     "--trust-registry", registry,
     "--artifact-root", artifacts,
   ];
-  if (nowUtc !== null) args.push("--now-utc", nowUtc);
   const result = spawn(executable, args, {
     cwd: root,
     env: validatorEnv,

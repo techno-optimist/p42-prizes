@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.ai/prizes/protocol/objective-proof-promotion-evidence-v2.schema.json",
+  "title": "P42 typed objective-proof promotion evidence v2",
+  "oneOf": [
+    {"$ref": "#/$defs/authorityRegistry"}, {"$ref": "#/$defs/program"}, {"$ref": "#/$defs/proof"},
+    {"$ref": "#/$defs/publicValues"}, {"$ref": "#/$defs/solidity"}, {"$ref": "#/$defs/economics"},
+    {"$ref": "#/$defs/hostMatrix"}, {"$ref": "#/$defs/review"}, {"$ref": "#/$defs/dependency"},
+    {"$ref": "#/$defs/runtime"}, {"$ref": "#/$defs/release"}
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "bytes32": {"type": "string", "pattern": "^0x[0-9a-f]{64}$"},
+    "vkey": {"$ref": "#/$defs/bytes32"},
+    "identifier": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$"},
+    "time": {"type": "string", "format": "date-time"},
+    "artifact": {
+      "type": "object", "additionalProperties": false, "required": ["path", "sha256"],
+      "properties": {"path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$"}, "sha256": {"$ref": "#/$defs/digest"}}
+    },
+    "signature": {
+      "type": "object", "additionalProperties": false, "required": ["algorithm", "value"],
+      "properties": {"algorithm": {"const": "ed25519"}, "value": {"type": "string", "pattern": "^ed25519:[0-9a-f]{128}$"}}
+    },
+    "authorityRegistry": {
+      "type": "object", "additionalProperties": false, "required": ["schema_version", "authorities", "registry_hash"],
+      "properties": {
+        "schema_version": {"const": "p42-prizes/objective-proof-authority-registry/v1"},
+        "authorities": {"type": "array", "minItems": 13, "maxItems": 256, "items": {
+          "type": "object", "additionalProperties": false, "required": ["identity_id", "role", "operator_id", "public_key"],
+          "properties": {"identity_id": {"$ref": "#/$defs/identifier"}, "role": {"$ref": "#/$defs/identifier"}, "operator_id": {"$ref": "#/$defs/identifier"}, "public_key": {"type": "string", "pattern": "^ed25519:[0-9a-f]{64}$"}}
+        }},
+        "registry_hash": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "program": {"$ref": "#/$defs/envelope", "properties": {"schema_version": {"const": "p42-prizes/objective-program-identity-evidence/v2"}, "status": {"const": "frozen"}, "claims": {"$ref": "#/$defs/programClaims"}}},
+    "proof": {"$ref": "#/$defs/envelope", "properties": {"schema_version": {"const": "p42-prizes/groth16-proof-receipt/v2"}, "status": {"const": "verified-non-mock"}, "claims": {"$ref": "#/$defs/proofClaims"}}},
+    "publicValues": {"$ref": "#/$defs/envelope", "properties": {"schema_version": {"const": "p42-prizes/objective-public-values/v2"}, "status": {"const": "canonical"}, "claims": {"$ref": "#/$defs/publicValuesClaims"}}},
+    "solidity": {"$ref": "#/$defs/envelope", "properties": {"schema_version": {"const": "p42-prizes/solidity-objective-replay/v2"}, "status": {"const": "exact-match"}, "claims": {"$ref": "#/$defs/solidityClaims"}}},
+    "economics": {"$ref": "#/$defs/envelope", "properties": {"schema_version": {"const": "p42-prizes/objective-proof-economics/v2"}, "status": {"const": "worst-case-within-limits"}, "claims": {"$ref": "#/$defs/economicsClaims"}}},
+    "hostMatrix": {"$ref": "#/$defs/envelope", "properties": {"schema_version": {"const": "p42-prizes/objective-host-matrix/v2"}, "status": {"const": "independent-match"}, "claims": {"$ref": "#/$defs/hostMatrixClaims"}}},
+    "review": {"$ref": "#/$defs/envelope", "properties": {"schema_version": {"const": "p42-prizes/objective-review/v2"}, "status": {"const": "completed-approved"}, "claims": {"$ref": "#/$defs/reviewClaims"}}},
+    "dependency": {"$ref": "#/$defs/envelope", "properties": {"schema_version": {"const": "p42-prizes/sp1-dependency-clearance/v2"}, "status": {"const": "cleared"}, "claims": {"$ref": "#/$defs/dependencyClaims"}}},
+    "runtime": {"$ref": "#/$defs/envelope", "properties": {"schema_version": {"const": "p42-prizes/objective-external-runtime/v2"}, "status": {"const": "externally-bound"}, "claims": {"$ref": "#/$defs/runtimeClaims"}}},
+    "release": {"$ref": "#/$defs/envelope", "properties": {"schema_version": {"const": "p42-prizes/objective-admission-release-receipt/v2"}, "status": {"const": "admitted-released"}, "claims": {"$ref": "#/$defs/releaseClaims"}}},
+    "envelope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "status", "issued_at_utc", "signer_identity_id", "claims", "artifact_hash", "signature"],
+      "properties": {
+        "schema_version": {"type": "string"}, "status": {"type": "string"}, "issued_at_utc": {"$ref": "#/$defs/time"},
+        "signer_identity_id": {"$ref": "#/$defs/identifier"}, "claims": {"type": "object"},
+        "artifact_hash": {"$ref": "#/$defs/digest"}, "signature": {"$ref": "#/$defs/signature"}
+      }
+    },
+    "binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["slug", "network", "chain_id", "release_digest", "admission_digest", "program_identity_digest", "elf_sha256", "program_vkey", "verifier_image_digest", "journal_digest", "build_id"],
+      "properties": {"slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"}, "network": {"const": "base-sepolia"}, "chain_id": {"const": 84532}, "release_digest": {"$ref": "#/$defs/digest"}, "admission_digest": {"$ref": "#/$defs/digest"}, "program_identity_digest": {"$ref": "#/$defs/digest"}, "elf_sha256": {"$ref": "#/$defs/digest"}, "program_vkey": {"$ref": "#/$defs/vkey"}, "verifier_image_digest": {"$ref": "#/$defs/digest"}, "journal_digest": {"$ref": "#/$defs/bytes32"}, "build_id": {"$ref": "#/$defs/identifier"}}
+    },
+    "programClaims": {"type": "object", "additionalProperties": false, "required": ["slug", "source_commit", "elf", "program_vkey", "verifier_image_digest", "build_id"], "properties": {"slug": {"type": "string"}, "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "elf": {"$ref": "#/$defs/artifact"}, "program_vkey": {"$ref": "#/$defs/vkey"}, "verifier_image_digest": {"$ref": "#/$defs/digest"}, "build_id": {"$ref": "#/$defs/identifier"}}},
+    "proofClaims": {"type": "object", "additionalProperties": false, "required": ["binding", "proof", "proof_kind", "mock", "public_values_digest"], "properties": {"binding": {"$ref": "#/$defs/binding"}, "proof": {"$ref": "#/$defs/artifact"}, "proof_kind": {"const": "groth16"}, "mock": {"const": false}, "public_values_digest": {"$ref": "#/$defs/digest"}}},
+    "publicValuesClaims": {"type": "object", "additionalProperties": false, "required": ["binding", "encoding", "bytes_hex", "bytes_sha256"], "properties": {"binding": {"$ref": "#/$defs/binding"}, "encoding": {"const": "hex"}, "bytes_hex": {"type": "string", "pattern": "^0x(?:[0-9a-f]{2})+$"}, "bytes_sha256": {"$ref": "#/$defs/digest"}}},
+    "solidityClaims": {"type": "object", "additionalProperties": false, "required": ["binding", "proof_receipt_digest", "public_values_digest", "contract_address", "runtime_bytecode_hex", "contract_codehash", "chain_id"], "properties": {"binding": {"$ref": "#/$defs/binding"}, "proof_receipt_digest": {"$ref": "#/$defs/digest"}, "public_values_digest": {"$ref": "#/$defs/digest"}, "contract_address": {"type": "string", "pattern": "^0x[0-9a-f]{40}$"}, "runtime_bytecode_hex": {"type": "string", "pattern": "^0x(?:[0-9a-f]{2})+$"}, "contract_codehash": {"$ref": "#/$defs/bytes32"}, "chain_id": {"const": 84532}}},
+    "metrics": {"type": "object", "additionalProperties": false, "required": ["total_instruction_count", "proof_generation_ms", "peak_rss_bytes", "proof_size_bytes", "verification_gas", "prover_cost_microusd"], "properties": {"total_instruction_count": {"type": "integer", "minimum": 1}, "proof_generation_ms": {"type": "integer", "minimum": 1}, "peak_rss_bytes": {"type": "integer", "minimum": 1}, "proof_size_bytes": {"type": "integer", "minimum": 1}, "verification_gas": {"type": "integer", "minimum": 1}, "prover_cost_microusd": {"type": "integer", "minimum": 1}}},
+    "economicsClaims": {"type": "object", "additionalProperties": false, "required": ["binding", "proof_receipt_digest", "worst_case_fixture", "measured", "limits"], "properties": {"binding": {"$ref": "#/$defs/binding"}, "proof_receipt_digest": {"$ref": "#/$defs/digest"}, "worst_case_fixture": {"$ref": "#/$defs/artifact"}, "measured": {"$ref": "#/$defs/metrics"}, "limits": {"$ref": "#/$defs/metrics"}}},
+    "hostEntry": {"type": "object", "additionalProperties": false, "required": ["host_id", "identity_id", "operator_id", "hardware_fingerprint", "runtime_id", "binding", "proof_receipt_digest", "observed_at_utc", "entry_hash", "signature"], "properties": {"host_id": {"$ref": "#/$defs/identifier"}, "identity_id": {"$ref": "#/$defs/identifier"}, "operator_id": {"$ref": "#/$defs/identifier"}, "hardware_fingerprint": {"$ref": "#/$defs/digest"}, "runtime_id": {"$ref": "#/$defs/identifier"}, "binding": {"$ref": "#/$defs/binding"}, "proof_receipt_digest": {"$ref": "#/$defs/digest"}, "observed_at_utc": {"$ref": "#/$defs/time"}, "entry_hash": {"$ref": "#/$defs/digest"}, "signature": {"$ref": "#/$defs/signature"}}},
+    "hostMatrixClaims": {"type": "object", "additionalProperties": false, "required": ["binding", "proof_receipt_digest", "required_hosts", "entries"], "properties": {"binding": {"$ref": "#/$defs/binding"}, "proof_receipt_digest": {"$ref": "#/$defs/digest"}, "required_hosts": {"type": "integer", "minimum": 3, "maximum": 64}, "entries": {"type": "array", "minItems": 3, "maxItems": 64, "items": {"$ref": "#/$defs/hostEntry"}}}},
+    "reviewClaims": {"type": "object", "additionalProperties": false, "required": ["binding", "proof_receipt_digest", "review_kind", "decision"], "properties": {"binding": {"$ref": "#/$defs/binding"}, "proof_receipt_digest": {"$ref": "#/$defs/digest"}, "review_kind": {"enum": ["math", "provenance", "rights", "scope"]}, "decision": {"const": "approve"}}},
+    "dependencyClaims": {"type": "object", "additionalProperties": false, "required": ["binding", "proof_receipt_digest", "policy_digest", "lockfile_digest", "advisory_database_digest", "findings"], "properties": {"binding": {"$ref": "#/$defs/binding"}, "proof_receipt_digest": {"$ref": "#/$defs/digest"}, "policy_digest": {"$ref": "#/$defs/digest"}, "lockfile_digest": {"$ref": "#/$defs/digest"}, "advisory_database_digest": {"$ref": "#/$defs/digest"}, "findings": {"type": "array", "maxItems": 0}}},
+    "runtimeClaims": {"type": "object", "additionalProperties": false, "required": ["binding", "proof_receipt_digest", "runtime_id", "operator_id"], "properties": {"binding": {"$ref": "#/$defs/binding"}, "proof_receipt_digest": {"$ref": "#/$defs/digest"}, "runtime_id": {"$ref": "#/$defs/identifier"}, "operator_id": {"$ref": "#/$defs/identifier"}}},
+    "releaseClaims": {"type": "object", "additionalProperties": false, "required": ["binding", "proof_receipt_digest", "public_values_digest", "solidity_replay_digest", "economics_digest", "host_matrix_digest", "review_digests", "dependency_security_digest", "external_runtime_digest"], "properties": {"binding": {"$ref": "#/$defs/binding"}, "proof_receipt_digest": {"$ref": "#/$defs/digest"}, "public_values_digest": {"$ref": "#/$defs/digest"}, "solidity_replay_digest": {"$ref": "#/$defs/digest"}, "economics_digest": {"$ref": "#/$defs/digest"}, "host_matrix_digest": {"$ref": "#/$defs/digest"}, "review_digests": {"type": "object", "additionalProperties": false, "required": ["math", "provenance", "rights", "scope"], "properties": {"math": {"$ref": "#/$defs/digest"}, "provenance": {"$ref": "#/$defs/digest"}, "rights": {"$ref": "#/$defs/digest"}, "scope": {"$ref": "#/$defs/digest"}}}, "dependency_security_digest": {"$ref": "#/$defs/digest"}, "external_runtime_digest": {"$ref": "#/$defs/digest"}}}
+  }
+}

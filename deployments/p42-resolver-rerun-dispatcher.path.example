@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch signer and executor output for resolver rerun dispatch
+
+[Path]
+PathChanged=/var/lib/p42/resolver-quorum-signatures/rerun-requests
+PathChanged=/var/lib/p42/resolver-rerun-results
+Unit=p42-resolver-rerun-dispatcher.service
+
+[Install]
+WantedBy=multi-user.target

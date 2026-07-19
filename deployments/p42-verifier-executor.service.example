@@ -11,6 +11,7 @@ StartLimitBurst=5
 Type=simple
 User=p42-verifier-executor
 Group=p42-verifier-submitters
+LoadCredential=resolver-rerun-attestor-key:/etc/p42/verifier-executor/credentials/resolver-rerun-attestor-key.json
 ExecStartPre=/usr/bin/test -S /run/p42-verifier-docker/docker.sock
 ExecStart=/usr/bin/python3 /opt/p42/agent/verifier-executor.py \
   --config /etc/p42/verifier-executor/boards.json \
@@ -25,6 +26,10 @@ ExecStart=/usr/bin/python3 /opt/p42/agent/verifier-executor.py \
   --memory-safety-factor 2.0 \
   --authorization-fence-timeout-seconds 30 \
   --operator-user-prefix p42-operator- \
+  --resolver-rerun-user-prefix p42-resolver-rerun- \
+  --resolver-rerun-attestor-key ${CREDENTIALS_DIRECTORY}/resolver-rerun-attestor-key \
+  --resolver-rerun-request-root /var/lib/p42/resolver-rerun-requests \
+  --resolver-rerun-state-root /var/lib/p42/resolver-rerun \
   --docker-host unix:///run/p42-verifier-docker/docker.sock
 Restart=on-failure
 RestartSec=15s
@@ -56,7 +61,7 @@ ProtectControlGroups=true
 ProtectClock=true
 RestrictSUIDSGID=true
 LockPersonality=true
-ReadOnlyPaths=/etc/p42/verifier-executor /opt/p42
+ReadOnlyPaths=/etc/p42/verifier-executor /opt/p42 /var/lib/p42/resolver-rerun-requests /var/lib/p42/resolver-rerun
 ReadWritePaths=/var/lib/p42/verifier-executor /run/p42-verifier-executor
 InaccessiblePaths=/etc/p42/operator /etc/p42/resolver /var/lib/p42/resolver /var/lib/p42/runtime-evidence
 

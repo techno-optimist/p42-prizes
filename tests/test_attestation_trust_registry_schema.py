@@ -45,13 +45,13 @@ def _registry(attestation_class: str, signer_role: str) -> dict[str, object]:
             "p42-governance-signoff/v2",
             "multisig-signer:0x" + "a" * 40,
         ),
-        ("p42-operational-controls/v2", "operational-control-owner"),
+        ("p42-operational-controls/v3", "operational-control-owner"),
         (
-            "p42-operational-controls/v2",
+            "p42-operational-controls/v3",
             "operational-controls-report-signer",
         ),
         (
-            "p42-operational-controls/v2",
+            "p42-operational-controls/v3",
             "operational-control-execution-runner",
         ),
         ("p42-security-audit/v2", "external-security-auditor"),
@@ -80,6 +80,7 @@ def test_current_gate_attestation_registrations_are_admissible(
     [
         ("p42-security-audit/v1", "external-security-auditor"),
         ("p42-incident-drill/v1", "facilitator"),
+        ("p42-operational-controls/v2", "operational-control-owner"),
     ],
 )
 def test_historical_v1_registrations_remain_admissible(
@@ -104,8 +105,7 @@ def test_math_review_v3_registrations_remain_version_scoped(signer_role: str) ->
     [
         ("p42-governance-signoff/v2", "treasury"),
         ("p42-governance-signoff/v2", "multisig-signer:0x" + "A" * 40),
-        ("p42-operational-controls/v2", "operations"),
-        ("p42-operational-controls/v3", "operational-control-owner"),
+        ("p42-operational-controls/v3", "operations"),
         ("p42-security-audit/v2", "auditor"),
         ("p42-security-audit/v2", "facilitator"),
         ("p42-incident-drill/v2", "incident-lead"),

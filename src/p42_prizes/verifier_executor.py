@@ -381,6 +381,21 @@ class VerifierExecutor:
         return process.poll() is not None
 
     def execute(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        return self._execute(request)
+
+    def execute_exact_job(
+        self, request: Mapping[str, Any], *, job_id: str, source_event_hash: str,
+    ) -> dict[str, Any]:
+        if (not isinstance(job_id, str) or not job_id.startswith("resolver-rerun:")
+                or not isinstance(source_event_hash, str) or len(source_event_hash) != 71
+                or not source_event_hash.startswith("sha256:")):
+            raise VerifierExecutorError("invalid exact rerun job identity")
+        return self._execute(request, exact_job_id=job_id, exact_source_event_hash=source_event_hash)
+
+    def _execute(
+        self, request: Mapping[str, Any], *, exact_job_id: str | None = None,
+        exact_source_event_hash: str | None = None,
+    ) -> dict[str, Any]:
         if set(request) != {"schema_version", "request_id", "board_id", "chain_timestamp"}:
             raise VerifierExecutorError("executor request has unexpected fields")
         if request.get("schema_version") != "p42-verifier-executor-request/v1":
@@ -434,7 +449,7 @@ class VerifierExecutor:
         }
         self._write_state(holder)
         command = [
-            self.python, str(self.bridge_path), "work-once",
+            self.python, str(self.bridge_path), "work-exact" if exact_job_id else "work-once",
             "--queue", str(board.queue), "--transcripts", str(board.transcripts),
             "--reserve-memory-mb", "0",
             "--max-swap-used-mb", str(self.policy.max_swap_used_mb),
@@ -444,6 +459,8 @@ class VerifierExecutor:
             "--swap-used-mb", str(capacity.memory.swap_used_mb),
             "--sandbox-staging-root", str(board.staging), "--docker-host", self.docker.docker_host,
         ]
+        if exact_job_id is not None:
+            command += ["--job-id", exact_job_id, "--source-event-hash", str(exact_source_event_hash)]
         env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(self.bridge_path.parents[1] / "src"),
                "P42_RUNNER_CHAIN_TIMESTAMP": chain_timestamp}
         process = None

@@ -4,6 +4,11 @@
 dossier for the exact ten slugs in `protocol/production-board-set-v1.json`.
 Its schema is `schemas/production-board-bindings.schema.json`.
 
+The repository also defines the non-activating migration protocol at
+`protocol/production-board-bindings-v2.schema.json`. There is intentionally no
+committed production v2 dossier yet. The existing v1 dossier remains unchanged,
+and every v1 record is activation-ineligible.
+
 The dossier binds current repository bytes and local executions. It is not a
 production approval, mathematical approval, provenance approval, guest
 readiness statement, funding authorization, or launch authorization.
@@ -82,6 +87,84 @@ profile says activation is unauthorized. This binding proves only which mock
 artifacts are present in this source tree. It supplies no proof, independent
 reproduction, production audit, or activation authority.
 
+## V2 Proof Promotion
+
+V2 is an overlay, not a reinterpretation or replacement of v1 source evidence.
+The validator hard-pins the exact current v1 dossier and board-set paths and
+byte digests, hard-pins the exact v1 schema digest, recursively applies that
+schema and the full exact verifier, then
+requires all ten base records to remain `activation_eligible: false` with
+`proof_kind: none`. Each overlay record also binds its ordered v1 source record
+by canonical JSON digest. Every v2 record is required to remain
+`activation_eligible: false`, including records with a complete promotion
+evidence object. V2 validates and binds migration evidence only; it cannot
+authorize funding. Eligibility requires a later protocol version with pinned
+executable SP1 Groth16 verification and deployed-Solidity replay adapters.
+The v2 migration envelope is fixed to Base Sepolia (chain 84532); a mainnet
+promotion requires that later activating protocol rather than a coordinated
+rewrite of signed v2 evidence.
+
+The overlay contains only typed evidence references. Referenced JSON must use
+the schemas in `protocol/objective-proof-promotion-evidence-v2.schema.json`, be
+exact canonical ASCII JSON with one trailing newline, carry a valid self-hash,
+and have a valid Ed25519 signature from the required identity and role in the
+separately pinned authority registry. The registry pin is not supplied by the
+overlay. No production registry or pin is committed yet.
+
+The typed evidence derives and cross-binds:
+
+- a regular frozen ELF, its SHA-256, program vkey, source commit, and separate
+  identity evidence;
+- an immutable `repository@sha256:...` verifier image and release evidence;
+- a claimed nonempty Groth16 artifact with `mock: false`, typed public values, and exact
+  ELF/vkey/image/journal/admission/release bindings;
+- exact journal and Solidity replay evidence, public-values digest, contract
+  address, nonempty runtime bytecode, its derived Ethereum Keccak-256 codehash,
+  and the fixed Base Sepolia chain ID;
+- measured worst-case admitted-input instructions, proving time, memory, proof
+  size, verification gas, and prover cost, each within a release limit;
+- an explicit N-host matrix with at least three distinct hosts, operators, and
+  hardware fingerprints reproducing the same proof identity and journal;
+- completed math, provenance, rights, and scope reviews from distinct review
+  operators independent of the prover, hosts, and external runtime;
+- SP1 dependency-security clearance with zero open vulnerabilities and pinned
+  policy, lockfile, and advisory-database digests;
+- an independently operated external runtime bound to the same ELF, vkey,
+  image, journal, admission digest, and release digest; and
+- one signed admission/release receipt that closes over the exact content
+  digest of every subordinate receipt.
+
+Distinct evidence roles must have distinct content digests even when paths
+differ. Host entries are individually self-hashed and signed; host IDs,
+operators, keys, hardware fingerprints, and runtime IDs must all be distinct.
+Review identities, operators, keys, and typed roles are distinct and separated
+from operational authorities. All evidence must fall inside the dossier's
+bounded UTC freshness window. Metadata duplication, mixed release/admission
+claims, host/operator collapse, digest substitution, mock or non-Groth16 proof
+state, stale or future evidence, incomplete reviews, over-limit economics,
+v1/cohort substitution, and schema downgrade fail closed.
+
+These signed claims remain useful for assembling and reviewing a future
+promotion packet, but signatures are not substitutes for cryptographic proof
+verification or chain replay. The current validator therefore returns false
+eligibility for every record even when all claims are internally consistent.
+
+Migration is per record but not incremental within a record:
+
+1. Keep the canonical v1 dossier and all v1 activation flags unchanged.
+2. Assemble genuine external artifacts outside this source-binding change.
+3. Create a v2 overlay only when one record's complete evidence set exists.
+4. Keep the claimed flag false and run the validator with the v2 dossier path.
+5. Treat success as evidence-packet conformance only. It is not funding,
+   deployment, launch authorization, or proof validity.
+
+For a future v2 dossier:
+
+```bash
+PYTHONPATH=src:. python3 scripts/verify_production_board_bindings.py \
+  --dossier path/to/production-board-bindings-v2.json
+```
+
 ## Reproduction
 
 After installing the locked root and per-problem verifier dependencies,
@@ -112,6 +195,19 @@ schema = json.load(open("schemas/production-board-bindings.schema.json"))
 dossier = json.load(open("protocol/production-board-bindings-v1.json"))
 jsonschema.Draft202012Validator.check_schema(schema)
 jsonschema.Draft202012Validator(schema).validate(dossier)
+PY
+```
+
+To inspect the v2 protocol schema without asserting that a production v2
+dossier exists:
+
+```bash
+python3 - <<'PY'
+import json
+import jsonschema
+
+schema = json.load(open("protocol/production-board-bindings-v2.schema.json"))
+jsonschema.Draft202012Validator.check_schema(schema)
 PY
 ```
 

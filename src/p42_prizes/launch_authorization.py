@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
 import subprocess
 import sys
@@ -30,16 +31,30 @@ from p42_prizes.legal import (
     _validate_identity,
     _validate_signature,
     build_attestation_context,
+    ethereum_keccak256,
+    _verify_ed25519,
     normalize_legal_memo,
     PRODUCTION_LEGAL_MEMO_SCHEMA_VERSION,
 )
-from p42_prizes.operational_controls import normalize_operational_controls
+from p42_prizes.operational_controls import (
+    OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+    DISTRIBUTED_SERVICE_CONTROLS,
+    SERVICE_CONTROLS,
+    SESSION_CONTROLS,
+    _service_probe_plan,
+    normalize_operational_controls,
+)
 from p42_prizes.security_audit import normalize_security_audit
 from p42_prizes.secure_json import loads_strict_json
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 SCHEMA_VERSION = "p42-production-launch-authorization/v1"
+OPERATIONAL_WALLET_RECHECK_SCHEMA_VERSION = "p42-operational-wallet-recheck/v1"
+OPERATIONAL_SERVICE_PROBE_RECHECK_SCHEMA_VERSION = "p42-operational-service-probe-recheck/v1"
+MAX_OPERATIONAL_PACKET_AGE = timedelta(minutes=15)
+MAX_AUTHORIZATION_RECHECK_AGE = timedelta(minutes=5)
+MAX_LAUNCH_AUTHORIZATION_LIFETIME = timedelta(minutes=5)
 MATH_REVIEW_SCHEMA_VERSION = "p42-math-review/v4"
 SOURCE_ONLY_ACCEPTANCE_LIMITATION = (
     "No canonical fixture exercises verifier acceptance; acceptance-path review is limited to source inspection."
@@ -95,6 +110,504 @@ class LaunchAuthorizationError(ValueError):
     """Raised when the composed production funding authorization is incomplete."""
 
 
+def _release_binding_hash(release_binding: Mapping[str, Any]) -> str:
+    return sha256_bytes(canonical_json(dict(release_binding)).encode("utf-8"))
+
+
+def _canonical_service_probe_url(value: Any) -> str:
+    if not isinstance(value, str) or value != value.strip() or "%" in value:
+        raise LaunchAuthorizationError("service probe endpoint URL must be exact ASCII without escapes")
+    try:
+        value.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise LaunchAuthorizationError("service probe endpoint URL must be ASCII") from exc
+    match = re.fullmatch(r"https://([^/:?#]+)(?::([1-9][0-9]{0,4}))?(/[A-Za-z0-9._~!$&'()*+,;=:@/-]+)", value)
+    if match is None:
+        raise LaunchAuthorizationError("service probe endpoint must be one canonical HTTPS URL")
+    hostname, port_text, path = match.groups()
+    labels = hostname.split(".")
+    label_pattern = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+    if len(labels) < 2 or len(hostname) > 253 or any(label_pattern.fullmatch(label) is None for label in labels):
+        raise LaunchAuthorizationError("service probe endpoint hostname is not canonical DNS")
+    if re.fullmatch(r"(?:0x[0-9a-f]+|[0-9]+)(?:\.(?:0x[0-9a-f]+|[0-9]+)){0,3}", hostname):
+        raise LaunchAuthorizationError("service probe endpoint cannot use a numeric host alias")
+    port = 443 if port_text is None else int(port_text)
+    if port < 1 or port > 65535 or (port_text is not None and port == 443) or "//" in path:
+        raise LaunchAuthorizationError("service probe endpoint port or path is noncanonical")
+    return value
+
+
+def _validate_service_probe_registry(
+    registry: Mapping[str, Any], release_binding: Mapping[str, Any],
+    operational_report: Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    try:
+        schema = json.loads((_SCHEMA_DIR / "service-probe-endpoint-registry.schema.json").read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator(schema).validate(registry)
+    except (OSError, ValueError, jsonschema.ValidationError) as exc:
+        raise LaunchAuthorizationError(f"service probe endpoint registry failed schema validation: {exc}") from exc
+    if (
+        registry.get("network") != release_binding.get("network")
+        or registry.get("chain_id") != release_binding.get("chain_id")
+        or registry.get("release_binding_hash") != _release_binding_hash(release_binding)
+    ):
+        raise LaunchAuthorizationError("service probe endpoint registry release binding mismatch")
+    controls = operational_report.get("controls", [])
+    service_environments = {
+        item["control"]: item["environment"]["service_probe"]
+        for item in controls if isinstance(item, Mapping) and item.get("control") in SERVICE_CONTROLS
+    }
+    builds = {value.get("build_digest") for value in service_environments.values()}
+    if set(service_environments) != SERVICE_CONTROLS or builds != {registry.get("expected_build_digest")}:
+        raise LaunchAuthorizationError("service probe registry does not bind the exact operational service build")
+    endpoints = registry.get("endpoints", [])
+    ids: set[str] = set()
+    urls: set[str] = set()
+    for endpoint in endpoints:
+        endpoint_id = endpoint["endpoint_id"]
+        url = _canonical_service_probe_url(endpoint["endpoint_url"])
+        if endpoint_id in ids or url in urls:
+            raise LaunchAuthorizationError("service probe registry endpoint IDs and URLs must be unique")
+        if (
+            endpoint["expected_release_digest"] != registry["release_binding_hash"]
+            or endpoint["expected_build_digest"] != registry["expected_build_digest"]
+        ):
+            raise LaunchAuthorizationError("service probe endpoint profile release or build drifted")
+        ids.add(endpoint_id); urls.add(url)
+    distributed_keys = sorted({
+        item["public_key"] for item in endpoints
+        if set(item["controls"]) & DISTRIBUTED_SERVICE_CONTROLS
+    })
+    if registry.get("distributed_public_keys") != distributed_keys:
+        raise LaunchAuthorizationError(
+            "service probe registry distributed_public_keys must be the exact sorted endpoint-key roster"
+        )
+    ownership_keys: dict[str, str] = {}
+    key_owners: dict[str, str] = {}
+    for item in endpoints:
+        prior_key = ownership_keys.setdefault(item["ownership_group"], item["public_key"])
+        if prior_key != item["public_key"]:
+            raise LaunchAuthorizationError("ownership group cannot present multiple endpoint keys")
+        prior_owner = key_owners.setdefault(item["public_key"], item["ownership_group"])
+        if prior_owner != item["ownership_group"]:
+            raise LaunchAuthorizationError("endpoint key cannot represent multiple ownership groups")
+    for control in SERVICE_CONTROLS:
+        selected = [item for item in endpoints if control in item["controls"]]
+        required = 2 if control in DISTRIBUTED_SERVICE_CONTROLS else 1
+        if len(selected) < required:
+            raise LaunchAuthorizationError(f"service probe registry lacks endpoints for {control}")
+        if control in DISTRIBUTED_SERVICE_CONTROLS and (
+            len({item["endpoint_url"] for item in selected}) < 2
+            or len({item["instance_id"] for item in selected}) < 2
+            or len({item["ownership_group"] for item in selected}) < 2
+            or len({item["public_key"] for item in selected}) < 2
+        ):
+            raise LaunchAuthorizationError(
+                f"{control} service probes require distinct endpoints, instances, ownership, and Ed25519 keys"
+            )
+    return list(endpoints)
+
+
+def _service_controls_by_name(report: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    return {
+        item["control"]: item for item in report["controls"]
+        if item["control"] in SERVICE_CONTROLS
+    }
+
+
+def _probe_response_message(response: Mapping[str, Any]) -> bytes:
+    unsigned = {key: value for key, value in response.items() if key != "signature"}
+    return b"p42-service-probe-response/v1\n" + canonical_json(unsigned).encode("ascii")
+
+
+def collect_operational_service_probe_recheck(
+    operational_report: Mapping[str, Any], release_binding: Mapping[str, Any],
+    collected_at: datetime, registry: Mapping[str, Any], probe_reader: Any,
+    *, challenge_nonce_factory: Any = None,
+) -> dict[str, Any]:
+    endpoints = _validate_service_probe_registry(registry, release_binding, operational_report)
+    nonce_factory = challenge_nonce_factory or (lambda: "0x" + secrets.token_hex(32))
+    challenge_nonce = nonce_factory()
+    if not isinstance(challenge_nonce, str) or re.fullmatch(r"0x[0-9a-f]{64}", challenge_nonce) is None:
+        raise LaunchAuthorizationError("service probe challenge nonce must contain 256 unpredictable bits")
+    issued_text = collected_at.isoformat().replace("+00:00", "Z")
+    challenge = {
+        "challenge_nonce": challenge_nonce,
+        "challenge_issued_at_utc": issued_text,
+        "operational_controls_hash": operational_report["operational_controls_hash"],
+        "release_binding_hash": _release_binding_hash(release_binding),
+    }
+    challenge_digest = sha256_bytes(canonical_json(challenge).encode("ascii"))
+    controls = _service_controls_by_name(operational_report)
+    evidence_rows = []
+    for control in sorted(SERVICE_CONTROLS):
+        deployment = controls[control]["environment"]["service_probe"]
+        selected = [item for item in endpoints if control in item["controls"]]
+        plan = _service_probe_plan(
+            control, deployment, collected_at,
+            endpoint_ids=[item["endpoint_id"] for item in selected],
+            challenge_nonce=challenge_nonce,
+        )
+        request = {
+            "schema_version": "p42-service-probe-request/v1",
+            **challenge,
+            "challenge_digest": challenge_digest,
+            "control": control,
+            "network": release_binding["network"],
+            "chain_id": release_binding["chain_id"],
+            "service_id": deployment["service_id"],
+            "deployment_id": deployment["deployment_id"],
+            "build_digest": deployment["build_digest"],
+            "request_sequence": plan["request_sequence"],
+        }
+        request_digest = sha256_bytes(canonical_json(request).encode("ascii"))
+        responses = []
+        for endpoint in selected:
+            method = getattr(probe_reader, "post_service_probe", None)
+            if not callable(method):
+                raise LaunchAuthorizationError("authorization requires direct protected HTTPS service probes")
+            try:
+                response = method(endpoint["endpoint_url"], request, registry["max_response_bytes"])
+            except Exception as exc:
+                raise LaunchAuthorizationError(f"service probe POST failed for {endpoint['endpoint_id']}") from exc
+            expected_keys = {
+                "schema_version", "challenge_digest", "request_digest", "control",
+                "release_binding_hash", "build_digest", "endpoint_url", "endpoint_id",
+                "instance_id", "ownership_group", "responded_at_utc", "raw_outcomes",
+                "derived_invariant", "signature",
+            }
+            if not isinstance(response, Mapping) or set(response) != expected_keys:
+                raise LaunchAuthorizationError("service probe response shape is invalid")
+            responded = _require_utc(response.get("responded_at_utc"), "service_probe.responded_at_utc", LaunchAuthorizationError)
+            if responded < collected_at - timedelta(seconds=registry["max_response_age_seconds"]) or responded > collected_at + timedelta(seconds=registry["max_response_age_seconds"]):
+                raise LaunchAuthorizationError("service probe response is outside the freshness window")
+            expected_identity = {
+                "challenge_digest": challenge_digest, "request_digest": request_digest,
+                "control": control, "release_binding_hash": challenge["release_binding_hash"],
+                "build_digest": registry["expected_build_digest"], "endpoint_url": endpoint["endpoint_url"],
+                "endpoint_id": endpoint["endpoint_id"], "instance_id": endpoint["instance_id"],
+                "ownership_group": endpoint["ownership_group"],
+            }
+            if any(response.get(key) != value for key, value in expected_identity.items()):
+                raise LaunchAuthorizationError("service probe response identity or release binding drifted")
+            if response.get("raw_outcomes") != plan["raw_outcomes"] or response.get("derived_invariant") != plan["derived_invariant"]:
+                raise LaunchAuthorizationError("service probe response semantics drifted")
+            signature = response.get("signature")
+            if not isinstance(signature, str) or not _verify_ed25519(endpoint["public_key"], signature, _probe_response_message(response)):
+                raise LaunchAuthorizationError("service probe endpoint signature is invalid")
+            responses.append(dict(response))
+        evidence_rows.append({"control": control, "request": request, "responses": responses})
+    return {
+        "schema_version": OPERATIONAL_SERVICE_PROBE_RECHECK_SCHEMA_VERSION,
+        **challenge,
+        "challenge_digest": challenge_digest,
+        "registry_hash": sha256_bytes(canonical_json(dict(registry)).encode("ascii")),
+        "controls": evidence_rows,
+    }
+
+
+def _service_probe_stable_projection(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    rows = []
+    for row in evidence["controls"]:
+        request = row["request"]
+        rows.append({
+            "control": row["control"],
+            "request": {
+                key: value for key, value in request.items()
+                if key not in {
+                    "challenge_nonce", "challenge_issued_at_utc", "challenge_digest",
+                }
+            } | {
+                "request_sequence": [
+                    {key: value for key, value in item.items() if key not in {"nonce", "timestamp_utc"}}
+                    for item in request["request_sequence"]
+                ]
+            },
+            "responses": [{
+                key: value for key, value in response.items()
+                if key not in {
+                    "challenge_digest", "request_digest", "responded_at_utc", "signature",
+                    "raw_outcomes",
+                }
+            } | {
+                "raw_outcomes": [
+                    {key: value for key, value in outcome.items() if key != "nonce"}
+                    for outcome in response["raw_outcomes"]
+                ]
+            } for response in row["responses"]],
+        })
+    return {
+        "operational_controls_hash": evidence["operational_controls_hash"],
+        "release_binding_hash": evidence["release_binding_hash"],
+        "registry_hash": evidence["registry_hash"],
+        "controls": rows,
+    }
+
+
+def _validate_archived_service_probe_evidence(
+    evidence: Any, operational_report: Mapping[str, Any], release_binding: Mapping[str, Any],
+    reference_time: datetime, registry: Mapping[str, Any],
+) -> None:
+    if not isinstance(evidence, Mapping):
+        raise LaunchAuthorizationError("operational_service_probe_recheck is required")
+    try:
+        schema = json.loads((_SCHEMA_DIR / "production-launch-authorization.schema.json").read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator(schema).evolve(
+            schema=schema["$defs"]["operationalServiceProbeRecheck"]
+        ).validate(evidence)
+    except (OSError, ValueError, jsonschema.ValidationError) as exc:
+        raise LaunchAuthorizationError(f"archived service probe evidence is malformed: {exc}") from exc
+    endpoints = _validate_service_probe_registry(registry, release_binding, operational_report)
+    challenge_time = _require_utc(
+        evidence.get("challenge_issued_at_utc"), "service_probe.challenge_issued_at_utc",
+        LaunchAuthorizationError,
+    )
+    if challenge_time != reference_time:
+        raise LaunchAuthorizationError("archived service probe challenge is not issuance-bound")
+    challenge = {
+        "challenge_nonce": evidence["challenge_nonce"],
+        "challenge_issued_at_utc": evidence["challenge_issued_at_utc"],
+        "operational_controls_hash": operational_report["operational_controls_hash"],
+        "release_binding_hash": _release_binding_hash(release_binding),
+    }
+    challenge_digest = sha256_bytes(canonical_json(challenge).encode("ascii"))
+    if (
+        evidence.get("challenge_digest") != challenge_digest
+        or evidence.get("operational_controls_hash") != challenge["operational_controls_hash"]
+        or evidence.get("release_binding_hash") != challenge["release_binding_hash"]
+        or evidence.get("registry_hash") != sha256_bytes(canonical_json(dict(registry)).encode("ascii"))
+    ):
+        raise LaunchAuthorizationError("archived service probe challenge binding is invalid")
+    controls = _service_controls_by_name(operational_report)
+    if [row.get("control") for row in evidence["controls"]] != sorted(SERVICE_CONTROLS):
+        raise LaunchAuthorizationError("archived service probe controls are not exact and ordered")
+    for row in evidence["controls"]:
+        control = row["control"]
+        selected = [item for item in endpoints if control in item["controls"]]
+        deployment = controls[control]["environment"]["service_probe"]
+        plan = _service_probe_plan(
+            control, deployment, reference_time,
+            endpoint_ids=[item["endpoint_id"] for item in selected],
+            challenge_nonce=evidence["challenge_nonce"],
+        )
+        expected_request = {
+            "schema_version": "p42-service-probe-request/v1", **challenge,
+            "challenge_digest": challenge_digest, "control": control,
+            "network": release_binding["network"], "chain_id": release_binding["chain_id"],
+            "service_id": deployment["service_id"], "deployment_id": deployment["deployment_id"],
+            "build_digest": deployment["build_digest"], "request_sequence": plan["request_sequence"],
+        }
+        if row.get("request") != expected_request or len(row.get("responses", [])) != len(selected):
+            raise LaunchAuthorizationError("archived service probe request or endpoint set is invalid")
+        request_digest = sha256_bytes(canonical_json(expected_request).encode("ascii"))
+        for response, endpoint in zip(row["responses"], selected, strict=True):
+            responded = _require_utc(
+                response.get("responded_at_utc"), "service_probe.responded_at_utc",
+                LaunchAuthorizationError,
+            )
+            max_age = timedelta(seconds=registry["max_response_age_seconds"])
+            if responded < reference_time - max_age or responded > reference_time + max_age:
+                raise LaunchAuthorizationError("archived service probe response is backdated or stale")
+            expected_identity = {
+                "challenge_digest": challenge_digest, "request_digest": request_digest,
+                "control": control, "release_binding_hash": challenge["release_binding_hash"],
+                "build_digest": registry["expected_build_digest"], "endpoint_url": endpoint["endpoint_url"],
+                "endpoint_id": endpoint["endpoint_id"], "instance_id": endpoint["instance_id"],
+                "ownership_group": endpoint["ownership_group"],
+            }
+            if any(response.get(key) != value for key, value in expected_identity.items()):
+                raise LaunchAuthorizationError("archived service probe identity drifted")
+            if response.get("raw_outcomes") != plan["raw_outcomes"] or response.get("derived_invariant") != plan["derived_invariant"]:
+                raise LaunchAuthorizationError("archived service probe semantics drifted")
+            if not _verify_ed25519(endpoint["public_key"], response["signature"], _probe_response_message(response)):
+                raise LaunchAuthorizationError("archived service probe signature is invalid")
+
+
+def _validate_authorization_service_probe_recheck(
+    supplied: Any, operational_report: Mapping[str, Any], release_binding: Mapping[str, Any],
+    issued: datetime, validation_time: datetime, registry: Mapping[str, Any], probe_reader: Any,
+    *, challenge_nonce_factory: Any = None,
+) -> None:
+    _validate_archived_service_probe_evidence(
+        supplied, operational_report, release_binding, issued, registry,
+    )
+    fresh = collect_operational_service_probe_recheck(
+        operational_report, release_binding, validation_time, registry, probe_reader,
+        challenge_nonce_factory=challenge_nonce_factory,
+    )
+    if fresh["challenge_nonce"] == supplied["challenge_nonce"]:
+        raise LaunchAuthorizationError("validation-time service probe challenge reused the archived nonce")
+    if _service_probe_stable_projection(fresh) != _service_probe_stable_projection(supplied):
+        raise LaunchAuthorizationError(
+            "validation-time service probes disagree with the signed authorization snapshot"
+        )
+
+
+def _require_current_operational_controls_schema(report: Mapping[str, Any]) -> None:
+    if report.get("schema_version") != OPERATIONAL_CONTROLS_SCHEMA_VERSION:
+        raise LaunchAuthorizationError(
+            "operational_controls must use the current exact-ten production schema "
+            f"{OPERATIONAL_CONTROLS_SCHEMA_VERSION}"
+        )
+
+
+def _require_fresh_operational_packet(
+    report: Mapping[str, Any], issued: datetime
+) -> datetime:
+    completed = _require_utc(
+        report.get("window_completed_at_utc"),
+        "operational_controls.window_completed_at_utc", LaunchAuthorizationError,
+    )
+    if completed > issued or issued - completed > MAX_OPERATIONAL_PACKET_AGE:
+        raise LaunchAuthorizationError(
+            "operational_controls packet is stale at authorization issuance"
+        )
+    return completed
+
+
+def _operational_session_domains(report: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    controls = report.get("controls")
+    if not isinstance(controls, list):
+        raise LaunchAuthorizationError("operational_controls has no controls array")
+    candidates = [
+        item.get("environment", {}).get("session_domains")
+        for item in controls
+        if isinstance(item, Mapping) and item.get("control") in SESSION_CONTROLS
+    ]
+    if len(candidates) != len(SESSION_CONTROLS) or any(
+        not isinstance(item, list) or len(item) != 10 for item in candidates
+    ) or any(item != candidates[0] for item in candidates[1:]):
+        raise LaunchAuthorizationError(
+            "operational_controls does not carry one identical exact-ten wallet claim"
+        )
+    return candidates[0]
+
+
+def _validate_authorization_wallet_recheck(
+    supplied: Any,
+    operational_report: Mapping[str, Any],
+    release_binding: Mapping[str, Any],
+    issued: datetime,
+    context: AttestationValidationContext,
+) -> None:
+    domains = _operational_session_domains(operational_report)
+    queries = [
+        {
+            "board_number": domain["board_number"],
+            "problem_id": domain["problem_id"],
+            "wallet_address": domain["wallet_address"],
+            "install_transaction_hash": domain["state_snapshot"]["install_receipt"]["transaction_hash"],
+            "permissions": domain["permissions"],
+        }
+        for domain in domains
+    ]
+    reader = getattr(context.chain_reader, "recheck_operational_wallets", None)
+    if not callable(reader):
+        raise LaunchAuthorizationError(
+            "authorization requires an independent exact-ten current wallet recheck reader"
+        )
+    try:
+        observed = reader(
+            release_binding["network"], release_binding["chain_id"],
+            issued.isoformat().replace("+00:00", "Z"), queries,
+        )
+    except Exception as exc:
+        raise LaunchAuthorizationError(
+            "authorization exact-ten current wallet recheck failed"
+        ) from exc
+    if not isinstance(observed, Mapping) or set(observed) != {
+        "finalized_block", "wallets", "rpc_quorum"
+    }:
+        raise LaunchAuthorizationError("authorization wallet recheck result is malformed")
+    finalized = observed["finalized_block"]
+    if not isinstance(finalized, Mapping) or set(finalized) != {
+        "block_number", "block_hash", "block_timestamp"
+    }:
+        raise LaunchAuthorizationError("authorization wallet recheck finalized block is malformed")
+    try:
+        block_time = datetime.fromtimestamp(finalized["block_timestamp"], timezone.utc)
+    except (TypeError, ValueError, OSError) as exc:
+        raise LaunchAuthorizationError("authorization wallet recheck timestamp is invalid") from exc
+    if block_time > issued or issued - block_time > MAX_AUTHORIZATION_RECHECK_AGE:
+        raise LaunchAuthorizationError(
+            "authorization wallet recheck block is not fresh at issuance"
+        )
+    if (
+        not isinstance(finalized.get("block_number"), int)
+        or isinstance(finalized.get("block_number"), bool)
+        or finalized["block_number"] <= 0
+        or not isinstance(finalized.get("block_hash"), str)
+        or re.fullmatch(r"0x[0-9a-f]{64}", finalized["block_hash"]) is None
+    ):
+        raise LaunchAuthorizationError("authorization wallet recheck block identity is invalid")
+    quorum = observed["rpc_quorum"]
+    if not isinstance(quorum, Mapping) or set(quorum) != {
+        "required", "provider_ids", "ownership_groups"
+    } or quorum.get("required") != 2 or any(
+        not isinstance(quorum.get(field), list)
+        or len(quorum[field]) < 2
+        or len(set(quorum[field])) != len(quorum[field])
+        for field in ("provider_ids", "ownership_groups")
+    ):
+        raise LaunchAuthorizationError(
+            "authorization wallet recheck lacks an operator-distinct RPC quorum"
+        )
+    wallets = observed["wallets"]
+    if not isinstance(wallets, list) or len(wallets) != 10:
+        raise LaunchAuthorizationError("authorization wallet recheck must cover exact-ten wallets")
+    expected_wallets = []
+    for domain, observed_wallet in zip(domains, wallets, strict=True):
+        owner = str(domain["wallet_provenance"]["owner_address"]).casefold()
+        runtime = observed_wallet.get("runtime_bytecode") if isinstance(observed_wallet, Mapping) else None
+        if (
+            not isinstance(runtime, str)
+            or re.fullmatch(r"0x(?:[0-9a-f]{2})+", runtime) is None
+            or ethereum_keccak256(bytes.fromhex(runtime[2:]))
+            != domain["wallet_provenance"]["runtime_code_hash"]
+        ):
+            raise LaunchAuthorizationError(
+                "authorization wallet recheck runtime disagrees with the capsule-bound packet hash"
+            )
+        expected_wallets.append({
+            "board_number": domain["board_number"],
+            "problem_id": domain["problem_id"],
+            "wallet_address": str(domain["wallet_address"]).casefold(),
+            "runtime_bytecode": runtime,
+            "runtime_code_hash": domain["wallet_provenance"]["runtime_code_hash"],
+            "owner_address": owner,
+            "allowlisted_policy_count": len(domain["permissions"]),
+            "policy_mutation_epoch_baseline": domain["policy_mutation_epoch_baseline"],
+            "policy_mutation_epoch": domain["policy_mutation_epoch"],
+            "session_key": str(domain["session_key"]).casefold(),
+            "session_chain_id": domain["chain_id"],
+            "session_expires_at_utc": domain["session_expires_at_utc"],
+            "revoked": False,
+            "per_call_value_cap_wei": domain["per_call_value_cap_wei"],
+            "total_spend_cap_wei": domain["cumulative_spend_cap_wei"],
+            "spent_wei": domain["spent_wei"],
+            "policies": domain["permissions"],
+        })
+    if wallets != expected_wallets:
+        raise LaunchAuthorizationError(
+            "authorization wallet recheck disagrees with the operational packet"
+        )
+    expected = {
+        "schema_version": OPERATIONAL_WALLET_RECHECK_SCHEMA_VERSION,
+        "operational_controls_hash": operational_report["operational_controls_hash"],
+        "operational_window_completed_at_utc": operational_report["window_completed_at_utc"],
+        "authorization_issued_at_utc": issued.isoformat().replace("+00:00", "Z"),
+        "network": release_binding["network"],
+        "chain_id": release_binding["chain_id"],
+        "finalized_block": dict(finalized),
+        "wallets": expected_wallets,
+        "rpc_quorum": dict(quorum),
+    }
+    if supplied != expected:
+        raise LaunchAuthorizationError(
+            "operational_wallet_recheck does not bind the independently queried current state"
+        )
+
+
 def normalize_launch_authorization(
     authorization: Mapping[str, Any],
     *,
@@ -106,7 +619,9 @@ def normalize_launch_authorization(
     expected_keys = {
         "schema_version", "status", "issued_at_utc", "expires_at_utc", "network",
         "chain_id", "funding_mode", "release_binding", "artifacts", "problem_reviews",
-        "authorizers", "authorization_digest", "authorization_signatures",
+        "operational_wallet_recheck", "operational_service_probe_recheck",
+        "authorizers", "authorization_digest",
+        "authorization_signatures",
     }
     if set(authorization) != expected_keys:
         missing = sorted(expected_keys - set(authorization))
@@ -126,6 +641,8 @@ def normalize_launch_authorization(
     expires = _require_utc(authorization.get("expires_at_utc"), "authorization.expires_at_utc", LaunchAuthorizationError)
     if issued >= expires:
         raise LaunchAuthorizationError("issued_at_utc must be before expires_at_utc")
+    if expires - issued > MAX_LAUNCH_AUTHORIZATION_LIFETIME:
+        raise LaunchAuthorizationError("production launch authorization lifetime exceeds five minutes")
     current = now_utc or datetime.now(timezone.utc)
     if current.tzinfo is None:
         raise LaunchAuthorizationError("now_utc must be timezone-aware")
@@ -156,11 +673,13 @@ def normalize_launch_authorization(
         "verifier_image_release", "verifier_image_publication_journal", "release_capsule",
         "deployment_manifest", "reconciliation_report", "explorer_dossier",
         "explorer_operator_policy", "activation_rpc_operator_registry", "production_timestamp_dossier",
+        "service_probe_endpoint_registry",
     }
     if not isinstance(artifacts, Mapping) or set(artifacts) != expected_artifacts:
         raise LaunchAuthorizationError("artifacts must contain the exact launch evidence set")
     normalized_gate_hashes: dict[str, str] = {}
     latest_gate_time: datetime | None = None
+    operational_report: Mapping[str, Any] | None = None
     for name, normalizer in GATE_NORMALIZERS.items():
         report = _read_json_artifact(artifacts[name], f"authorization.artifacts.{name}", context)
         try:
@@ -174,6 +693,9 @@ def normalize_launch_authorization(
             raise LaunchAuthorizationError(f"{name} failed independent validation: {exc}") from exc
         if name == "legal_memo":
             _require_production_legal_memo(normalized)
+        if name == "operational_controls":
+            _require_current_operational_controls_schema(normalized)
+            operational_report = normalized
         if normalized.get("release_binding") != release_binding:
             raise LaunchAuthorizationError(f"{name} release_binding does not exactly match authorization")
         normalized_gate_hashes[name] = normalized[GATE_HASH_FIELDS[name]]
@@ -182,6 +704,9 @@ def normalize_launch_authorization(
         latest_gate_time = max(latest_gate_time or completed, completed)
     if latest_gate_time is not None and latest_gate_time > issued:
         raise LaunchAuthorizationError("issued_at_utc must be on/after every gate completion time")
+    if operational_report is None:
+        raise LaunchAuthorizationError("operational_controls packet is missing")
+    _require_fresh_operational_packet(operational_report, issued)
 
     release_report = _read_json_artifact(
         artifacts["production_release_verification"],
@@ -195,6 +720,18 @@ def normalize_launch_authorization(
         context,
     )
     _validate_release_slate_for_launch(release_slate, release_report)
+    service_probe_registry = _read_protected_activation_rpc_registry(
+        artifacts["service_probe_endpoint_registry"],
+        "authorization.artifacts.service_probe_endpoint_registry", context, require_root=True,
+    )
+    _validate_authorization_service_probe_recheck(
+        authorization.get("operational_service_probe_recheck"), operational_report,
+        release_binding, issued, current, service_probe_registry, context.chain_reader,
+    )
+    _validate_authorization_wallet_recheck(
+        authorization.get("operational_wallet_recheck"), operational_report,
+        release_binding, issued, context,
+    )
     board_bindings = _read_json_artifact(
         artifacts["production_board_bindings"],
         "authorization.artifacts.production_board_bindings",
@@ -337,7 +874,7 @@ def _read_json_artifact(value: Any, prefix: str, context: AttestationValidationC
 
 
 def _read_protected_activation_rpc_registry(
-    value: Any, prefix: str, context: AttestationValidationContext
+    value: Any, prefix: str, context: AttestationValidationContext, *, require_root: bool = False,
 ) -> dict[str, Any]:
     ref = _validate_artifact_reference(value, prefix, LaunchAuthorizationError, context)
     if context.artifact_root is None:
@@ -347,6 +884,7 @@ def _read_protected_activation_rpc_registry(
     if not nofollow or not odirectory:
         raise LaunchAuthorizationError(f"{prefix} requires O_NOFOLLOW and O_DIRECTORY")
     root = Path(context.artifact_root).absolute()
+    trusted_uid = 0 if require_root else os.geteuid()
     relative = Path(ref["local_path"])
     if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
         raise LaunchAuthorizationError(f"{prefix}.local_path is outside its trusted root")
@@ -358,13 +896,13 @@ def _read_protected_activation_rpc_registry(
             held.append(os.open(component, os.O_RDONLY | odirectory | nofollow, dir_fd=held[-1]))
         for directory in held:
             metadata = os.fstat(directory)
-            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != trusted_uid or metadata.st_mode & 0o022:
                 raise LaunchAuthorizationError(f"{prefix} trusted path ancestor is unsafe")
         descriptor = os.open(relative.parts[-1], os.O_RDONLY | nofollow, dir_fd=held[-1])
         before = os.fstat(descriptor)
         if (
             not stat.S_ISREG(before.st_mode)
-            or before.st_uid != os.geteuid()
+            or before.st_uid != trusted_uid
             or before.st_nlink != 1
             or before.st_mode & 0o222
             or before.st_size > 1024 * 1024

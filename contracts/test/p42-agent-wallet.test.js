@@ -102,6 +102,39 @@ async function fixture() {
 }
 
 describe("P42AgentWallet — scoped session-key safety", () => {
+  it("maintains an exact allowlisted policy count across inserts, replacements, and deletes", async () => {
+    const { owner, outsider, pool, wallet, fundData } = await fixture();
+    const target = await pool.getAddress();
+    const selector = pool.interface.getFunction("fund").selector;
+    assert.equal(await wallet.allowlistedPolicyCount(), 1n);
+    const initialEpoch = await wallet.policyMutationEpoch();
+
+    await wallet.connect(owner).setAllowed(target, selector, true);
+    assert.equal(await wallet.allowlistedPolicyCount(), 1n);
+    const latest = await ethers.provider.getBlock("latest");
+    await wallet.connect(owner).setCallPolicy(
+      target, selector, true, (await ethers.provider.getNetwork()).chainId,
+      BigInt(latest.timestamp) + 3600n, 2, ethers.keccak256(fundData), ethers.id("wallet-scope")
+    );
+    assert.equal(await wallet.allowlistedPolicyCount(), 1n);
+    assert.equal((await wallet.callPolicies(target, selector)).configured, true);
+
+    await wallet.connect(owner).setCallPolicy(
+      target, selector, false, 0, 0, 0, ethers.ZeroHash, ethers.ZeroHash
+    );
+    assert.equal(await wallet.allowlistedPolicyCount(), 0n);
+    assert.equal(await wallet.allowed(target, selector), false);
+    assert.equal((await wallet.callPolicies(target, selector)).configured, false);
+    await wallet.connect(owner).setAllowed(target, selector, false);
+    assert.equal(await wallet.allowlistedPolicyCount(), 0n);
+
+    await wallet.connect(owner).setAllowed(outsider.address, "0x00000000", true);
+    assert.equal(await wallet.allowlistedPolicyCount(), 1n);
+    await wallet.connect(owner).setAllowed(outsider.address, "0x00000000", false);
+    assert.equal(await wallet.allowlistedPolicyCount(), 0n);
+    assert.equal(await wallet.policyMutationEpoch(), initialEpoch + 6n);
+  });
+
   it("lets the session key forward an allowlisted call within caps", async () => {
     const { session, pool, wallet, fundData } = await fixture();
     await wallet.connect(session).execute(await pool.getAddress(), PER_CALL, fundData);

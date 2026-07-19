@@ -108,10 +108,13 @@ test("npm pack installs complete runnable agent binaries", () => {
     "transcript-store.mjs", "strict-json.mjs", "signed-transaction.mjs", "solver-manifest.mjs",
     "censorship-fallback-runtime.mjs", "censorship-fallback-supervisor.mjs",
     "censorship-fallback-verify.mjs", "wallet-nonce-coordinator.mjs",
+    "resolver-rerun-attestation.mjs", "resolver-rerun-dispatcher.mjs", "resolver-rerun-executor.mjs",
+    "resolver-rerun-result-reader.mjs",
+    "schemas/resolver-rerun-v1.schema.json", "schemas/resolver-rerun-request-v1.schema.json",
   ]) {
     assert.equal(readFileSync(join(installDir, "node_modules", "p42-agent", module)).length > 0, true, module);
   }
-  for (const binary of ["p42-resolve", "p42-resolver-sign", "p42-solve"]) {
+  for (const binary of ["p42-resolve", "p42-resolver-sign", "p42-resolver-rerun", "p42-resolver-rerun-dispatch", "p42-solve"]) {
     const result = spawnSync(join(installDir, "node_modules", ".bin", binary), [], { encoding: "utf8" });
     assert.notEqual(result.status, 126, `${binary} is executable`);
     assert.notEqual(result.status, 127, `${binary} resolves its packaged modules`);

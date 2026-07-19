@@ -103,9 +103,11 @@ disabled.
 ### Operational-control evidence packet
 
 Gate 2 operational readiness is established only by a successfully normalized
-`p42-operational-controls/v1` packet conforming to
+`p42-operational-controls/v3` packet conforming to
 `schemas/operational-controls.schema.json`. Source, policy, mock, or fixture
 claims are not operational evidence and must not be described as a gate pass.
+The historical `v1` and single-board `v2` formats remain parseable for audit
+history but cannot satisfy production launch authorization.
 
 The packet must contain exactly these independently evidenced controls:
 
@@ -126,9 +128,97 @@ artifact; artifacts or hashes cannot be reused between controls. The record
 also includes the exact command, passed status, UTC execution time inside the
 packet evidence window, and a production-equivalent environment binding to the
 same Git commit, chain, deployment manifest, configuration, and canonical
-release hash. Session controls additionally bind the chain, every deployed P42
-contract address, and problem id so evidence from another deployment or scope
-cannot be substituted.
+release hash. Each session control carries the same ordered ten
+`session_domains`, derived from `protocol/production-board-set-v1.json` and the
+exact deployment manifest. Every domain binds board number and slug, chain,
+that board's submission manager, concrete target/selector/calldata permissions,
+future expiry, successful revocation, and canonical per-call and cumulative
+spend caps. Missing, duplicated, reordered, substituted, or cross-board domains
+fail closed.
+
+Each production domain carries a fresh snapshot at an independently agreed
+finalized block no more than one hour before report completion. Two pinned RPC
+providers with distinct certified ownership groups must agree on the current
+block hash and timestamp, every wallet getter, every allowlist and call-policy
+entry, the complete runtime bytecode, `owner()`, and the historical creation
+transaction and receipt. The creation block/hash must itself be canonical and
+finalized. The transaction must create the claimed wallet from the observed
+owner with the exact capsule-derived creation input, and its ordered
+`SessionKeySet`, `SessionPolicySet`, and `CapsSet` logs must match. Block-global
+`logIndex` values are deliberately excluded from authority.
+
+`P42AgentWallet.allowlistedPolicyCount()` closes the mapping-enumeration gap.
+Every false-to-true and true-to-false transition changes the count exactly
+once; replacements do not double count, and deletion clears the stored call
+policy. Current-state and authorization readers require the count to equal
+exactly five while separately reading and validating all five canonical
+permissions. An extra sixth policy, or a missing canonical policy replaced by
+an unobserved extra policy, therefore fails closed.
+
+`P42AgentWallet.policyMutationEpoch()` closes the insert-use-delete history
+gap. The capsule baseline is independently read at deployment and must be zero;
+the current finalized value must be exactly five, one transition for each
+canonical permission. Both values are bound through the operational packet and
+authorization recheck, so returning to the expected final count and entries
+cannot erase a transient policy mutation.
+
+Wallet provenance is derived, not asserted. The validator resolves the release
+capsule, finds the single committed `P42AgentWallet` compiler output, verifies
+that its only immutable reference is the `owner` address, patches that owner
+into the runtime template, and compares the full live bytecode and keccak hash.
+The owner-policy hash is recomputed from canonical release-capsule, chain,
+wallet, owner, session, expiry, cap, and exact permission bytes.
+
+Control execution is separate from that active production snapshot. Every
+board/control receipt embeds a dedicated historical test wallet at its own
+canonical finalized block. Expiry is tested only after that test session's
+expiry; revocation uses an active revoked test session; scope and spend use
+active unrevoked test sessions with exact policies. The scope test performs two
+actual violations: current-board calldata against another board's challenge
+manager (`CallNotAllowed`), then other-board calldata against the current
+allowed manager (`CalldataHashMismatch`). The validator independently replays
+every exact `from`/`to`/value/calldata request and compares canonical raw revert
+bytes and decoded selector/arguments. Static observations, fabricated JSONL,
+missing board results, or an exact allowed scope call cannot pass.
+
+The seven service controls use a separate canonical machine-receipt boundary;
+runner prose, generic observations, repository harness output, and chain RPCs
+have no service authority. Report receipts bind the exact abstract request
+sequence and release/build/deployment identity, but cannot select or rename a
+live endpoint. At authorization, a root-owned immutable registry supplies each
+exact HTTPS URL, instance, ownership group, release/build digest, Ed25519 key,
+control set, and freshness/size bound. The issuance packet archives one
+issuance-bound probe snapshot, but it is not freshness authority. On every
+validation the validator uses its actual clock and a validation-time CSPRNG to
+generate a new 256-bit challenge, then directly POSTs canonical JSON with
+redirects forbidden and bounded responses. Every endpoint signs the challenge and request digests,
+control, release/build, protected identity, response time, raw outcomes, and
+derived invariant; the validator reconstructs semantics and exact-compares a
+fresh replay. Rate-limit and idempotency controls must cross at least two
+distinct service instances, HTTPS endpoints, and ownership groups while using
+distinct Ed25519 keys for distinct ownership groups. The closed sequences also prove
+unauthorized and authorized mutation, alert emission and deduplication, payload
+limit and limit-plus-one behavior, quarantine without execution through
+release, and malware/archive-bomb rejection under declared resource bounds.
+Missing probes, fabricated or relabelled receipts, same-instance simulations,
+redirects, stale/cached responses, bad signatures, or any probe drift fail
+closed. The challenge, registry digest, exact requests, and signed responses are
+part of the launch authorization digest. Fresh validation responses must match
+the archived stable semantics, and authorization lifetime is capped at five
+minutes; supplied, cached, archived, backdated, or reused challenge material
+cannot establish currentness.
+
+Production launch authorization does not treat a recently completed packet as
+proof that wallet state remained unchanged. The packet must have completed no
+more than 15 minutes before authorization issuance, and the authorizer must
+independently re-query all ten wallets at one canonical finalized block no more
+than five minutes old through two RPC operators with distinct ownership. The
+recheck compares runtime bytecode and hash, owner, session key and expiry,
+revocation, value and cumulative caps, spent value, allowlisted count, mutation
+epoch, and every installed policy against the packet. Its block/hash/timestamp, exact wallet results, and RPC
+quorum are normalized into the signed authorization digest. A post-report
+revocation, session rotation, policy/cap mutation, call-count drift, stale
+block, or same-operator quorum therefore invalidates authorization.
 
 The responsible operational-control owner is a real evidenced identity. That
 owner signs each canonical control hash with Ed25519 after all evidence was

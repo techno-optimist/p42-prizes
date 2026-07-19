@@ -54,12 +54,48 @@ def main():
     parser.add_argument("--board-id", required=True)
     parser.add_argument("--transcript-dir", required=True)
     parser.add_argument("--fence", action="store_true")
+    parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--rerun-enqueue", action="store_true")
+    parser.add_argument("--rerun-execute", action="store_true")
+    parser.add_argument("--rerun-attest", action="store_true")
+    parser.add_argument("--rerun-recover", action="store_true")
+    parser.add_argument("--request-id")
+    parser.add_argument("--request-hash")
+    parser.add_argument("--attempt", type=int)
+    parser.add_argument("--chain-now-utc")
+    parser.add_argument("--chain-timestamp")
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     arguments = args.arguments[1:] if args.arguments[:1] == ["--"] else args.arguments
+    if sum((args.fence, args.execute, args.rerun_enqueue, args.rerun_execute,
+            args.rerun_attest, args.rerun_recover)) > 1:
+        raise ValueError("executor client modes are mutually exclusive")
     request = {"schema_version": "p42-verifier-executor-request/v1",
-               "operation": "fence" if args.fence else "bridge",
-               "board_id": args.board_id, "arguments": arguments}
+               "operation": "fence" if args.fence else "execute" if args.execute else
+                            "rerun-enqueue" if args.rerun_enqueue else
+                            "rerun-execute" if args.rerun_execute else
+                            "rerun-attest" if args.rerun_attest else
+                            "rerun-recover" if args.rerun_recover else "bridge",
+               "board_id": args.board_id}
+    if args.execute:
+        if arguments or not args.request_id or not args.chain_timestamp:
+            raise ValueError("execute requires --request-id and --chain-timestamp only")
+        request.update({"request_id": args.request_id, "chain_timestamp": args.chain_timestamp})
+    elif args.rerun_enqueue:
+        if arguments or not args.request_hash or not args.chain_now_utc:
+            raise ValueError("rerun enqueue requires request hash and canonical chain time only")
+        request.update({"request_hash": args.request_hash, "chain_now_utc": args.chain_now_utc})
+    elif args.rerun_execute:
+        if arguments or not args.request_hash or args.attempt is None or not args.chain_timestamp:
+            raise ValueError("rerun execute requires request hash, attempt, and chain timestamp only")
+        request.update({"request_hash": args.request_hash, "attempt": args.attempt,
+                        "chain_timestamp": args.chain_timestamp})
+    elif args.rerun_attest or args.rerun_recover:
+        if arguments or not args.request_hash:
+            raise ValueError("rerun attestation requires request hash only")
+        request["request_hash"] = args.request_hash
+    else:
+        request["arguments"] = arguments
     if arguments[:1] == ["enqueue"]:
         index = arguments.index("--job")
         request["job"] = json.loads(Path(arguments[index + 1]).read_text(encoding="utf-8"))
