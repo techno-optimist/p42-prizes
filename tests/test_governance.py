@@ -20,6 +20,9 @@ from p42_prizes.governance import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+GOVERNANCE_COMPLETION_BLOCK = 6000
+GOVERNANCE_COMPLETION_HASH = "0x" + "c" * 64
+GOVERNANCE_COMPLETION_TIMESTAMP = 1_800_000_100
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -57,7 +60,11 @@ def _production_binding(fixture: AttestationFixture, release: dict) -> dict:
 
 
 def valid_governance_report(
-    tmp_path: Path, *, legacy: bool = False, mismatched_manifest_timelock: bool = False
+    tmp_path: Path,
+    *,
+    legacy: bool = False,
+    mismatched_manifest_timelock: bool = False,
+    governance_setup_mutation=None,
 ) -> tuple[dict, AttestationFixture, dict]:
     fixture = AttestationFixture(tmp_path)
     schema_version = (
@@ -113,11 +120,59 @@ def valid_governance_report(
                 manifest["governance"]["timelock"] = address("hostile-manifest-timelock")
             manifest["roles"]["treasury"] = treasury_multisig_address
             manifest["roles"]["guardian"] = guardian["address"]
+            setup = manifest["governanceSetup"]
+            setup["completionBlock"] = GOVERNANCE_COMPLETION_BLOCK
+            setup["completionBlockTimestamp"] = GOVERNANCE_COMPLETION_TIMESTAMP
+            setup["completionBlockHash"] = GOVERNANCE_COMPLETION_HASH
+            setup["completionBlockEvidence"] = {
+                "blockNumber": GOVERNANCE_COMPLETION_BLOCK,
+                "blockHash": GOVERNANCE_COMPLETION_HASH,
+                "timestamp": GOVERNANCE_COMPLETION_TIMESTAMP,
+                "primaryOperatorId": "operator-a",
+                "secondaryOperatorId": "operator-b",
+                "primaryBlockHash": GOVERNANCE_COMPLETION_HASH,
+                "secondaryBlockHash": GOVERNANCE_COMPLETION_HASH,
+            }
+            setup["finalityAnchor"]["l2"]["finalized"] = {
+                "number": GOVERNANCE_COMPLETION_BLOCK,
+                "hash": GOVERNANCE_COMPLETION_HASH,
+            }
+            setup["finalityAnchor"]["l2"]["safe"] = {
+                "number": GOVERNANCE_COMPLETION_BLOCK,
+                "hash": GOVERNANCE_COMPLETION_HASH,
+            }
+            setup["finalityAnchor"]["operators"] = ["operator-a", "operator-b"]
+            setup["finalityAnchor"]["rpcEvidence"]["primaryOperatorId"] = "operator-a"
+            setup["finalityAnchor"]["rpcEvidence"]["secondaryOperatorId"] = "operator-b"
+            if governance_setup_mutation is not None:
+                governance_setup_mutation(setup)
             return manifest
 
         with patch("attestation_helpers.schema_valid_manifest_shell", side_effect=canonical_manifest):
             release = fixture.canonical_release_binding()
         production_binding = _production_binding(fixture, release)
+        timelock_contract = next(
+            contract
+            for contract in release["contracts"]
+            if contract["topology_key"] == "shared.timelock"
+        )
+        runtime_bytecode = (
+            fixture.root / timelock_contract["runtime_bytecode_artifact"]["local_path"]
+        ).read_text(encoding="utf-8").strip()
+        fixture.record_governance_state(
+            chain_id=release["chain_id"],
+            address_value=timelock_contract["address"],
+            block_number=GOVERNANCE_COMPLETION_BLOCK,
+            block_hash=GOVERNANCE_COMPLETION_HASH,
+            runtime_bytecode=runtime_bytecode,
+            governance_state={
+                "signer_count": len(signers),
+                "signers": [signer["address"] for signer in signers],
+                "threshold": 3,
+                "delay_seconds": 48 * 60 * 60,
+                "guardian": guardian["address"],
+            },
+        )
     report = {
         "schema_version": schema_version,
         "signoff_id": "base-mainnet-gate2-governance-2026-07",
@@ -207,18 +262,17 @@ def valid_governance_report(
 
 
 def governance_chain_reader(report: dict, fixture: AttestationFixture, **state_overrides):
-    state = {
-        "signer_count": len(report["treasury_multisig"]["signers"]),
-        "signers": [signer["address"] for signer in report["treasury_multisig"]["signers"]],
-        "threshold": report["treasury_multisig"]["threshold"],
-        "delay_seconds": report["timelock"]["min_delay_hours"] * 60 * 60,
-        "guardian": report["pause_guardian"]["address"],
-    }
-    state.update(state_overrides)
-
+    del report
     def read(network: str, chain_id: int, contract: str, block_number: int):
+        return fixture.chain_reader(network, chain_id, contract, block_number)
+
+    def read_governance_state(network: str, chain_id: int, contract: str, block_number: int):
         evidence = fixture.chain_reader(network, chain_id, contract, block_number)
+        state = dict(evidence["governance_state"])
+        state.update(state_overrides)
         return {**evidence, "governance_state": state}
+
+    read.read_governance_state = read_governance_state
 
     return read
 
@@ -305,6 +359,65 @@ def test_production_governance_rejects_manifest_timelock_distinct_from_contract(
         normalize(report, fixture, registry)
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda setup: setup["completionBlockEvidence"].update(
+            blockNumber=GOVERNANCE_COMPLETION_BLOCK + 1
+        ),
+        lambda setup: setup.update(completionBlockHash="0x" + "d" * 64),
+        lambda setup: setup["finalityAnchor"]["l2"]["finalized"].update(
+            number=GOVERNANCE_COMPLETION_BLOCK - 1
+        ),
+        lambda setup: setup["finalityAnchor"]["l2"]["finalized"].update(
+            hash="0x" + "d" * 64
+        ),
+    ],
+    ids=["evidence-block", "completion-hash", "anchor-block", "anchor-hash"],
+)
+def test_production_governance_rejects_hostile_completion_block_mismatch(
+    tmp_path: Path, mutation
+) -> None:
+    report, fixture, registry = valid_governance_report(
+        tmp_path, governance_setup_mutation=mutation
+    )
+
+    with pytest.raises(GovernanceSignoffError, match="completion|finalized anchor"):
+        normalize(report, fixture, registry)
+
+
+def test_production_governance_queries_roster_at_completion_block(tmp_path: Path) -> None:
+    report, fixture, registry = valid_governance_report(tmp_path)
+    reader = governance_chain_reader(report, fixture)
+    queried_blocks = []
+    read_governance_state = reader.read_governance_state
+
+    def recording_read(network: str, chain_id: int, contract: str, block_number: int):
+        queried_blocks.append(block_number)
+        return read_governance_state(network, chain_id, contract, block_number)
+
+    reader.read_governance_state = recording_read
+    normalize(report, fixture, registry, chain_reader=reader)
+
+    assert queried_blocks == [GOVERNANCE_COMPLETION_BLOCK]
+
+
+def test_production_governance_rejects_completion_block_hash_mismatch_from_reader(
+    tmp_path: Path,
+) -> None:
+    report, fixture, registry = valid_governance_report(tmp_path)
+    reader = governance_chain_reader(report, fixture)
+    read_governance_state = reader.read_governance_state
+
+    def mismatched_read(network: str, chain_id: int, contract: str, block_number: int):
+        result = read_governance_state(network, chain_id, contract, block_number)
+        return {**result, "block_hash": "0x" + "d" * 64}
+
+    reader.read_governance_state = mismatched_read
+    with pytest.raises(GovernanceSignoffError, match="recorded block"):
+        normalize(report, fixture, registry, chain_reader=reader)
+
+
 @pytest.mark.parametrize("control", ["threshold", "signers", "guardian", "delay"])
 def test_production_governance_rejects_self_consistent_packet_mismatched_to_chain(
     tmp_path: Path, control: str
@@ -349,10 +462,7 @@ def test_legacy_governance_cannot_wrap_production_topology(tmp_path: Path) -> No
 
 
 def test_governance_signoff_cli_outputs_normalized_report(tmp_path: Path) -> None:
-    # The shared trust-registry schema still lists v1 until the integration
-    # owner adds the new attestation classes; keep the CLI transport test on
-    # historical evidence while v2 behavior is covered directly above.
-    report, fixture, registry = valid_governance_report(tmp_path, legacy=True)
+    report, fixture, registry = valid_governance_report(tmp_path)
     report_path = tmp_path / "governance.json"
     report_path.write_text(json.dumps(report), encoding="utf-8")
     registry_path = fixture.write_registry(registry)
@@ -372,7 +482,9 @@ def test_governance_signoff_cli_outputs_normalized_report(tmp_path: Path) -> Non
         )
 
     assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout)["governance_hash"].startswith("sha256:")
+    normalized = json.loads(completed.stdout)
+    assert normalized["schema_version"] == GOVERNANCE_SIGNOFF_SCHEMA_VERSION
+    assert normalized["governance_hash"].startswith("sha256:")
 
 
 def test_governance_signoff_rejects_unregistered_fabricated_registry(tmp_path: Path) -> None:

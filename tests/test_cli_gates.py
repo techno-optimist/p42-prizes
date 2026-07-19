@@ -142,6 +142,8 @@ def test_gate_validator_accepts_valid_report(command, builder, tmp_path: Path) -
     completed = run_attestation_cli(command, builder, tmp_path)
 
     assert completed.returncode == 0, completed.stderr
+    if command == "governance-signoff-validate":
+        assert json.loads(completed.stdout)["schema_version"] == "p42-governance-signoff/v2"
 
 
 def test_legal_memo_v2_validates_end_to_end_through_cli(tmp_path: Path) -> None:

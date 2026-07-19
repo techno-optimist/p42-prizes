@@ -296,7 +296,7 @@ class AttestationFixture:
         self.root.mkdir(parents=True, exist_ok=True)
         self._artifacts: dict[str, dict[str, str]] = {}
         self._chain_id: int | None = None
-        self._chain_state: dict[tuple[int, str, int], dict[str, str]] = {}
+        self._chain_state: dict[tuple[int, str, int], dict[str, Any]] = {}
         self._capsule_authority_signer: dict[str, Any] | None = None
         self._run("git", "init", "-q")
         self._run("git", "config", "user.name", "P42 Test Attestor")
@@ -753,7 +753,23 @@ class AttestationFixture:
         path.write_text(canonical_json(registry), encoding="utf-8")
         return path
 
-    def chain_reader(self, network: str, chain_id: int, address_value: str, block_number: int) -> dict[str, str]:
+    def record_governance_state(
+        self,
+        *,
+        chain_id: int,
+        address_value: str,
+        block_number: int,
+        block_hash: str,
+        runtime_bytecode: str,
+        governance_state: Mapping[str, Any],
+    ) -> None:
+        self._chain_state[(chain_id, address_value.casefold(), block_number)] = {
+            "block_hash": block_hash,
+            "runtime_bytecode": runtime_bytecode,
+            "governance_state": dict(governance_state),
+        }
+
+    def chain_reader(self, network: str, chain_id: int, address_value: str, block_number: int) -> dict[str, Any]:
         del network
         return dict(self._chain_state[(chain_id, address_value.casefold(), block_number)])
 
@@ -786,6 +802,44 @@ class AttestationFixture:
                     block_number = int(params[1], 16)
                     state = fixture._chain_state.get((fixture._chain_id or 0, address_value, block_number))
                     result = state["runtime_bytecode"] if state else "0x"
+                elif method == "eth_call":
+                    call = params[0] if params and isinstance(params[0], dict) else {}
+                    address_value = str(call.get("to", "")).casefold()
+                    data = str(call.get("data", ""))
+                    block_number = int(params[1], 16)
+                    state = fixture._chain_state.get((fixture._chain_id or 0, address_value, block_number))
+                    governance = state.get("governance_state") if state else None
+                    selectors = {
+                        ethereum_keccak256(signature.encode("ascii"))[:10]: signature
+                        for signature in (
+                            "signerCount()",
+                            "signers(uint256)",
+                            "threshold()",
+                            "delay()",
+                            "guardian()",
+                        )
+                    }
+                    signature = selectors.get(data[:10])
+                    value: Any = None
+                    if isinstance(governance, Mapping):
+                        if signature == "signerCount()":
+                            value = governance.get("signer_count")
+                        elif signature == "signers(uint256)":
+                            index = int(data[10:] or "0", 16)
+                            signers = governance.get("signers")
+                            value = signers[index] if isinstance(signers, list) and index < len(signers) else None
+                        elif signature == "threshold()":
+                            value = governance.get("threshold")
+                        elif signature == "delay()":
+                            value = governance.get("delay_seconds")
+                        elif signature == "guardian()":
+                            value = governance.get("guardian")
+                    if isinstance(value, int) and not isinstance(value, bool):
+                        result = "0x" + value.to_bytes(32, "big").hex()
+                    elif isinstance(value, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", value):
+                        result = "0x" + bytes.fromhex(value[2:]).rjust(32, b"\x00").hex()
+                    else:
+                        result = None
                 else:
                     result = None
                 body = json.dumps({"jsonrpc": "2.0", "id": request.get("id"), "result": result}).encode()

@@ -516,11 +516,13 @@ def validate_production_binding(
         raise error_type("production deployment manifest must contain JSON") from exc
     release_evidence = manifest.get("releaseEvidence")
     governance = manifest.get("governance")
+    governance_setup = manifest.get("governanceSetup")
     roles = manifest.get("roles")
     shared = manifest.get("contracts")
     if (
         not isinstance(release_evidence, dict)
         or not isinstance(governance, dict)
+        or not isinstance(governance_setup, dict)
         or not isinstance(roles, dict)
         or not isinstance(shared, dict)
     ):
@@ -612,6 +614,7 @@ def validate_production_binding(
             release=release,
             context=context,
             manifest_governance=governance,
+            governance_setup=governance_setup,
             timelock_address=canonical_timelock,
             report_delay_hours=timelock_delay_hours,
             report_threshold=treasury_multisig_threshold,
@@ -657,6 +660,7 @@ def _validate_deployed_governance_state(
     release: Mapping[str, Any],
     context: AttestationValidationContext,
     manifest_governance: Mapping[str, Any],
+    governance_setup: Mapping[str, Any],
     timelock_address: str,
     report_delay_hours: int | None,
     report_threshold: int | None,
@@ -666,36 +670,14 @@ def _validate_deployed_governance_state(
 ) -> None:
     if context.chain_reader is None:
         raise error_type("production governance cannot be accepted without on-chain state evidence")
-    contracts = release.get("contracts")
-    if not isinstance(contracts, list):
-        raise error_type("report.release_binding.contracts must be an array")
-    timelock_contract = next(
-        (
-            contract
-            for contract in contracts
-            if isinstance(contract, Mapping) and contract.get("topology_key") == "shared.timelock"
-        ),
-        None,
+    block_number, block_hash = _validate_governance_completion_anchor(
+        governance_setup, error_type
     )
-    if not isinstance(timelock_contract, Mapping):
-        raise error_type("report.release_binding is missing shared.timelock chain evidence")
+    read_governance_state = getattr(context.chain_reader, "read_governance_state", None)
+    if not callable(read_governance_state):
+        raise error_type("ChainReader cannot resolve deployed timelock governance state evidence")
     try:
-        chain_evidence = json.loads(
-            resolved_artifact_bytes(
-                context,
-                timelock_contract.get("chain_bytecode_artifact"),
-                prefix="report.release_binding.contracts[shared.timelock].chain_bytecode_artifact",
-                error_type=error_type,
-            )
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise error_type("shared.timelock chain evidence must contain JSON") from exc
-    block_number = chain_evidence.get("block_number") if isinstance(chain_evidence, Mapping) else None
-    block_hash = chain_evidence.get("block_hash") if isinstance(chain_evidence, Mapping) else None
-    if not isinstance(block_number, int) or isinstance(block_number, bool) or block_number < 0:
-        raise error_type("shared.timelock chain evidence is missing a valid block_number")
-    try:
-        queried = context.chain_reader(
+        queried = read_governance_state(
             str(release.get("network")),
             int(release.get("chain_id")),
             timelock_address,
@@ -770,6 +752,98 @@ def _validate_deployed_governance_state(
     if report_delay_hours is not None:
         if delay_seconds % 3600 != 0 or delay_seconds // 3600 != report_delay_hours:
             raise error_type("report.timelock.min_delay_hours does not match deployed timelock delay")
+
+
+def _validate_governance_completion_anchor(
+    governance_setup: Mapping[str, Any], error_type: type[ValueError]
+) -> tuple[int, str]:
+    if governance_setup.get("status") != "complete":
+        raise error_type("production deployment manifest governanceSetup must be complete")
+    block_number = governance_setup.get("completionBlock")
+    if not isinstance(block_number, int) or isinstance(block_number, bool) or block_number < 0:
+        raise error_type("production deployment manifest governanceSetup.completionBlock is invalid")
+    block_hash = _require_block_hash(
+        governance_setup.get("completionBlockHash"),
+        "governanceSetup.completionBlockHash",
+        error_type,
+    )
+    timestamp = governance_setup.get("completionBlockTimestamp")
+    if not isinstance(timestamp, int) or isinstance(timestamp, bool) or timestamp < 0:
+        raise error_type(
+            "production deployment manifest governanceSetup.completionBlockTimestamp is invalid"
+        )
+
+    evidence = governance_setup.get("completionBlockEvidence")
+    if not isinstance(evidence, Mapping):
+        raise error_type(
+            "production deployment manifest governanceSetup.completionBlockEvidence is required"
+        )
+    evidence_hashes = [
+        _require_block_hash(evidence.get(field), f"governanceSetup.completionBlockEvidence.{field}", error_type)
+        for field in ("blockHash", "primaryBlockHash", "secondaryBlockHash")
+    ]
+    if (
+        evidence.get("blockNumber") != block_number
+        or evidence.get("timestamp") != timestamp
+        or any(value.casefold() != block_hash.casefold() for value in evidence_hashes)
+    ):
+        raise error_type(
+            "production deployment manifest governance completion block evidence does not match "
+            "completionBlock/completionBlockHash"
+        )
+    primary_operator = evidence.get("primaryOperatorId")
+    secondary_operator = evidence.get("secondaryOperatorId")
+    if (
+        not isinstance(primary_operator, str)
+        or not primary_operator
+        or not isinstance(secondary_operator, str)
+        or not secondary_operator
+        or primary_operator == secondary_operator
+    ):
+        raise error_type("governance completion block evidence requires two distinct RPC operators")
+
+    finality_anchor = governance_setup.get("finalityAnchor")
+    l2_anchor = finality_anchor.get("l2") if isinstance(finality_anchor, Mapping) else None
+    finalized = l2_anchor.get("finalized") if isinstance(l2_anchor, Mapping) else None
+    if not isinstance(finalized, Mapping):
+        raise error_type("production governance completion requires an L2 finalized anchor")
+    finalized_hash = _require_block_hash(
+        finalized.get("hash"), "governanceSetup.finalityAnchor.l2.finalized.hash", error_type
+    )
+    if finalized.get("number") != block_number or finalized_hash.casefold() != block_hash.casefold():
+        raise error_type(
+            "production governance completionBlock must equal the L2 finalized anchor"
+        )
+    rpc_evidence = finality_anchor.get("rpcEvidence")
+    operators = finality_anchor.get("operators")
+    valid_operators = (
+        isinstance(operators, list)
+        and len(operators) == 2
+        and all(isinstance(operator, str) and operator for operator in operators)
+        and operators[0] != operators[1]
+    )
+    if (
+        not isinstance(rpc_evidence, Mapping)
+        or rpc_evidence.get("primaryOperatorId") != primary_operator
+        or rpc_evidence.get("secondaryOperatorId") != secondary_operator
+        or not valid_operators
+        or set(operators) != {primary_operator, secondary_operator}
+    ):
+        raise error_type(
+            "governance completion evidence operators must match the finalized anchor operators"
+        )
+    return block_number, block_hash
+
+
+def _require_block_hash(value: Any, field: str, error_type: type[ValueError]) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 66
+        or not value.startswith("0x")
+        or any(character not in "0123456789abcdefABCDEF" for character in value[2:])
+    ):
+        raise error_type(f"production deployment manifest {field} must be a 32-byte block hash")
+    return value
 
 
 def _require_mapping_field_int(

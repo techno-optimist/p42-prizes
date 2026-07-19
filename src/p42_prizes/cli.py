@@ -32,7 +32,12 @@ from p42_prizes.adversarial import AdversarialCampaignError, normalize_adversari
 from p42_prizes.da import DaEvidenceError, build_da_evidence, validate_da_evidence
 from p42_prizes.governance import GovernanceSignoffError, normalize_governance_signoff
 from p42_prizes.incident import IncidentDrillError, normalize_incident_drill_report
-from p42_prizes.legal import ChainReader, LegalMemoError, normalize_legal_memo
+from p42_prizes.legal import (
+    ChainReader,
+    LegalMemoError,
+    ethereum_keccak256,
+    normalize_legal_memo,
+)
 from p42_prizes.launch_authorization import (
     LaunchAuthorizationError,
     normalize_launch_authorization,
@@ -212,9 +217,8 @@ def _build_http_chain_reader(rpc_url: str) -> ChainReader:
             raise ValueError(f"JSON-RPC {method} returned an error or malformed response")
         return parsed["result"]
 
-    def read_chain(network: str, chain_id: int, address: str, block_number: int) -> dict[str, str]:
+    def checked_block_hash(chain_id: int, block_tag: str) -> str:
         nonlocal cached_chain_id
-        del network
         if cached_chain_id is None:
             chain_result = rpc_call("eth_chainId", [])
             if not isinstance(chain_result, str):
@@ -222,14 +226,67 @@ def _build_http_chain_reader(rpc_url: str) -> ChainReader:
             cached_chain_id = int(chain_result, 16)
         if cached_chain_id != chain_id:
             raise ValueError(f"RPC chain ID {cached_chain_id} does not match release chain ID {chain_id}")
-        block_tag = hex(block_number)
         block = rpc_call("eth_getBlockByNumber", [block_tag, False])
-        runtime_bytecode = rpc_call("eth_getCode", [address, block_tag])
         if not isinstance(block, dict) or not isinstance(block.get("hash"), str):
             raise ValueError("eth_getBlockByNumber did not return a block hash")
+        return block["hash"]
+
+    def read_chain(network: str, chain_id: int, address: str, block_number: int) -> dict[str, str]:
+        del network
+        block_tag = hex(block_number)
+        block_hash = checked_block_hash(chain_id, block_tag)
+        runtime_bytecode = rpc_call("eth_getCode", [address, block_tag])
         if not isinstance(runtime_bytecode, str):
             raise ValueError("eth_getCode returned a non-string result")
-        return {"block_hash": block["hash"], "runtime_bytecode": runtime_bytecode}
+        return {"block_hash": block_hash, "runtime_bytecode": runtime_bytecode}
+
+    def eth_call_word(address: str, signature: str, block_tag: str, argument: int | None = None) -> int:
+        selector = ethereum_keccak256(signature.encode("ascii"))[:10]
+        data = selector if argument is None else selector + argument.to_bytes(32, "big").hex()
+        result = rpc_call("eth_call", [{"to": address, "data": data}, block_tag])
+        if (
+            not isinstance(result, str)
+            or len(result) != 66
+            or not result.startswith("0x")
+            or any(character not in "0123456789abcdefABCDEF" for character in result[2:])
+        ):
+            raise ValueError(f"eth_call {signature} did not return one ABI word")
+        return int(result, 16)
+
+    def abi_address(word: int, signature: str) -> str:
+        if word >= 1 << 160:
+            raise ValueError(f"eth_call {signature} returned a non-canonical ABI address")
+        return "0x" + word.to_bytes(20, "big").hex()
+
+    def read_governance_state(
+        network: str, chain_id: int, address: str, block_number: int
+    ) -> dict[str, Any]:
+        del network
+        block_tag = hex(block_number)
+        block_hash = checked_block_hash(chain_id, block_tag)
+        signer_count = eth_call_word(address, "signerCount()", block_tag)
+        if signer_count > 256:
+            raise ValueError("deployed timelock signerCount exceeds the governance evidence limit")
+        signers = [
+            abi_address(
+                eth_call_word(address, "signers(uint256)", block_tag, index),
+                "signers(uint256)",
+            )
+            for index in range(signer_count)
+        ]
+        guardian_word = eth_call_word(address, "guardian()", block_tag)
+        return {
+            "block_hash": block_hash,
+            "governance_state": {
+                "signer_count": signer_count,
+                "signers": signers,
+                "threshold": eth_call_word(address, "threshold()", block_tag),
+                "delay_seconds": eth_call_word(address, "delay()", block_tag),
+                "guardian": abi_address(guardian_word, "guardian()"),
+            },
+        }
+
+    setattr(read_chain, "read_governance_state", read_governance_state)
 
     return read_chain
 
