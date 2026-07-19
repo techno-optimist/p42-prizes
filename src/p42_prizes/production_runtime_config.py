@@ -228,7 +228,7 @@ def load_runtime_release(
             )
             host_slugs = [item.get("slug") for item in host_set.get("boards", []) if isinstance(item, dict)]
             if (
-                host_set.get("schema_version") != "p42-admission-host-set/v3"
+                host_set.get("schema_version") != "p42-admission-host-set/v4"
                 or host_set.get("host_set_hash") != host_hash
                 or host_set.get("dossier", {}).get("dossier_hash") != image_release["dossier_hash"]
                 or host_set.get("dossier", {}).get("verifier_source_commit") != image_release["verifier_source_commit"]

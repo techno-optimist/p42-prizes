@@ -37,7 +37,7 @@ def _artifact(evidence_root: Path) -> dict:
     host_hashes = [f"sha256:{100 + host:064x}" for host in range(4)]
     for host, host_hash in enumerate(host_hashes):
         host_set = {
-            "schema_version": "p42-admission-host-set/v3",
+            "schema_version": "p42-admission-host-set/v4",
             "dossier": {
                 "dossier_hash": DIGEST_B, "verifier_source_commit": COMMIT_S,
                 "release_config_commit": COMMIT_R,
@@ -172,6 +172,22 @@ def test_runtime_release_rejects_unpullable_image(tmp_path: Path) -> None:
 
     with pytest.raises(ProductionRuntimeConfigError, match="not pullable"):
         load_runtime_release(ROOT, path, expected_sha256=pin, image_probe=reject)
+
+
+def test_runtime_release_rejects_repinned_v3_host_set(tmp_path: Path) -> None:
+    value = _artifact(tmp_path)
+    host_binding = value["boards"][0]["admission"]["host_sets"][0]
+    host_path = Path(host_binding["path"])
+    host_set = json.loads(host_path.read_text())
+    host_set["schema_version"] = "p42-admission-host-set/v3"
+    v3_file_sha256 = _evidence_file(host_path, host_set)
+    for board in value["boards"]:
+        board["admission"]["host_sets"][0]["file_sha256"] = v3_file_sha256
+    path = tmp_path / "runtime-release.json"
+    pin = _write(path, value)
+
+    with pytest.raises(ProductionRuntimeConfigError, match="host-set identity mismatch"):
+        load_runtime_release(ROOT, path, expected_sha256=pin, image_probe=lambda *_: None)
 
 
 @pytest.mark.parametrize("field", ["verifier_command", "resource"])
