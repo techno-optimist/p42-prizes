@@ -237,8 +237,9 @@ then a keyless continuation verifies finalized on-chain completion.
 For a fresh public prize deployment, the only canonical route is
 `npm run deploy:base-sepolia` and the typed procedure in
 [MULTIBOARD_CEREMONY.md](MULTIBOARD_CEREMONY.md). It refuses to broadcast until
-every board passes local `admit-ready` and the resulting admission-matrix digest
-is bound to the registry hash. The npm command unconditionally selects the
+every board passes `admit-release-ready` against the independently pinned v2
+image dossier, publication journal, and four-host evidence, and the resulting
+admission-matrix digest is bound to the registry hash. The npm command unconditionally selects the
 production-specific `deploy-multiboard-production` entry point, ignoring any
 caller-supplied `P42_DEPLOY_MODE`; direct invocation of that entry point rejects
 a missing or non-production mode before importing deployment code. No supported
