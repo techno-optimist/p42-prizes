@@ -23,6 +23,8 @@ const HASH = (digit) => `0x${digit.repeat(64)}`;
 const SHA = (digit) => `sha256:${digit.repeat(64)}`;
 const IMAGE = SHA("e");
 const SOURCE = SHA("f");
+const BOARD_MEMORY_MB = 128;
+const BOARD_WALL_SECONDS = 60;
 
 function registryBinding() {
   return {
@@ -94,12 +96,22 @@ function candidate(overrides = {}) {
 }
 
 function transcript({ generated = "2026-07-10T00:00:00Z", candidateValue = candidate(), reportValue = report() } = {}) {
+  const boardResources = { memory_mb: BOARD_MEMORY_MB, wall_seconds: BOARD_WALL_SECONDS };
   const value = {
     schema_version: "p42-runner-transcript/v1",
     job_id: `independent-${generated}`,
     generated_at_utc: generated,
     started_at_utc: generated,
     problem: "/repo/problems/hadamard-mini",
+    board_identity: {
+      problem_slug: "hadamard-mini",
+      problem_path: "/repo/problems/hadamard-mini",
+      verifier_command: "python3 verifier/verify.py --solution {solution}",
+      verifier_image: `ghcr.io/p42/hadamard-mini@${IMAGE}`,
+      verifier_source_sha256: SOURCE,
+      resource_identity: sha256Canonical(boardResources),
+      ...boardResources,
+    },
     solution: "/runtime/inputs/fixture.json",
     da: {
       ok: true,
@@ -109,7 +121,7 @@ function transcript({ generated = "2026-07-10T00:00:00Z", candidateValue = candi
       challengeable: false,
     },
     resource_limits: {
-      required_memory_mb: 128,
+      required_memory_mb: BOARD_MEMORY_MB,
       memory_safety_factor: 2,
       child_address_space_limit_mb: 256,
       address_space_limit_supported: true,
