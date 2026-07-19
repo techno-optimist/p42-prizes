@@ -33,7 +33,7 @@ import {
 } from "./transcript-store.mjs";
 import { parseStrictJsonBytes, readStrictJsonFileSync } from "./strict-json.mjs";
 import { loadProductionValidationContext } from "./production-validation-context.mjs";
-import { validateDeploymentRoleAcceptances, validateDurableRoleAcceptanceTimestamp } from "./role-acceptance.mjs";
+import { roleAcceptanceManifestBinding, validateDeploymentRoleAcceptances, validateDurableRoleAcceptanceTimestamp } from "./role-acceptance.mjs";
 import { assertExactSetupOperations, deriveBoardSetupOperations } from "./setup-operation-plan.mjs";
 import {
   CANONICAL_BOARD_CONTRACTS,
@@ -1139,7 +1139,7 @@ function validateExactSetupOperations(manifest) {
   assertExactSetupOperations(deriveExactSetupOperations(manifest), manifest.setupTransactions);
 }
 
-export function validateManifestEvidence(manifest, { allowFixture = false, productionSlate, capsuleResolver, blockTimestampResolver, explorerDossierResolver } = {}) {
+export function validateManifestEvidence(manifest, { allowFixture = false, productionSlate, capsuleResolver, blockTimestampResolver, explorerDossierResolver, roleAcceptanceEvidence } = {}) {
   rejectKnownStaleRelease(manifest);
   validateDeploymentManifestSchema(manifest);
   if (![MANIFEST_SCHEMA_V1, MANIFEST_SCHEMA_V2].includes(manifest?.schema)) {
@@ -1220,7 +1220,15 @@ export function validateManifestEvidence(manifest, { allowFixture = false, produ
       if (!completionEvidence || completionEvidence.blockNumber !== setup.completionBlock || completionEvidence.timestamp !== setup.completionBlockTimestamp || String(completionEvidence.blockHash).toLowerCase() !== String(setup.completionBlockHash).toLowerCase() || completionEvidence.primaryBlockHash.toLowerCase() !== completionEvidence.blockHash.toLowerCase() || completionEvidence.secondaryBlockHash.toLowerCase() !== completionEvidence.blockHash.toLowerCase() || completionEvidence.primaryOperatorId === completionEvidence.secondaryOperatorId || setup.completionBlock !== setup.finalityAnchor?.l2?.finalized?.number || String(setup.completionBlockHash).toLowerCase() !== String(setup.finalityAnchor?.l2?.finalized?.hash).toLowerCase()) throw new Error("governance completion block evidence is not dual-RPC canonical and finalized");
       const trustedCompletionTimestamp = blockTimestampResolver({ blockNumber: setup.completionBlock, path: "governanceSetup.completionBlock" });
       const acceptanceValidatedAt = validateDurableRoleAcceptanceTimestamp(setup, trustedCompletionTimestamp);
-      validateDeploymentRoleAcceptances(ethers, manifest, manifest.roleAcceptances, { validationTime: acceptanceValidatedAt });
+      if (!roleAcceptanceEvidence?.pendingManifest || roleAcceptanceManifestBinding(roleAcceptanceEvidence.pendingManifest) !== manifest.roleAcceptances?.manifestBindingDigest) throw new Error("completed production manifest requires the preserved pending manifest exact bytes and stable binding");
+      if (capsuleCanonical(roleAcceptanceEvidence.capsule) !== capsuleCanonical(capsule)) throw new Error("role acceptance capsule evidence must match the trusted exact capsule object");
+      validateDeploymentRoleAcceptances(ethers, manifest, manifest.roleAcceptances, {
+        validationTime: acceptanceValidatedAt,
+        pendingManifestBytesDigest: roleAcceptanceEvidence.pendingManifestBytesDigest,
+        capsuleBytesDigest: roleAcceptanceEvidence.capsuleBytesDigest,
+        capsule,
+        expectedExplorerDossierDigest: roleAcceptanceEvidence.expectedExplorerDossierDigest,
+      });
     }
   } else if (isMultiBoardManifest(manifest) && manifest.releaseMode === "fixture") {
     if (!allowFixture) throw new Error("fixture manifests are test-only and rejected by default");

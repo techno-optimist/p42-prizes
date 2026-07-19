@@ -13,6 +13,9 @@ import {
   configuredIndexerArtifactPaths,
   loadProtectedActivationRpcOperatorRegistry,
   loadIndexerProvenance,
+  portalRoleManifestBinding,
+  portalRoleTopologyDigest,
+  replayPortalRoleAcceptances,
 } from "@/lib/indexer-provenance";
 
 const root = resolve(process.cwd(), "..");
@@ -36,6 +39,32 @@ function digest(char: string): string { return `sha256:${char.repeat(64)}`; }
 function canonical(value: any): any { if (Array.isArray(value)) return value.map(canonical); if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])); return value; }
 function canonicalDigest(value: any): string { return `sha256:${createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex")}`; }
 function bytesDigest(value: any): string { return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`; }
+
+const roleTypes = { RoleAcceptance: [
+  { name: "requestSetDigest", type: "string" }, { name: "requestSetNonce", type: "bytes32" }, { name: "pendingManifestBytesDigest", type: "string" }, { name: "manifestBindingDigest", type: "string" }, { name: "releaseBindingDigest", type: "string" }, { name: "capsuleBytesDigest", type: "string" }, { name: "capsuleDigest", type: "string" }, { name: "expectedExplorerDossierDigest", type: "string" }, { name: "slateDigest", type: "string" }, { name: "configDigest", type: "string" }, { name: "deploymentCommit", type: "string" }, { name: "topologyDigest", type: "string" }, { name: "role", type: "string" }, { name: "account", type: "address" }, { name: "policyVersion", type: "string" }, { name: "expiresAt", type: "uint64" }, { name: "nonce", type: "bytes32" }, { name: "riskAccepted", type: "bool" }, { name: "roleAccepted", type: "bool" },
+] };
+
+function attachCompletedRolePacket(manifest: Record<string, any>, options: { fundingWallets?: any[] } = {}): { wallets: any[] } {
+  const baseWallets = Array.from({ length: 10 }, (_, index) => new Wallet(`0x${(index + 1).toString(16).padStart(64, "0")}`));
+  const fundingWallets = options.fundingWallets ?? baseWallets.slice(7, 10);
+  const wallets = [...baseWallets.slice(0, 7), ...fundingWallets];
+  manifest.releaseMode = "production"; manifest.status = "governance-setup-complete";
+  manifest.governance.signers = wallets.slice(0, 5).map(({ address }) => address); manifest.governance.guardian = wallets[5].address;
+  manifest.roles.treasury = wallets[6].address; manifest.roles.productionLaunchAuthority = wallets[7].address; manifest.roles.independentSecurityAuthority = wallets[8].address; manifest.roles.governanceAuthority = wallets[9].address;
+  manifest.releaseEvidence = { ...(manifest.releaseEvidence ?? {}), releaseBindingDigest: digest("1"), capsuleDigest: digest("2"), slateDigest: digest("3"), configDigest: digest("4") };
+  manifest.sourceVerification = { ...(manifest.sourceVerification ?? {}), status: "verified", dossierDigest: digest("5") };
+  const completion = 1_900_000_000; manifest.governanceSetup = { ...(manifest.governanceSetup ?? {}), status: "complete", acceptanceValidatedAt: new Date(completion * 1000).toISOString(), completionBlockTimestamp: completion, roleAcceptancePacketBytesDigest: digest("6") };
+  const common = { policyVersion: "p42-governance-role-policy/v2", chainId: 84532, requestSetNonce: hash("a"), requestSetDigest: digest("7"), pendingManifestBytesDigest: digest("8"), manifestBindingDigest: portalRoleManifestBinding(manifest), releaseBindingDigest: manifest.releaseEvidence.releaseBindingDigest, capsuleBytesDigest: digest("9"), capsuleDigest: manifest.releaseEvidence.capsuleDigest, expectedExplorerDossierDigest: manifest.sourceVerification.dossierDigest, slateDigest: manifest.releaseEvidence.slateDigest, configDigest: manifest.releaseEvidence.configDigest, deploymentCommit: manifest.deploymentCommit, timelock: getAddress(manifest.contracts.timelock.address), topologyDigest: portalRoleTopologyDigest(manifest), contractCount: 47, expiresAt: completion + 1000 };
+  const roster = [...wallets.slice(0, 5).map((wallet) => ({ role: "timelock-signer", wallet })), { role: "guardian", wallet: wallets[5] }, { role: "treasury", wallet: wallets[6] }, { role: "production-launch-authority", wallet: wallets[7] }, { role: "independent-security-authority", wallet: wallets[8] }, { role: "governance-authority", wallet: wallets[9] }, ...wallets.slice(0, 5).map((wallet) => ({ role: "resolver-quorum-signer", wallet }))].sort((a, b) => ["timelock-signer", "guardian", "treasury", "production-launch-authority", "independent-security-authority", "governance-authority", "resolver-quorum-signer"].indexOf(a.role) - ["timelock-signer", "guardian", "treasury", "production-launch-authority", "independent-security-authority", "governance-authority", "resolver-quorum-signer"].indexOf(b.role) || a.wallet.address.toLowerCase().localeCompare(b.wallet.address.toLowerCase()));
+  const domain = { name: "P42 Deployment Role Acceptance", version: "2", chainId: 84532, verifyingContract: common.timelock };
+  const acceptances = roster.map(({ role, wallet }, index) => {
+    const acceptance = { role, address: wallet.address, nonce: `0x${(index + 1).toString(16).padStart(64, "0")}`, riskAccepted: true, roleAccepted: true };
+    const message = { requestSetDigest: common.requestSetDigest, requestSetNonce: common.requestSetNonce, pendingManifestBytesDigest: common.pendingManifestBytesDigest, manifestBindingDigest: common.manifestBindingDigest, releaseBindingDigest: common.releaseBindingDigest, capsuleBytesDigest: common.capsuleBytesDigest, capsuleDigest: common.capsuleDigest, expectedExplorerDossierDigest: common.expectedExplorerDossierDigest, slateDigest: common.slateDigest, configDigest: common.configDigest, deploymentCommit: common.deploymentCommit, topologyDigest: common.topologyDigest, role, account: wallet.address, policyVersion: common.policyVersion, expiresAt: common.expiresAt, nonce: acceptance.nonce, riskAccepted: true, roleAccepted: true };
+    return { ...acceptance, signature: wallet.signingKey.sign(TypedDataEncoder.hash(domain, roleTypes, message)).serialized };
+  });
+  const body = { schema: "p42-prizes/deployment-role-acceptance/v2", ...common, acceptances }; manifest.roleAcceptances = { ...body, packetDigest: canonicalDigest(body) };
+  return { wallets };
+}
 
 function artifacts() {
   // The v1 example supplies canonical contract/setup shapes; this promotes its
@@ -242,10 +271,23 @@ describe("indexer provenance v2", () => {
 
   it("keeps Render-bundled schemas byte-equivalent to canonical protocol schemas", () => {
     for (const name of ["activation-rpc-operator-registry.schema.json", "deployment-manifest-v2.schema.json", "indexer-checkpoint-v2.schema.json", "indexer-checkpoint-v3.schema.json", "indexer-checkpoint-v4.schema.json", "funding-activation-completion.schema.json"]) {
-      const canonical = JSON.parse(require("node:fs").readFileSync(join(root, "schemas", name), "utf8"));
-      const bundled = JSON.parse(require("node:fs").readFileSync(join(process.cwd(), "src", "schemas", name), "utf8"));
-      expect(bundled).toEqual(canonical);
+      const canonical = require("node:fs").readFileSync(join(root, "schemas", name));
+      const bundled = require("node:fs").readFileSync(join(process.cwd(), "src", "schemas", name));
+      expect(bundled.equals(canonical)).toBe(true);
     }
+  });
+
+  it("cryptographically replays a completed v2 role packet and rejects schema-valid forgery", () => {
+    const { manifest } = artifacts();
+    manifest.problems = Array.from({ length: 10 }, (_, index) => { const problem = clone(manifest.problems[0]); problem.problemId = String(index + 1); for (const [offset, key] of boardKeys.entries()) problem.contracts[key].address = `0x${(1000 + index * 4 + offset).toString(16).padStart(40, "0")}`; return problem; });
+    attachCompletedRolePacket(manifest);
+    expect(() => replayPortalRoleAcceptances(manifest)).not.toThrow();
+    const forged = clone(manifest); forged.roleAcceptances.acceptances[0].signature = forged.roleAcceptances.acceptances[1].signature;
+    const { packetDigest: _ignored, ...forgedBody } = forged.roleAcceptances; forged.roleAcceptances.packetDigest = canonicalDigest(forgedBody);
+    expect(() => replayPortalRoleAcceptances(forged)).toThrow();
+    const crossRole = clone(manifest); [crossRole.roleAcceptances.acceptances[0], crossRole.roleAcceptances.acceptances[5]] = [crossRole.roleAcceptances.acceptances[5], crossRole.roleAcceptances.acceptances[0]];
+    const { packetDigest: _crossIgnored, ...crossBody } = crossRole.roleAcceptances; crossRole.roleAcceptances.packetDigest = canonicalDigest(crossBody);
+    expect(() => replayPortalRoleAcceptances(crossRole)).toThrow();
   });
 
   it("loads only a fully bound, completely reconstructed board and keeps funding disabled", () => {
@@ -338,6 +380,7 @@ describe("indexer provenance v2", () => {
     const fundingWallets = fundingRoles.map(() => Wallet.createRandom());
     fundingRoles.forEach(([, field], index) => { base.manifest.roles[field] = fundingWallets[index].address; });
     base.manifest.problems = manifestProblems;
+    attachCompletedRolePacket(base.manifest, { fundingWallets });
     base.manifest.deploymentConfigHash = computePortalDeploymentConfigHash(base.manifest);
     base.checkpoint.manifestBinding.deploymentConfigHash = base.manifest.deploymentConfigHash;
     base.checkpoint.manifestBinding.boards = Object.fromEntries(manifestProblems.map((item) => [item.problemId, Object.fromEntries(boardKeys.map((key) => [key, { address: item.contracts[key].address, deployedCodeHash: item.contracts[key].deployedCodeHash, abiHash: item.contracts[key].abiHash }]))]));

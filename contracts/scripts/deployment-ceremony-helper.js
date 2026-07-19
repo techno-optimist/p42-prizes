@@ -1595,7 +1595,7 @@ export function assessSetupCompletion(manifest, snapshot) {
   return { complete: checks.every((check) => check.ok === true), checks };
 }
 
-export function completeSetupManifest(manifest, snapshot, { ethers, roleAcceptancePacket } = {}) {
+export function completeSetupManifest(manifest, snapshot, { ethers, roleAcceptancePacket, roleAcceptanceContext = {}, roleAcceptancePacketBytesDigest = null } = {}) {
   const assessment = assessSetupCompletion(manifest, snapshot);
   if (!assessment.complete) {
     const failed = assessment.checks.filter((check) => !check.ok).map((check) => check.name);
@@ -1612,11 +1612,13 @@ export function completeSetupManifest(manifest, snapshot, { ethers, roleAcceptan
     if (!blockEvidence || blockEvidence.blockNumber !== snapshot.checkedBlock || blockEvidence.blockNumber !== anchorPoint?.number || String(blockEvidence.blockHash).toLowerCase() !== String(anchorPoint?.hash).toLowerCase() || blockEvidence.primaryBlockHash !== blockEvidence.secondaryBlockHash || blockEvidence.primaryBlockHash !== blockEvidence.blockHash || blockEvidence.primaryOperatorId === blockEvidence.secondaryOperatorId) throw new Error("production completion requires dual-RPC canonical finalized block evidence");
     const completionBlockTimestamp = blockEvidence.timestamp;
     if (!Number.isSafeInteger(completionBlockTimestamp) || completionBlockTimestamp < 0 || snapshot.checkedAt !== new Date(completionBlockTimestamp * 1000).toISOString()) throw new Error("production completion requires a canonical finalized block timestamp");
-    completed.roleAcceptances = validateDeploymentRoleAcceptances(ethers, manifest, roleAcceptancePacket, { validationTime: completionBlockTimestamp });
+    if (!/^sha256:[0-9a-f]{64}$/.test(roleAcceptancePacketBytesDigest ?? "")) throw new Error("production governance completion requires an independently pinned role acceptance packet sha256");
+    completed.roleAcceptances = validateDeploymentRoleAcceptances(ethers, manifest, roleAcceptancePacket, { ...roleAcceptanceContext, validationTime: completionBlockTimestamp });
     completed.governanceSetup.acceptanceValidatedAt = new Date(completionBlockTimestamp * 1000).toISOString();
     completed.governanceSetup.completionBlockTimestamp = completionBlockTimestamp;
     completed.governanceSetup.completionBlockHash = blockEvidence.blockHash;
     completed.governanceSetup.completionBlockEvidence = structuredClone(blockEvidence);
+    completed.governanceSetup.roleAcceptancePacketBytesDigest = roleAcceptancePacketBytesDigest;
   }
   completed.status = COMPLETE_SETUP_STATUS;
   completed.governanceSetup.status = "complete";

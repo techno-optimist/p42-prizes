@@ -19,7 +19,7 @@ import {
 import { readContractsArtifactJson } from "./strict-json-helper.js";
 import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
 import { collectFinalityAnchor, recheckFinalityAnchor, validateMonotonicFinalityAnchor } from "./finality-anchor.js";
-import { validateDeploymentRoleAcceptances, validateDurableRoleAcceptanceTimestamp } from "./role-acceptance-helper.js";
+import { canonicalRoleAcceptanceJson, readRoleAcceptancePacketExact, validateDeploymentRoleAcceptances, validateDurableRoleAcceptanceTimestamp } from "./role-acceptance-helper.js";
 import { readExplorerDossierExact, validateExplorerVerificationAnchor, validateExplorerVerificationDossier } from "./explorer-verification-helper.js";
 import { readReleaseBuildJson } from "./release-capsule-helper.js";
 
@@ -127,7 +127,7 @@ export function buildReconciliationReport({
   };
 }
 
-export function assertReconciliationPublishable(manifest, report, freshAnchor) {
+export function assertReconciliationPublishable(manifest, report, freshAnchor, { roleAcceptancePacket = null, roleAcceptancePacketBytesDigest = null, roleAcceptanceEvidence = null } = {}) {
   if (manifest?.releaseMode !== "production" || manifest?.status !== "governance-setup-complete" || manifest?.governanceSetup?.status !== "complete") {
     throw new Error("production reconciliation publication requires completed governance setup");
   }
@@ -149,8 +149,10 @@ export function assertReconciliationPublishable(manifest, report, freshAnchor) {
     throw new Error("reconciliation has an incomplete or failed board");
   }
   try {
+    if (!roleAcceptancePacket || roleAcceptancePacketBytesDigest !== manifest.governanceSetup.roleAcceptancePacketBytesDigest || canonicalRoleAcceptanceJson(roleAcceptancePacket) !== canonicalRoleAcceptanceJson(manifest.roleAcceptances)) throw new Error("independently pinned exact role acceptance packet is missing or differs from the completed manifest");
     const validationTime = validateDurableRoleAcceptanceTimestamp(manifest.governanceSetup, manifest.governanceSetup.completionBlockTimestamp);
-    validateDeploymentRoleAcceptances(ethersLibrary, manifest, manifest.roleAcceptances, { validationTime });
+    if (!roleAcceptanceEvidence) throw new Error("externally observed pending manifest and capsule byte digests are missing");
+    validateDeploymentRoleAcceptances(ethersLibrary, manifest, manifest.roleAcceptances, { validationTime, ...roleAcceptanceEvidence });
   } catch (error) {
     throw new Error(`production reconciliation publication requires fully verified deployment role acceptances: ${error.message}`);
   }
@@ -243,7 +245,8 @@ export async function reconcileWithProvider({ ethers, manifest, outputPath = nul
   });
 
   if (outputPath) {
-    assertReconciliationPublishable(manifest.data, report, finalityAnchor);
+    const roleAcceptanceExact = readRoleAcceptancePacketExact(process.env.P42_ROLE_ACCEPTANCE_PACKET, process.env.P42_ROLE_ACCEPTANCE_PACKET_SHA256, { privateFile: true });
+    assertReconciliationPublishable(manifest.data, report, finalityAnchor, { roleAcceptancePacket: roleAcceptanceExact.value, roleAcceptancePacketBytesDigest: roleAcceptanceExact.bytesDigest, roleAcceptanceEvidence: validationContext.roleAcceptanceEvidence });
     await recheckFinalityAnchor({ endpoints: finalityEndpoints, policy: manifest.data.releaseEvidence.finalityPolicy, previous: finalityAnchor });
     report.finalityAnchor = finalityAnchor;
     await writeReconciliationReportAtomic(outputPath, report);

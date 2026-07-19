@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { ethers } from "ethers";
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { parseStrictJsonBytes, readStrictJsonFileSync } from "./strict-json.mjs";
 import { CANONICAL_CONTRACT_COUNT, assertCanonicalManifestTopology, canonicalTopologyDescriptors } from "./canonical-topology.mjs";
 
@@ -43,6 +44,37 @@ function readStrictBytesAndJson(path, maxBytes = LIMITS.maxBytes) {
     while (offset < bytes.length) { const count = readSync(fd, bytes, offset, bytes.length - offset, offset); if (count === 0) throw new Error("timestamp dossier was truncated"); offset += count; }
     return { bytes, value: parseStrictJsonBytes(bytes, { ...LIMITS, maxBytes }) };
   } finally { closeSync(fd); }
+}
+
+function readImmutableContentAddressedJson(path, expectedDigest, label) {
+  if (!/^sha256:[0-9a-f]{64}$/.test(expectedDigest ?? "")) throw new Error(`${label} requires an externally observed canonical sha256 digest`);
+  const expectedName = `${expectedDigest.slice("sha256:".length)}.json`;
+  if (basename(path) !== expectedName || basename(dirname(path)) !== "sha256") throw new Error(`${label} path is not content-addressed by the observed digest`);
+  for (const [directory, directoryLabel] of [[dirname(path), "sha256 directory"], [dirname(dirname(path)), "artifact root"]]) {
+    const stat = lstatSync(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o022) !== 0) throw new Error(`${label} ${directoryLabel} is unsafe`);
+  }
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o444 || stat.size > LIMITS.maxBytes) throw new Error(`${label} artifact metadata is not immutable and exclusive`);
+    const bytes = Buffer.alloc(stat.size); let offset = 0;
+    while (offset < bytes.length) { const count = readSync(fd, bytes, offset, bytes.length - offset, offset); if (count === 0) throw new Error(`${label} artifact was truncated`); offset += count; }
+    const after = fstatSync(fd);
+    if (after.dev !== stat.dev || after.ino !== stat.ino || after.size !== stat.size || after.mode !== stat.mode || after.nlink !== stat.nlink || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) throw new Error(`${label} artifact changed while reading`);
+    if (sha256(bytes) !== expectedDigest) throw new Error(`${label} exact bytes digest mismatch`);
+    return { bytes, value: parseStrictJsonBytes(bytes, LIMITS), bytesDigest: expectedDigest };
+  } finally { closeSync(fd); }
+}
+
+function loadRoleAcceptanceEvidence(manifest, capsulePath, env) {
+  if (manifest?.status !== "governance-setup-complete") return null;
+  const capsuleBytesDigest = requiredPath(env, "P42_ROLE_ACCEPTANCE_CAPSULE_SHA256");
+  const capsuleFile = readImmutableContentAddressedJson(capsulePath, capsuleBytesDigest, "role acceptance capsule");
+  const pendingManifestBytesDigest = requiredPath(env, "P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_SHA256");
+  const pendingManifestFile = readImmutableContentAddressedJson(requiredPath(env, "P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_PATH"), pendingManifestBytesDigest, "role acceptance pending manifest");
+  if (pendingManifestFile.value?.releaseMode !== "production" || pendingManifestFile.value?.status === "governance-setup-complete") throw new Error("role acceptance pending manifest artifact is not a pending production manifest");
+  return Object.freeze({ pendingManifest: pendingManifestFile.value, pendingManifestBytesDigest, capsuleBytesDigest, expectedExplorerDossierDigest: manifest.sourceVerification?.dossierDigest, capsule: capsuleFile.value });
 }
 
 function readExplorerDossierExact(path, expectedDigest) {
@@ -179,7 +211,8 @@ function requiredOperatorAllowlist(env) {
 export function loadProductionValidationContextSync(manifest, { env = process.env, slatePath = null, capsulePath = null, dossierPath = null, dossierDigest = null, explorerDossierPath = null, explorerDossierDigest = null } = {}) {
   if (manifest?.releaseMode !== "production") return {};
   const productionSlate = readStrictJsonFileSync(slatePath ?? requiredPath(env, "P42_PRODUCTION_SLATE_PATH"), LIMITS);
-  const capsule = readStrictJsonFileSync(capsulePath ?? requiredPath(env, "P42_RELEASE_CAPSULE"), LIMITS);
+  const resolvedCapsulePath = capsulePath ?? requiredPath(env, "P42_RELEASE_CAPSULE");
+  const capsule = readStrictJsonFileSync(resolvedCapsulePath, LIMITS);
   const resolvedDossierPath = dossierPath ?? requiredPath(env, "P42_PRODUCTION_TIMESTAMP_DOSSIER_PATH");
   const expectedDossierDigest = dossierDigest ?? requiredPath(env, "P42_PRODUCTION_TIMESTAMP_DOSSIER_SHA256");
   if (!/^sha256:[0-9a-f]{64}$/.test(expectedDossierDigest)) throw new Error("P42_PRODUCTION_TIMESTAMP_DOSSIER_SHA256 must be a canonical sha256 digest");
@@ -190,6 +223,7 @@ export function loadProductionValidationContextSync(manifest, { env = process.en
   const explorerRequired = manifest.status === "governance-setup-complete" && manifest.sourceVerification?.status === "verified";
   const explorer = explorerRequired ? readExplorerDossierExact(explorerDossierPath ?? requiredPath(env, "P42_EXPLORER_DOSSIER_PATH"), explorerDossierDigest ?? requiredPath(env, "P42_EXPLORER_DOSSIER_SHA256")) : null;
   if (explorer) validateExplorerDossier(explorer, manifest, capsule, env);
+  const roleAcceptanceEvidence = loadRoleAcceptanceEvidence(manifest, resolvedCapsulePath, env);
   return {
     productionSlate,
     capsuleResolver: (digest) => digest === capsule.capsuleDigest ? capsule : null,
@@ -198,6 +232,7 @@ export function loadProductionValidationContextSync(manifest, { env = process.en
       return timestamps.get(blockNumber);
     },
     explorerDossierResolver: (digest) => explorer?.dossierDigest === digest ? explorer : null,
+    roleAcceptanceEvidence,
   };
 }
 
@@ -207,11 +242,12 @@ export async function loadProductionValidationContext(manifest, { env = process.
     ? loadProductionValidationContextSync(manifest, { env, slatePath, capsulePath, dossierPath, dossierDigest })
     : (() => {
         const productionSlate = readStrictJsonFileSync(slatePath ?? requiredPath(env, "P42_PRODUCTION_SLATE_PATH"), LIMITS);
-        const capsule = readStrictJsonFileSync(capsulePath ?? requiredPath(env, "P42_RELEASE_CAPSULE"), LIMITS);
+        const resolvedCapsulePath = capsulePath ?? requiredPath(env, "P42_RELEASE_CAPSULE");
+        const capsule = readStrictJsonFileSync(resolvedCapsulePath, LIMITS);
         const explorerRequired = manifest.status === "governance-setup-complete" && manifest.sourceVerification?.status === "verified";
         const explorer = explorerRequired ? readExplorerDossierExact(requiredPath(env, "P42_EXPLORER_DOSSIER_PATH"), requiredPath(env, "P42_EXPLORER_DOSSIER_SHA256")) : null;
         if (explorer) validateExplorerDossier(explorer, manifest, capsule, env);
-        return { productionSlate, capsuleResolver: (digest) => digest === capsule.capsuleDigest ? capsule : null, explorerDossierResolver: (digest) => explorer?.dossierDigest === digest ? explorer : null };
+        return { productionSlate, capsuleResolver: (digest) => digest === capsule.capsuleDigest ? capsule : null, explorerDossierResolver: (digest) => explorer?.dossierDigest === digest ? explorer : null, roleAcceptanceEvidence: loadRoleAcceptanceEvidence(manifest, resolvedCapsulePath, env) };
       })();
   if (provider === null) return context;
   const timestamps = new Map();

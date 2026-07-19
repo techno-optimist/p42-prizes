@@ -37,6 +37,8 @@
     "open-witness-promote.mjs",
     "production-validation-context.mjs",
     "role-acceptance.mjs",
+    "role-acceptance-artifacts.mjs",
+    "role-acceptance-cli.mjs",
     "resolver.mjs",
     "resolver-signer.mjs",
     "resolver-quorum.mjs",
@@ -72,7 +74,9 @@
     "p42-censorship-fallback": "censorship-fallback-run.mjs",
     "p42-censorship-fallback-supervisor": "censorship-fallback-supervisor.mjs",
     "p42-runtime-supervisor": "runtime-supervisor.mjs",
-    "p42-censorship-fallback-verify": "censorship-fallback-verify.mjs"
+    "p42-censorship-fallback-verify": "censorship-fallback-verify.mjs",
+    "p42-role-acceptance-prepare": "role-acceptance-cli.mjs",
+    "p42-role-acceptance-assemble": "role-acceptance-cli.mjs"
   },
   "scripts": {
     "sync:schemas": "node scripts/sync-package-schemas.mjs",

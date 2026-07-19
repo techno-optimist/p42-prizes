@@ -76,6 +76,8 @@ import {
   signedDeploymentJournalPath,
 } from "./signed-deployment-journal.js";
 import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
+import { readStrictJsonFileSyncWithBytes } from "../../agent/strict-json.mjs";
+import { readRoleAcceptancePacketExact, roleAcceptanceBytesDigest } from "./role-acceptance-helper.js";
 import { assertExactSetupOperations } from "../../agent/setup-operation-plan.mjs";
 import { BASE_SEPOLIA_FINALITY_POLICY, collectCanonicalFinalizedBlockEvidence, collectFinalityAnchor, recheckFinalityAnchor } from "./finality-anchor.js";
 import {
@@ -1768,8 +1770,21 @@ async function continueMultiBoardCeremony(ethers, path, manifest) {
     if (explorerBlock < manifest.indexer.startBlock || explorerBlock > checkedBlock) throw new Error("explorer dossier finalized block is outside the deployment-to-completion interval");
     await validateExplorerVerificationAnchor({ dossier: explorerDossier, endpoints, currentAnchor: anchor });
     const roleAcceptancePath = requiredEnv("P42_ROLE_ACCEPTANCE_PACKET");
-    const roleAcceptancePacket = await readContractsArtifactJson(roleAcceptancePath);
-    const completed = completeSetupManifest(explorerBoundManifest, snapshot, { ethers, roleAcceptancePacket });
+    const pinnedRolePacketDigest = requiredEnv("P42_ROLE_ACCEPTANCE_PACKET_SHA256");
+    const roleAcceptanceExact = readRoleAcceptancePacketExact(roleAcceptancePath, pinnedRolePacketDigest, { privateFile: true });
+    const pendingManifestExact = readStrictJsonFileSyncWithBytes(path, { maxBytes: 32 * 1024 * 1024, maxDepth: 128 });
+    const capsuleExact = readStrictJsonFileSyncWithBytes(requiredEnv("P42_RELEASE_CAPSULE"), { maxBytes: 32 * 1024 * 1024, maxDepth: 128 });
+    const completed = completeSetupManifest(explorerBoundManifest, snapshot, {
+      ethers,
+      roleAcceptancePacket: roleAcceptanceExact.value,
+      roleAcceptancePacketBytesDigest: roleAcceptanceExact.bytesDigest,
+      roleAcceptanceContext: {
+        pendingManifestBytesDigest: roleAcceptanceBytesDigest(pendingManifestExact.bytes),
+        capsuleBytesDigest: roleAcceptanceBytesDigest(capsuleExact.bytes),
+        capsule: capsuleExact.value,
+        expectedExplorerDossierDigest: explorerDossier.dossierDigest,
+      },
+    });
     await writeManifestAtomically(path, completed);
     console.log(`Multi-board governance setup verified through finalized block ${checkedBlock} and marked complete: ${path}`);
   } catch (error) {

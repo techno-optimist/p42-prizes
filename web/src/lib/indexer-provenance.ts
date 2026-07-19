@@ -293,6 +293,75 @@ function sha256Canonical(value: unknown): string {
   return `sha256:${createHash("sha256").update(JSON.stringify(canonicalize(value))).digest("hex")}`;
 }
 
+const ROLE_ACCEPTANCE_TYPES = {
+  RoleAcceptance: [
+    { name: "requestSetDigest", type: "string" }, { name: "requestSetNonce", type: "bytes32" },
+    { name: "pendingManifestBytesDigest", type: "string" }, { name: "manifestBindingDigest", type: "string" },
+    { name: "releaseBindingDigest", type: "string" }, { name: "capsuleBytesDigest", type: "string" },
+    { name: "capsuleDigest", type: "string" }, { name: "expectedExplorerDossierDigest", type: "string" },
+    { name: "slateDigest", type: "string" }, { name: "configDigest", type: "string" },
+    { name: "deploymentCommit", type: "string" }, { name: "topologyDigest", type: "string" },
+    { name: "role", type: "string" }, { name: "account", type: "address" },
+    { name: "policyVersion", type: "string" }, { name: "expiresAt", type: "uint64" },
+    { name: "nonce", type: "bytes32" }, { name: "riskAccepted", type: "bool" }, { name: "roleAccepted", type: "bool" },
+  ],
+};
+const ROLE_ORDER = new Map(["timelock-signer", "guardian", "treasury", "production-launch-authority", "independent-security-authority", "governance-authority", "resolver-quorum-signer"].map((role, index) => [role, index]));
+
+export function portalRoleManifestBinding(manifest: JsonObject): string {
+  const binding = JSON.parse(JSON.stringify(manifest)) as JsonObject;
+  delete binding.status; delete binding.deploymentConfigHash; delete binding.governanceSetup; delete binding.roleAcceptances; delete binding.sourceVerification;
+  if (Array.isArray(binding.setupTransactions)) binding.setupTransactions = (binding.setupTransactions as JsonObject[]).map((operation) => Object.fromEntries(Object.entries(operation).filter(([key]) => !["status", "txHash", "blockNumber", "executedOperationId", "executedOperationClass"].includes(key))));
+  return sha256Canonical(binding);
+}
+
+export function portalRoleTopologyDigest(manifest: JsonObject): string {
+  const shared = object(manifest.contracts, "role acceptance contracts");
+  const rows: JsonObject[] = [];
+  for (const [key, name] of [["timelock", "P42MultisigTimelock"], ["registry", "P42ProblemRegistry"], ["rolloverVault", "P42RolloverVault"], ["submissionManagerFactory", "P42SubmissionManagerFactory"], ["challengeManagerFactory", "P42ChallengeManagerFactory"], ["objectiveVerifier", "P42SP1VerifierGateway"], ["resolverQuorum", "P42ResolverQuorum"]] as const) {
+    const entry = object(shared[key], `role acceptance contracts.${key}`); requireBinding(entry.name === name); rows.push({ path: `contracts.${key}`, name: entry.name, address: entry.address, runtimeCodeHash: entry.runtimeCodeHash });
+  }
+  for (const [problemIndex, problem] of (manifest.problems as JsonObject[]).entries()) for (const [key, name] of [["pool", "P42BountyPool"], ["ledger", "P42PayoutLedger"], ["submissions", "P42SubmissionManager"], ["challenges", "P42ChallengeManager"]] as const) {
+    const entry = object(object(problem.contracts, "role acceptance problem contracts")[key], `role acceptance problem contract ${key}`); requireBinding(entry.name === name); rows.push({ path: `problems[${problemIndex}].contracts.${key}`, name: entry.name, address: entry.address, runtimeCodeHash: entry.runtimeCodeHash });
+  }
+  requireBinding(rows.length === 47);
+  return sha256Canonical(rows);
+}
+
+function expectedPortalRoleRoster(manifest: JsonObject): { role: string; address: string }[] {
+  const governance = object(manifest.governance, "role acceptance governance"); const roles = object(manifest.roles, "role acceptance roles");
+  const signers = (governance.signers as string[]).map(getAddress);
+  const singles = [governance.guardian, roles.treasury, roles.productionLaunchAuthority, roles.independentSecurityAuthority, roles.governanceAuthority].map((value) => getAddress(String(value)));
+  requireBinding(signers.length === 5 && new Set([...signers, ...singles].map((value) => value.toLowerCase())).size === 10);
+  return [...signers.map((address) => ({ role: "timelock-signer", address })), { role: "guardian", address: singles[0] }, { role: "treasury", address: singles[1] }, { role: "production-launch-authority", address: singles[2] }, { role: "independent-security-authority", address: singles[3] }, { role: "governance-authority", address: singles[4] }, ...signers.map((address) => ({ role: "resolver-quorum-signer", address }))]
+    .sort((a, b) => ROLE_ORDER.get(a.role)! - ROLE_ORDER.get(b.role)! || a.address.toLowerCase().localeCompare(b.address.toLowerCase()));
+}
+
+export function replayPortalRoleAcceptances(manifest: JsonObject): void {
+  const packet = object(manifest.roleAcceptances, "manifest.roleAcceptances"); const evidence = object(manifest.releaseEvidence, "manifest.releaseEvidence");
+  const setup = object(manifest.governanceSetup, "manifest.governanceSetup"); const source = object(manifest.sourceVerification, "manifest.sourceVerification");
+  requireBinding(exactKeys(packet, ["schema", "policyVersion", "chainId", "requestSetNonce", "requestSetDigest", "pendingManifestBytesDigest", "manifestBindingDigest", "releaseBindingDigest", "capsuleBytesDigest", "capsuleDigest", "expectedExplorerDossierDigest", "slateDigest", "configDigest", "deploymentCommit", "timelock", "topologyDigest", "contractCount", "expiresAt", "acceptances", "packetDigest"]));
+  const { packetDigest, ...body } = packet;
+  requireBinding(packet.schema === "p42-prizes/deployment-role-acceptance/v2" && packet.policyVersion === "p42-governance-role-policy/v2" && packetDigest === sha256Canonical(body));
+  const completionTimestamp = Number(setup.completionBlockTimestamp); const validatedAt = Date.parse(String(setup.acceptanceValidatedAt)) / 1000;
+  requireBinding(manifest.releaseMode === "production" && manifest.status === "governance-setup-complete" && setup.status === "complete" && source.status === "verified" && typeof packet.expiresAt === "number" && Number.isSafeInteger(packet.expiresAt) && Number.isSafeInteger(completionTimestamp) && validatedAt === completionTimestamp && packet.expiresAt > completionTimestamp);
+  const contracts = object(manifest.contracts, "role acceptance contracts"); const timelock = object(contracts.timelock, "role acceptance timelock");
+  requireBinding(packet.chainId === object(manifest.network, "role acceptance network").chainId && packet.releaseBindingDigest === evidence.releaseBindingDigest && packet.capsuleDigest === evidence.capsuleDigest && packet.slateDigest === evidence.slateDigest && packet.configDigest === evidence.configDigest && packet.deploymentCommit === manifest.deploymentCommit && getAddress(String(packet.timelock)) === getAddress(String(timelock.address)) && packet.manifestBindingDigest === portalRoleManifestBinding(manifest) && packet.topologyDigest === portalRoleTopologyDigest(manifest) && packet.contractCount === 47 && packet.expectedExplorerDossierDigest === source.dossierDigest);
+  for (const field of ["requestSetDigest", "pendingManifestBytesDigest", "manifestBindingDigest", "releaseBindingDigest", "capsuleBytesDigest", "capsuleDigest", "expectedExplorerDossierDigest", "slateDigest", "configDigest", "topologyDigest", "packetDigest"]) requireBinding(/^sha256:[0-9a-f]{64}$/.test(String(packet[field])));
+  requireBinding(/^0x[0-9a-fA-F]{64}$/.test(String(packet.requestSetNonce)));
+  const roster = expectedPortalRoleRoster(manifest); const acceptances = packet.acceptances as JsonObject[]; const nonces = new Set([String(packet.requestSetNonce).toLowerCase()]);
+  requireBinding(Array.isArray(acceptances) && acceptances.length === 15);
+  const domain = { name: "P42 Deployment Role Acceptance", version: "2", chainId: Number(packet.chainId), verifyingContract: getAddress(String(packet.timelock)) };
+  acceptances.forEach((raw, index) => {
+    const acceptance = object(raw, `role acceptance ${index}`); const expected = roster[index]; const address = getAddress(String(acceptance.address)); const nonce = String(acceptance.nonce); const signature = String(acceptance.signature);
+    requireBinding(exactKeys(acceptance, ["role", "address", "nonce", "riskAccepted", "roleAccepted", "signature"]) && acceptance.role === expected.role && address === expected.address && acceptance.riskAccepted === true && acceptance.roleAccepted === true && /^0x[0-9a-fA-F]{64}$/.test(nonce) && !nonces.has(nonce.toLowerCase()) && /^0x[0-9a-fA-F]{130}$/.test(signature));
+    nonces.add(nonce.toLowerCase());
+    const parsed = Signature.from(signature); requireBinding(parsed.serialized.toLowerCase() === signature.toLowerCase() && BigInt(parsed.s) <= HALF_SECP256K1_ORDER);
+    const message = { requestSetDigest: packet.requestSetDigest, requestSetNonce: packet.requestSetNonce, pendingManifestBytesDigest: packet.pendingManifestBytesDigest, manifestBindingDigest: packet.manifestBindingDigest, releaseBindingDigest: packet.releaseBindingDigest, capsuleBytesDigest: packet.capsuleBytesDigest, capsuleDigest: packet.capsuleDigest, expectedExplorerDossierDigest: packet.expectedExplorerDossierDigest, slateDigest: packet.slateDigest, configDigest: packet.configDigest, deploymentCommit: packet.deploymentCommit, topologyDigest: packet.topologyDigest, role: acceptance.role, account: address, policyVersion: packet.policyVersion, expiresAt: packet.expiresAt, nonce, riskAccepted: true, roleAccepted: true };
+    requireBinding(recoverAddress(TypedDataEncoder.hash(domain, ROLE_ACCEPTANCE_TYPES, message), parsed) === address);
+  });
+}
+
 export function canonicalActivationRpcOrigin(value: unknown): string {
   if (typeof value !== "string") throw new Error("activation RPC origin is invalid");
   requireBinding(value.length > 0 && value === value.trim()
@@ -726,6 +795,7 @@ function localOnly(problem: Problem): ChainProvenance {
 }
 
 function provenanceFromArtifacts(problem: Problem, manifest: JsonObject, checkpoint: JsonObject): ChainProvenance {
+    if (manifest.releaseMode === "production" && manifest.status === "governance-setup-complete") replayPortalRoleAcceptances(manifest);
     const aggregate = object(checkpoint.reconstruction, "checkpoint.reconstruction");
     requireBinding(aggregate.ok === true && aggregate.complete === true);
     const { board, manifestProblem } = validateBindings(manifest, checkpoint, problem);
