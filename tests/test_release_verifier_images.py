@@ -6,6 +6,7 @@ import base64
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tarfile
@@ -28,6 +29,7 @@ DIGEST_B = "sha256:" + "2" * 64
 SOURCE = "sha256:" + "3" * 64
 ARCHIVE = "sha256:" + "4" * 64
 RELEASE_COMMIT = "b" * 40
+FINAL_COMMIT = "c" * 40
 RELEASE_ARCHIVE = "sha256:" + "5" * 64
 REAL_BOARD_BINDING_VERIFIER = release.verify_production_board_bindings
 
@@ -145,6 +147,7 @@ def completed_journal(monkeypatch, tmp_path):
         verifier_source_commit=COMMIT,
         verifier_source_archive_digest=ARCHIVE,
         registry_base=base,
+        publication_authority=publication_authority(),
     )
     for board in journal["boards"]:
         board["state"] = "verified"
@@ -161,15 +164,103 @@ def completed(argv, stdout="", returncode=0):
     return subprocess.CompletedProcess(argv, returncode, stdout, "")
 
 
-def live_publication_authority_runner(*, approved=True, main_sha=COMMIT, jobs=None):
-    expected_jobs = jobs or [
-        {"name": name, "status": "completed", "conclusion": "success"}
-        for name in sorted(release.REQUIRED_CI_JOBS)
+def authority_receipt():
+    jobs = [
+        {
+            "id": index + 1000, "name": name, "status": "completed",
+            "conclusion": "success", "runId": 123, "headSha": COMMIT,
+        }
+        for index, name in enumerate(sorted(release.REQUIRED_CI_JOBS))
     ]
+    artifacts = [
+        {
+            "id": index + 2000, "name": f"artifact-{index:02d}",
+            "sizeInBytes": 100 + index, "digest": f"sha256:{index + 1:064x}",
+            "expired": False,
+            "workflowRun": {"id": 123, "headBranch": "main", "headSha": COMMIT},
+        }
+        for index in range(10)
+    ]
+    return {
+        "receiptHash": "sha256:" + "6" * 64,
+        "inputs": {
+            "repository": release.CANONICAL_REPOSITORY, "mainSha": COMMIT,
+            "runId": 123, "pullRequestNumber": 178,
+        },
+        "githubCapture": {
+            "run": {"runAttempt": 1},
+            "jobs": jobs,
+            "artifactApiRecords": artifacts,
+            "capturedArtifactCount": 10,
+            "pullRequest": {
+                "headSha": RELEASE_COMMIT, "mergedAt": "2026-07-19T13:00:00Z",
+            },
+        },
+    }
+
+
+def publication_authority(authority_head=COMMIT):
+    receipt = authority_receipt()
+    value = {
+        "schema": release.PUBLICATION_AUTHORITY_SCHEMA,
+        "commit": COMMIT,
+        "authority_head": authority_head,
+        "receipt_hash": receipt["receiptHash"],
+        "source_release_evidence_hash": "sha256:" + "7" * 64,
+        "run": {"id": 123, "attempt": 1, "workflow_id": release.CI_WORKFLOW_ID},
+        "pull_request": {
+            "number": 178, "head_sha": RELEASE_COMMIT,
+            "merged_at": "2026-07-19T13:00:00Z",
+        },
+        "approvers": [{
+            "login": "independent-reviewer", "review_id": 3000,
+            "commit_id": RELEASE_COMMIT, "submitted_at": "2026-07-19T12:00:00Z",
+            "permission": "write",
+        }],
+        "jobs": receipt["githubCapture"]["jobs"],
+        "artifacts": receipt["githubCapture"]["artifactApiRecords"],
+    }
+    value["authority_hash"] = release._authority_hash(value)
+    return value
+
+
+def live_publication_authority_runner(
+    *, approved=True, main_sha=COMMIT, jobs=None, artifact_digest=None,
+    review_commit=RELEASE_COMMIT, permission="write", authority_head=COMMIT,
+):
+    receipt = authority_receipt()
+    expected_jobs = jobs or [
+        {
+            "id": job["id"], "name": job["name"], "status": job["status"],
+            "conclusion": job["conclusion"], "run_id": job["runId"],
+            "head_sha": job["headSha"],
+        }
+        for job in receipt["githubCapture"]["jobs"]
+    ]
+    live_artifacts = [
+        {
+            "id": item["id"], "name": item["name"], "size_in_bytes": item["sizeInBytes"],
+            "digest": item["digest"], "expired": item["expired"],
+            "workflow_run": {
+                "id": item["workflowRun"]["id"],
+                "head_branch": item["workflowRun"]["headBranch"],
+                "head_sha": item["workflowRun"]["headSha"],
+            },
+        }
+        for item in receipt["githubCapture"]["artifactApiRecords"]
+    ]
+    if artifact_digest is not None:
+        live_artifacts[0]["digest"] = artifact_digest
 
     def runner(argv, **kwargs):
         if argv[:4] == ["git", "remote", "get-url", "origin"]:
             return completed(argv, "https://github.com/techno-optimist/p42-prizes.git\n")
+        if argv[:3] == ["git", "rev-parse", "HEAD"]:
+            return completed(argv, authority_head + "\n")
+        if argv[:2] == ["git", "status"]:
+            return completed(argv, "")
+        if argv[:3] == ["git", "merge-base", "--is-ancestor"]:
+            return completed(argv, "")
         endpoint = argv[-1]
         if endpoint.endswith("git/ref/heads/main"):
             value = [{"object": {"sha": main_sha}}]
@@ -177,15 +268,19 @@ def live_publication_authority_runner(*, approved=True, main_sha=COMMIT, jobs=No
             value = [{
                 "id": 123, "workflow_id": release.CI_WORKFLOW_ID, "event": "push",
                 "head_branch": "main", "head_sha": COMMIT, "status": "completed",
-                "conclusion": "success",
+                "conclusion": "success", "run_attempt": 1,
             }]
         elif endpoint.endswith("actions/runs/123/jobs?per_page=100"):
             value = [{"total_count": len(expected_jobs), "jobs": expected_jobs}]
+        elif endpoint.endswith("actions/runs/123/artifacts?per_page=100"):
+            value = [{"total_count": len(live_artifacts), "artifacts": live_artifacts}]
         elif endpoint.endswith("pulls/178"):
             value = [{
                 "number": 178, "state": "closed", "merged": True,
                 "merge_commit_sha": COMMIT, "base": {"ref": "main"},
                 "user": {"login": "techno-optimist"},
+                "head": {"sha": RELEASE_COMMIT},
+                "merged_at": "2026-07-19T13:00:00Z",
             }]
         elif endpoint.endswith("pulls/178/reviews?per_page=100"):
             value = [[{
@@ -193,7 +288,10 @@ def live_publication_authority_runner(*, approved=True, main_sha=COMMIT, jobs=No
                 "state": "APPROVED" if approved else "CHANGES_REQUESTED",
                 "submitted_at": "2026-07-19T12:00:00Z",
                 "author_association": "COLLABORATOR",
+                "commit_id": review_commit, "id": 3000,
             }]]
+        elif endpoint.endswith("collaborators/independent-reviewer/permission"):
+            value = [{"permission": permission}]
         else:
             raise AssertionError(f"unexpected authority command: {argv}")
         return completed(argv, json.dumps(value, separators=(",", ":")))
@@ -366,14 +464,7 @@ def test_dirty_tree_and_nonexact_commit_fail_closed():
 
 
 def test_publication_authority_binds_offline_receipt_to_live_main_ci_and_approval(monkeypatch, tmp_path):
-    receipt = {
-        "inputs": {
-            "repository": release.CANONICAL_REPOSITORY,
-            "mainSha": COMMIT,
-            "runId": 123,
-            "pullRequestNumber": 178,
-        }
-    }
+    receipt = authority_receipt()
     monkeypatch.setattr(release, "_read_exact_main_receipt", lambda _path: receipt)
     monkeypatch.setattr(
         release,
@@ -383,19 +474,48 @@ def test_publication_authority_binds_offline_receipt_to_live_main_ci_and_approva
     result = release.verify_exact_main_publication_authority(
         ROOT, COMMIT, tmp_path / "receipt.json",
         runner=live_publication_authority_runner(),
+        source_release_validator=lambda _root: {
+            "schemaVersion": "p42-source-release-evidence/v3",
+            "observedBranchHead": COMMIT,
+            "ci": {"runId": 123},
+            "derived": {"validatedHead": COMMIT},
+            "evidenceHash": "sha256:" + "7" * 64,
+        },
     )
-    assert result == {
-        "run_id": 123,
-        "pull_request_number": 178,
-        "approvers": ["independent-reviewer"],
-    }
+    assert result == publication_authority()
+
+
+def test_publication_authority_accepts_signed_evidence_only_main_tail(monkeypatch, tmp_path):
+    monkeypatch.setattr(release, "_read_exact_main_receipt", lambda _path: authority_receipt())
+    monkeypatch.setattr(
+        release,
+        "_load_current_main_replay_module",
+        lambda _root: type("Replay", (), {"validate_receipt": staticmethod(lambda value: None)}),
+    )
+    result = release.verify_exact_main_publication_authority(
+        ROOT, COMMIT, tmp_path / "receipt.json",
+        runner=live_publication_authority_runner(
+            authority_head=RELEASE_COMMIT, main_sha=RELEASE_COMMIT,
+        ),
+        source_release_validator=lambda _root: {
+            "schemaVersion": "p42-source-release-evidence/v3",
+            "observedBranchHead": COMMIT,
+            "ci": {"runId": 123},
+            "derived": {"validatedHead": RELEASE_COMMIT},
+            "evidenceHash": "sha256:" + "7" * 64,
+        },
+    )
+    assert result == publication_authority(authority_head=RELEASE_COMMIT)
 
 
 @pytest.mark.parametrize(
     "runner,match",
     [
         (live_publication_authority_runner(approved=False), "independent authorized approval"),
+        (live_publication_authority_runner(review_commit="f" * 40), "independent authorized approval"),
+        (live_publication_authority_runner(permission="read"), "independent authorized approval"),
         (live_publication_authority_runner(main_sha="f" * 40), "authenticated current main"),
+        (live_publication_authority_runner(artifact_digest="sha256:" + "f" * 64), "artifacts do not match"),
         (
             live_publication_authority_runner(jobs=[
                 {"name": name, "status": "completed", "conclusion": "success"}
@@ -406,14 +526,7 @@ def test_publication_authority_binds_offline_receipt_to_live_main_ci_and_approva
     ],
 )
 def test_publication_authority_fails_closed_on_live_authority_gaps(monkeypatch, tmp_path, runner, match):
-    monkeypatch.setattr(release, "_read_exact_main_receipt", lambda _path: {
-        "inputs": {
-            "repository": release.CANONICAL_REPOSITORY,
-            "mainSha": COMMIT,
-            "runId": 123,
-            "pullRequestNumber": 178,
-        }
-    })
+    monkeypatch.setattr(release, "_read_exact_main_receipt", lambda _path: authority_receipt())
     monkeypatch.setattr(
         release,
         "_load_current_main_replay_module",
@@ -422,7 +535,107 @@ def test_publication_authority_fails_closed_on_live_authority_gaps(monkeypatch, 
     with pytest.raises(release.ReleaseError, match=match):
         release.verify_exact_main_publication_authority(
             ROOT, COMMIT, tmp_path / "receipt.json", runner=runner,
+            source_release_validator=lambda _root: {
+                "schemaVersion": "p42-source-release-evidence/v3",
+                "observedBranchHead": COMMIT,
+                "ci": {"runId": 123},
+                "derived": {"validatedHead": COMMIT},
+                "evidenceHash": "sha256:" + "7" * 64,
+            },
         )
+
+
+def test_publication_authority_rejects_mismatched_signed_source_release(monkeypatch, tmp_path):
+    monkeypatch.setattr(release, "_read_exact_main_receipt", lambda _path: authority_receipt())
+    monkeypatch.setattr(
+        release,
+        "_load_current_main_replay_module",
+        lambda _root: type("Replay", (), {"validate_receipt": staticmethod(lambda value: None)}),
+    )
+    with pytest.raises(release.ReleaseError, match="signed current source-release authority"):
+        release.verify_exact_main_publication_authority(
+            ROOT, COMMIT, tmp_path / "receipt.json",
+            runner=live_publication_authority_runner(),
+            source_release_validator=lambda _root: {
+                "schemaVersion": "p42-source-release-evidence/v3",
+                "observedBranchHead": "f" * 40,
+                "ci": {"runId": 123},
+                "derived": {"validatedHead": COMMIT},
+                "evidenceHash": "sha256:" + "7" * 64,
+            },
+        )
+
+
+def test_publication_authority_rejects_validator_head_substitution(monkeypatch, tmp_path):
+    monkeypatch.setattr(release, "_read_exact_main_receipt", lambda _path: authority_receipt())
+    monkeypatch.setattr(
+        release,
+        "_load_current_main_replay_module",
+        lambda _root: type("Replay", (), {"validate_receipt": staticmethod(lambda value: None)}),
+    )
+    with pytest.raises(release.ReleaseError, match="signed current source-release authority"):
+        release.verify_exact_main_publication_authority(
+            ROOT, COMMIT, tmp_path / "receipt.json",
+            runner=live_publication_authority_runner(),
+            source_release_validator=lambda _root: {
+                "schemaVersion": "p42-source-release-evidence/v3",
+                "observedBranchHead": COMMIT,
+                "ci": {"runId": 123},
+                "derived": {"validatedHead": RELEASE_COMMIT},
+                "evidenceHash": "sha256:" + "7" * 64,
+            },
+        )
+
+
+def test_publication_authority_rejects_checkout_movement_during_validation(monkeypatch, tmp_path):
+    monkeypatch.setattr(release, "_read_exact_main_receipt", lambda _path: authority_receipt())
+    monkeypatch.setattr(
+        release,
+        "_load_current_main_replay_module",
+        lambda _root: type("Replay", (), {"validate_receipt": staticmethod(lambda value: None)}),
+    )
+    base_runner = live_publication_authority_runner()
+    head_reads = 0
+
+    def moving_runner(argv, **kwargs):
+        nonlocal head_reads
+        if argv[:3] == ["git", "rev-parse", "HEAD"]:
+            head_reads += 1
+            return completed(argv, (COMMIT if head_reads < 2 else RELEASE_COMMIT) + "\n")
+        return base_runner(argv, **kwargs)
+
+    with pytest.raises(release.ReleaseError, match="checkout changed"):
+        release.verify_exact_main_publication_authority(
+            ROOT, COMMIT, tmp_path / "receipt.json", runner=moving_runner,
+            source_release_validator=lambda _root: {
+                "schemaVersion": "p42-source-release-evidence/v3",
+                "observedBranchHead": COMMIT,
+                "ci": {"runId": 123},
+                "derived": {"validatedHead": COMMIT},
+                "evidenceHash": "sha256:" + "7" * 64,
+            },
+        )
+
+
+def test_authority_inputs_require_private_regular_canonical_receipt(tmp_path):
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text("{}\n", encoding="utf-8")
+    receipt.chmod(0o644)
+    with pytest.raises(release.ReleaseError, match="non-private|unsafe"):
+        release._read_exact_main_receipt(receipt)
+
+    fifo = tmp_path / "receipt.fifo"
+    os.mkfifo(fifo, 0o600)
+    with pytest.raises(release.ReleaseError, match="non-private|unsafe"):
+        release._read_exact_main_receipt(fifo)
+
+
+def test_github_authority_requires_slurped_page_array():
+    def runner(argv, **kwargs):
+        return completed(argv, '{"object":{"sha":"' + COMMIT + '"}}')
+
+    with pytest.raises(release.ReleaseError, match="slurped page array"):
+        release._gh_api_pages("endpoint", root=ROOT, runner=runner)
 
 
 def test_publish_requires_exact_main_receipt_before_registry_mutation(monkeypatch, tmp_path):
@@ -439,6 +652,32 @@ def test_publish_requires_exact_main_receipt_before_registry_mutation(monkeypatc
         release.release(
             root=ROOT, registry_base="ghcr.io/projectforty2/verifiers", commit=COMMIT,
             publish=True, output=tmp_path / "journal.json", runner=runner,
+        )
+    assert not any(call[0] == "docker" for call in calls)
+
+
+def test_publish_rejects_authority_change_before_first_registry_mutation(monkeypatch, tmp_path):
+    calls = []
+    initial = publication_authority()
+    changed = json.loads(json.dumps(initial))
+    changed["source_release_evidence_hash"] = "sha256:" + "8" * 64
+    changed["authority_hash"] = release._authority_hash(changed)
+    observations = iter((initial, changed))
+
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        if argv[0] == "docker":
+            raise AssertionError("registry mutation began after authority changed")
+        return completed(argv, COMMIT + "\n" if argv[1:3] == ["rev-parse", "HEAD"] else "")
+
+    monkeypatch.setattr(release, "compute_source_hash", lambda problem: SOURCE)
+    monkeypatch.setattr(release, "_prepare_frozen_context", lambda **kwargs: (ROOT, ARCHIVE))
+    with pytest.raises(release.ReleaseError, match="authority changed"):
+        release.release(
+            root=ROOT, registry_base="ghcr.io/projectforty2/verifiers", commit=COMMIT,
+            publish=True, output=tmp_path / "journal.json",
+            exact_main_ci_receipt=tmp_path / "receipt.json", runner=runner,
+            publication_authority_verifier=lambda *_args: next(observations),
         )
     assert not any(call[0] == "docker" for call in calls)
 
@@ -519,7 +758,7 @@ def test_release_replays_board_bindings_before_plan_or_publish(monkeypatch, tmp_
             publish=True, output=tmp_path / "release.json", runner=runner,
             board_binding_verifier=lambda root: verified.append(root),
             exact_main_ci_receipt=tmp_path / "receipt.json",
-            publication_authority_verifier=lambda *_args: {},
+            publication_authority_verifier=lambda *_args: publication_authority(),
         )
     assert verified == [ROOT.resolve(), ROOT]
 
@@ -540,6 +779,7 @@ def test_release_fails_closed_when_board_binding_replay_fails():
 
 def test_publish_mock_stops_at_complete_source_bound_journal(monkeypatch, tmp_path):
     calls = []
+    authority_calls = []
     def runner(argv, **kwargs):
         calls.append(argv)
         if argv[0] == "git":
@@ -574,7 +814,9 @@ def test_publish_mock_stops_at_complete_source_bound_journal(monkeypatch, tmp_pa
         root=ROOT, registry_base="ghcr.io/projectforty2/verifiers", commit=COMMIT,
         publish=True, output=output, exact_main_ci_receipt=tmp_path / "receipt.json",
         runner=runner, now=lambda: datetime(2026, 7, 11, tzinfo=timezone.utc),
-        publication_authority_verifier=lambda *_args: {},
+        publication_authority_verifier=lambda *_args: (
+            authority_calls.append(True) or publication_authority()
+        ),
     )
     raw = output.read_text()
     assert raw == release.canonical_json(journal) + "\n"
@@ -582,6 +824,8 @@ def test_publish_mock_stops_at_complete_source_bound_journal(monkeypatch, tmp_pa
     assert journal["schema_version"] == release.JOURNAL_SCHEMA_VERSION
     assert journal["verifier_source_commit"] == COMMIT
     assert all(board["state"] == "verified" for board in journal["boards"])
+    assert journal["publication_authority"] == publication_authority()
+    assert len(authority_calls) == 11
     assert release._validate_publish_journal(journal) == journal
     builds = [call for call in calls if call[:3] == ["docker", "buildx", "build"]]
     assert len(builds) == 10
@@ -672,6 +916,30 @@ def test_finalize_requires_rebuild_after_verifier_source_change(monkeypatch, tmp
             output=tmp_path / "must-not-exist.json",
             runner=lambda argv, **kwargs: completed(argv, ""),
             board_binding_verifier=lambda root: None,
+        )
+
+
+def test_finalize_requires_source_authority_release_ancestry(monkeypatch, tmp_path):
+    journal_path, journal, _boards = completed_journal(monkeypatch, tmp_path)
+    journal["publication_authority"]["authority_head"] = RELEASE_COMMIT
+    journal["publication_authority"]["authority_hash"] = release._authority_hash(
+        journal["publication_authority"]
+    )
+    journal["journal_hash"] = release._journal_hash(journal)
+    journal_path.write_text(release.canonical_json(journal) + "\n", encoding="utf-8")
+    monkeypatch.setattr(release, "require_clean_exact_commit", lambda *args, **kwargs: FINAL_COMMIT)
+
+    def runner(argv, **kwargs):
+        if argv[:3] == ["git", "merge-base", "--is-ancestor"]:
+            succeeds = argv[3:] == [COMMIT, RELEASE_COMMIT]
+            return completed(argv, "", 0 if succeeds else 1)
+        return completed(argv, "")
+
+    with pytest.raises(release.ReleaseError, match="source <= authority-head <= release-config"):
+        release.finalize_release_dossier(
+            root=ROOT, journal_path=journal_path, release_config_commit=FINAL_COMMIT,
+            output=tmp_path / "must-not-exist.json", runner=runner,
+            board_binding_verifier=lambda _root: None,
         )
 
 
@@ -822,7 +1090,11 @@ def test_restart_refuses_to_repush_a_building_board_without_durable_metadata(mon
     boards = release._board_inputs(ROOT, base)
     output = tmp_path / "publication.journal.json"
     journal_path = output
-    expected = release._build_publish_journal(boards=boards, verifier_source_commit=COMMIT, verifier_source_archive_digest=ARCHIVE, registry_base=base)
+    expected = release._build_publish_journal(
+        boards=boards, verifier_source_commit=COMMIT,
+        verifier_source_archive_digest=ARCHIVE, registry_base=base,
+        publication_authority=publication_authority(),
+    )
     journal, created = release._reserve_publish_journal(journal_path, expected)
     assert created
     output.with_name(output.name + ".publish-work").mkdir(mode=0o700)
@@ -839,7 +1111,7 @@ def test_restart_refuses_to_repush_a_building_board_without_durable_metadata(mon
         release.release(
             root=ROOT, registry_base=base, commit=COMMIT, publish=True, output=output,
             exact_main_ci_receipt=tmp_path / "receipt.json", runner=runner,
-            publication_authority_verifier=lambda *_args: {},
+            publication_authority_verifier=lambda *_args: publication_authority(),
         )
     assert all(call[0] == "git" for call in calls)
 

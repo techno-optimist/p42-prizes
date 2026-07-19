@@ -1486,15 +1486,16 @@ def _validate_portable_descriptor_receipt(board: Mapping[str, Any]) -> None:
 def validate_image_publication_journal(
     journal: Mapping[str, Any], *, dossier: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Validate a complete v2 image publication journal against its dossier."""
+    """Validate a complete authority-bound v3 publication journal."""
 
     root_keys = {
         "schema_version", "verifier_source_commit", "verifier_source_archive_digest",
-        "registry_base", "platforms", "generation", "boards", "journal_hash",
+        "publication_authority", "registry_base", "platforms", "generation", "boards",
+        "journal_hash",
     }
     if not isinstance(journal, Mapping) or set(journal) != root_keys:
         raise AdmissionError("publication journal root keys are invalid")
-    if journal.get("schema_version") != "p42-verifier-image-publish-journal/v2":
+    if journal.get("schema_version") != "p42-verifier-image-publish-journal/v3":
         raise AdmissionError("publication journal schema is invalid")
     if (
         journal.get("verifier_source_commit") != dossier.get("verifier_source_commit")
@@ -1514,6 +1515,129 @@ def validate_image_publication_journal(
         raise AdmissionError("publication journal self-hash mismatch")
     if journal_hash != dossier.get("publication_journal_hash"):
         raise AdmissionError("publication journal hash does not match the dossier")
+
+    authority = journal.get("publication_authority")
+    authority_keys = {
+        "schema", "commit", "authority_head", "receipt_hash", "source_release_evidence_hash",
+        "run", "pull_request", "approvers", "jobs", "artifacts", "authority_hash",
+    }
+    if (
+        not isinstance(authority, Mapping)
+        or set(authority) != authority_keys
+        or authority.get("schema") != "p42-verifier-image-publication-authority/v1"
+        or authority.get("commit") != journal["verifier_source_commit"]
+        or not isinstance(authority.get("authority_head"), str)
+        or re.fullmatch(r"[0-9a-f]{40}", authority["authority_head"]) is None
+        or not SOLUTION_HASH_RE.fullmatch(authority.get("receipt_hash") or "")
+        or not SOLUTION_HASH_RE.fullmatch(authority.get("source_release_evidence_hash") or "")
+        or not isinstance(authority.get("approvers"), list)
+        or not authority["approvers"]
+        or not isinstance(authority.get("jobs"), list)
+        or len(authority["jobs"]) != 7
+        or not isinstance(authority.get("artifacts"), list)
+        or len(authority["artifacts"]) != 10
+    ):
+        raise AdmissionError("publication journal authority is invalid or incomplete")
+    unsigned_authority = dict(authority)
+    supplied_authority_hash = unsigned_authority.pop("authority_hash", None)
+    if supplied_authority_hash != sha256_bytes(canonical_json(unsigned_authority).encode("utf-8")):
+        raise AdmissionError("publication journal authority hash mismatch")
+    authority_run = authority.get("run")
+    authority_pr = authority.get("pull_request")
+    if (
+        not isinstance(authority_run, Mapping)
+        or set(authority_run) != {"id", "attempt", "workflow_id"}
+        or not isinstance(authority_run.get("id"), int)
+        or isinstance(authority_run.get("id"), bool)
+        or authority_run["id"] < 1
+        or not isinstance(authority_run.get("attempt"), int)
+        or isinstance(authority_run.get("attempt"), bool)
+        or authority_run["attempt"] < 1
+        or authority_run.get("workflow_id") != 310385148
+        or not isinstance(authority_pr, Mapping)
+        or set(authority_pr) != {"number", "head_sha", "merged_at"}
+        or not isinstance(authority_pr.get("number"), int)
+        or isinstance(authority_pr.get("number"), bool)
+        or authority_pr["number"] < 1
+        or not isinstance(authority_pr.get("head_sha"), str)
+        or re.fullmatch(r"[0-9a-f]{40}", authority_pr["head_sha"]) is None
+        or not isinstance(authority_pr.get("merged_at"), str)
+        or not authority_pr["merged_at"]
+    ):
+        raise AdmissionError("publication journal run or pull-request authority is invalid")
+    approver_keys = {"login", "review_id", "commit_id", "submitted_at", "permission"}
+    approvers = authority["approvers"]
+    if (
+        any(not isinstance(item, Mapping) or set(item) != approver_keys for item in approvers)
+        or len({item.get("login") for item in approvers}) != len(approvers)
+        or len({item.get("review_id") for item in approvers}) != len(approvers)
+        or any(
+            not isinstance(item.get("login"), str)
+            or not item["login"]
+            or not isinstance(item.get("review_id"), int)
+            or isinstance(item.get("review_id"), bool)
+            or item["review_id"] < 1
+            or item.get("commit_id") != authority_pr["head_sha"]
+            or not isinstance(item.get("submitted_at"), str)
+            or not item["submitted_at"]
+            or item.get("permission") not in {"admin", "maintain", "write"}
+            for item in approvers
+        )
+    ):
+        raise AdmissionError("publication journal approver authority is invalid")
+    required_jobs = {
+        "Python verifier gates", "Autonomous agent gates", "Portal gates",
+        "Contract gates", "SP1 objective-program gates (ubuntu-22.04)",
+        "SP1 objective-program gates (ubuntu-24.04)",
+        "SP1 objective-program reproducibility",
+    }
+    job_keys = {"id", "name", "status", "conclusion", "runId", "headSha"}
+    jobs = authority["jobs"]
+    if (
+        any(not isinstance(item, Mapping) or set(item) != job_keys for item in jobs)
+        or {item.get("name") for item in jobs} != required_jobs
+        or len({item.get("id") for item in jobs}) != len(jobs)
+        or any(
+            not isinstance(item.get("id"), int)
+            or isinstance(item.get("id"), bool)
+            or item["id"] < 1
+            or item.get("status") != "completed"
+            or item.get("conclusion") != "success"
+            or item.get("runId") != authority_run["id"]
+            or item.get("headSha") != authority["commit"]
+            for item in jobs
+        )
+    ):
+        raise AdmissionError("publication journal CI job authority is invalid")
+    artifact_keys = {
+        "id", "name", "sizeInBytes", "digest", "expired", "workflowRun",
+    }
+    workflow_keys = {"id", "headBranch", "headSha"}
+    artifacts = authority["artifacts"]
+    if (
+        any(not isinstance(item, Mapping) or set(item) != artifact_keys for item in artifacts)
+        or len({item.get("id") for item in artifacts}) != len(artifacts)
+        or len({item.get("name") for item in artifacts}) != len(artifacts)
+        or any(
+            not isinstance(item.get("id"), int)
+            or isinstance(item.get("id"), bool)
+            or item["id"] < 1
+            or not isinstance(item.get("name"), str)
+            or not item["name"]
+            or not isinstance(item.get("sizeInBytes"), int)
+            or isinstance(item.get("sizeInBytes"), bool)
+            or item["sizeInBytes"] < 1
+            or not SOLUTION_HASH_RE.fullmatch(item.get("digest") or "")
+            or item.get("expired") is not False
+            or not isinstance(item.get("workflowRun"), Mapping)
+            or set(item["workflowRun"]) != workflow_keys
+            or item["workflowRun"].get("id") != authority_run["id"]
+            or item["workflowRun"].get("headBranch") != "main"
+            or item["workflowRun"].get("headSha") != authority["commit"]
+            for item in artifacts
+        )
+    ):
+        raise AdmissionError("publication journal artifact authority is invalid")
 
     journal_boards = journal.get("boards")
     dossier_boards = dossier.get("boards")
@@ -1674,14 +1798,17 @@ def validate_image_release_checkout(
     )
     release_commit = checked_dossier["release_config_commit"]
     source_commit = checked_dossier["verifier_source_commit"]
+    authority_commit = journal["publication_authority"]["authority_head"]
     head = _git_checked(checkout, "rev-parse", "HEAD")
     if head != release_commit:
         raise AdmissionError("checkout HEAD does not match the dossier release-config commit")
     if _git_checked(checkout, "status", "--porcelain", "--untracked-files=all"):
         raise AdmissionError("portable dossier validation requires a clean checkout")
     _git_checked(checkout, "cat-file", "-e", f"{source_commit}^{{commit}}")
+    _git_checked(checkout, "cat-file", "-e", f"{authority_commit}^{{commit}}")
     _git_checked(checkout, "cat-file", "-e", f"{release_commit}^{{commit}}")
-    _git_checked(checkout, "merge-base", "--is-ancestor", source_commit, release_commit)
+    _git_checked(checkout, "merge-base", "--is-ancestor", source_commit, authority_commit)
+    _git_checked(checkout, "merge-base", "--is-ancestor", authority_commit, release_commit)
 
     verify_bindings = board_binding_verifier or (
         lambda snapshot: _replay_exact_ten_bindings(checkout, snapshot)

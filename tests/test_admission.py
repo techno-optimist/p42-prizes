@@ -791,10 +791,24 @@ def _portable_release_fixture(tmp_path: Path) -> tuple[Path, dict, Path, str]:
             "metadata_digest": "sha256:" + "9" * 64,
             "release_record": release_record,
         })
+    publication_authority = {
+        "schema": "p42-verifier-image-publication-authority/v1",
+        "commit": source_commit,
+        "authority_head": source_commit,
+        "receipt_hash": "sha256:" + "6" * 64,
+        "source_release_evidence_hash": "sha256:" + "7" * 64,
+        "run": {"id": 123, "attempt": 1, "workflow_id": 310385148},
+        "pull_request": {"number": 178, "head_sha": release_commit, "merged_at": "2026-07-19T13:00:00Z"},
+        "approvers": [{"login": "reviewer", "review_id": 3000, "commit_id": release_commit, "submitted_at": "2026-07-19T12:00:00Z", "permission": "write"}],
+        "jobs": [{"id": index + 1000, "name": name, "status": "completed", "conclusion": "success", "runId": 123, "headSha": source_commit} for index, name in enumerate(("Autonomous agent gates", "Contract gates", "Portal gates", "Python verifier gates", "SP1 objective-program gates (ubuntu-22.04)", "SP1 objective-program gates (ubuntu-24.04)", "SP1 objective-program reproducibility"))],
+        "artifacts": [{"id": index + 2000, "name": f"artifact-{index}", "sizeInBytes": index + 1, "digest": f"sha256:{index + 1:064x}", "expired": False, "workflowRun": {"id": 123, "headBranch": "main", "headSha": source_commit}} for index in range(10)],
+    }
+    publication_authority["authority_hash"] = sha256_bytes(canonical_json(publication_authority).encode("utf-8"))
     journal = {
-        "schema_version": "p42-verifier-image-publish-journal/v2",
+        "schema_version": "p42-verifier-image-publish-journal/v3",
         "verifier_source_commit": source_commit,
         "verifier_source_archive_digest": source_archive,
+        "publication_authority": publication_authority,
         "registry_base": registry,
         "platforms": ["linux/amd64", "linux/arm64"],
         "generation": 20,
@@ -922,7 +936,7 @@ def test_portable_release_validator_rejects_unrelated_same_tree_source_commit(
     dossier.pop("dossier_hash")
     dossier["dossier_hash"] = sha256_bytes(canonical_json(dossier).encode("utf-8"))
 
-    with pytest.raises(AdmissionError, match="merge-base"):
+    with pytest.raises(AdmissionError, match="authority"):
         admission.validate_image_release_checkout(
             root,
             dossier,

@@ -107,7 +107,7 @@ const imageDossier = (slate) => {
   }));
 };
 const publicationJournal = (dossier) => ({
-  schema_version: "p42-verifier-image-publish-journal/v2",
+  schema_version: "p42-verifier-image-publish-journal/v3",
   verifier_source_commit: dossier.verifier_source_commit,
   journal_hash: dossier.publication_journal_hash,
 });

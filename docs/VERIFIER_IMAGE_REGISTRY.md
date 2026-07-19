@@ -27,11 +27,20 @@ PYTHONPATH=src python3 scripts/release_verifier_images.py \
 
 Publication is deliberately explicit and all-ten. It is disabled on candidate
 branches: before any registry mutation, the tool replays a canonical v3
-current-main CI receipt and then uses authenticated GitHub API reads to prove
-that `S` is the current canonical `main`, the receipt names its successful exact
-seven-job push workflow, the source PR merged to that commit, and a distinct
-authorized collaborator approved it. Caller-supplied capture bytes alone are
-not treated as GitHub authentication. It then performs one
+current-main CI receipt, requires the externally ratified v3 source-release
+authority for the same source commit and run, and then uses authenticated
+GitHub API reads to prove that the clean authority checkout is current
+canonical `main`. `S` is the authority's `observedBranchHead`; current main may
+be a later evidence-publication head `E`, but the signed source-release validator
+permits only its closed evidence-only tail paths. Images are always archived
+and built from `S`, never from `E`. The journal binds both identities, and
+finalization plus portable admission require canonical ancestry `S <= E <= R`.
+Live job IDs and all
+ten artifact IDs, names, sizes, digests, expiry states, and workflow bindings
+must exactly match the retained receipt. The source PR must have merged to that
+commit, and a distinct current write/maintain/admin collaborator must have
+approved its exact final head before merge. Caller-supplied capture bytes alone
+are not treated as GitHub authentication. It then performs one
 `docker buildx build --platform linux/amd64,linux/arm64 --push` per board with
 implicit provenance descriptors disabled, records Buildx's authoritative
 `containerimage.digest`, cryptographically walks the raw registry index through
@@ -82,7 +91,9 @@ raw-body` command using the operator's normal registry credential store; they
 are not inferred from an `imagetools` projection.
 
 Before the first push, publish mode durably reserves the exact ten-board plan
-in the requested journal. Each board transitions from `planned` to `building`
+and the complete authority snapshot in the requested v3 journal. Authority is
+revalidated immediately before each canonical board mutation and must remain
+byte-identical to the frozen snapshot. Each board transitions from `planned` to `building`
 before Buildx starts, retains its exact metadata in a private 0700 work
 directory, and reaches `verified` only after registry digest-chain validation.
 Journal updates are canonical, fsynced, generation-hashed, and serialized with
