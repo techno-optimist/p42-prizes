@@ -170,8 +170,11 @@ The disk-backed JSON state is still a Phase 0 demo ledger only. Real settlement 
 Health check path:
 
 ```bash
-/prizes
+/prizes/api/health
 ```
+
+This endpoint returns success only when the runtime PostgreSQL role can reach
+the validated schema and its singleton portal-state row exists.
 
 ### Release Contract
 
@@ -208,14 +211,30 @@ make verify-render-release P42_GIT_REMOTE=github
 
 The service root is `web/`, so Render correctly skips docs-only and
 release-tooling-only commits. If a `web/` or `render.yaml` change is missing or
-failed, agents may request a recovery build, then must run the guard again:
+failed, capture the one live deployment, pin the exact fetched `main` commit,
+reject a moving branch, and run the guard after the recovery build:
 
 ```bash
-render deploys create srv-d96pokeq1p3s73foqk60 --wait --confirm
+SERVICE=srv-d96pokeq1p3s73foqk60
+git fetch --quiet origin main
+TARGET=$(git rev-parse origin/main)
+PREVIOUS=$(render deploys list "$SERVICE" --output json |
+  jq -er '[.[] | select(.status=="live")] | if length==1 then .[0].commit.id else error("live deploy count") end')
+test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "$TARGET"
+render deploys create "$SERVICE" --commit "$TARGET" --wait --confirm
+test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "$TARGET"
+make verify-render-release
 ```
 
 The guard runs those smoke checks itself and only reports success after the
-metadata and routes agree.
+metadata and routes agree. If the exact deployment fails and database identity
+has not been rolled backward, restore the captured application commit and run
+the same guard:
+
+```bash
+render deploys create "$SERVICE" --commit "$PREVIOUS" --wait --confirm
+node scripts/verify-render-release.mjs --expected-live-commit "$PREVIOUS"
+```
 
 ## Observatory Proxy
 

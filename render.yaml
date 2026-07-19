@@ -9,7 +9,7 @@ services:
     startCommand: npm run db:migrate && exec env -u P42_PORTAL_MIGRATION_DATABASE_URL npm run start:prizes
     plan: starter
     region: oregon
-    healthCheckPath: /prizes
+    healthCheckPath: /prizes/api/health
     envVars:
       - key: NEXT_PUBLIC_BASE_PATH
         value: /prizes

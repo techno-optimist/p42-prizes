@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import zipfile
 
 import jsonschema
 import pytest
@@ -12,7 +13,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/replay_current_main_ci_artifacts.py"
-SCHEMA = ROOT / "docs/operations/schemas/exact-main-ci-artifact-replay-v2.schema.json"
+SCHEMA = ROOT / "docs/operations/schemas/exact-main-ci-artifact-replay-v3.schema.json"
 HISTORICAL_SCRIPT = ROOT / "scripts/replay_exact_main_ci_artifacts.py"
 HISTORICAL_RECEIPT = ROOT / "docs/evidence/exact-main-ci-artifact-replay-29645758684.json"
 REPOSITORY = "techno-optimist/p42-prizes"
@@ -48,6 +49,13 @@ def capture(replay):
     ]
     return {
         "capturedAt": "2026-07-19T08:00:00Z",
+        "mainRef": {"ref": "refs/heads/main", "object": {"type": "commit", "sha": SHA}},
+        "pullRequest": {
+            "number": 178, "state": "closed", "merged": True,
+            "merged_at": "2026-07-19T07:59:00Z", "merge_commit_sha": SHA,
+            "base": {"ref": "main", "repo": {"id": 10, "full_name": REPOSITORY}},
+            "head": {"sha": "b" * 40, "repo": {"id": 10, "full_name": REPOSITORY}},
+        },
         "run": {
             "id": RUN_ID, "event": "push", "head_branch": "main", "head_sha": SHA,
             "status": "completed", "conclusion": "success",
@@ -69,7 +77,7 @@ def test_historical_generator_and_receipt_remain_immutable() -> None:
 
 
 def test_capture_derives_exact_ten_names_and_ids(replay, capture) -> None:
-    retained = replay.validate_capture(capture, REPOSITORY, RUN_ID, SHA)
+    retained = replay.validate_capture(capture, REPOSITORY, RUN_ID, SHA, 178)
     assert {item["name"] for item in retained["artifactApiRecords"]} == set(replay.expected_artifacts(RUN_ID))
     assert {item["id"] for item in retained["artifactApiRecords"]} == set(range(9001, 9011))
 
@@ -82,6 +90,10 @@ def test_capture_derives_exact_ten_names_and_ids(replay, capture) -> None:
     (lambda x: x["run"].update(conclusion="failure"), "run.conclusion"),
     (lambda x: x["run"]["head_repository"].update(full_name="fork/repo"), "foreign head"),
     (lambda x: x["run"].update(workflow_id=1), "pinned CI workflow"),
+    (lambda x: x["mainRef"]["object"].update(sha="b" * 40), "refs/heads/main"),
+    (lambda x: x["pullRequest"].update(merged=False), "must be merged"),
+    (lambda x: x["pullRequest"].update(merge_commit_sha="b" * 40), "merge commit"),
+    (lambda x: x["pullRequest"]["base"]["repo"].update(id=11), "foreign pull-request|repository ID"),
     (lambda x: x["jobs"]["jobs"][0].update(status="in_progress"), "must be completed"),
     (lambda x: x["jobs"].update(total_count=8), "fully paginated"),
     (lambda x: x["jobs"]["jobs"].pop(), "fully paginated|exact seven"),
@@ -93,18 +105,18 @@ def test_capture_rejects_non_main_wrong_sha_and_incomplete_records(replay, captu
     hostile = deepcopy(capture)
     mutation(hostile)
     with pytest.raises(replay.ReplayError, match=message):
-        replay.validate_capture(hostile, REPOSITORY, RUN_ID, SHA)
+        replay.validate_capture(hostile, REPOSITORY, RUN_ID, SHA, 178)
 
 
 def test_capture_rejects_substituted_name_and_duplicate_id(replay, capture) -> None:
     hostile = deepcopy(capture)
     hostile["artifacts"]["artifacts"][0]["name"] = "caller-approved-but-not-expected"
     with pytest.raises(replay.ReplayError, match="exact expected ten"):
-        replay.validate_capture(hostile, REPOSITORY, RUN_ID, SHA)
+        replay.validate_capture(hostile, REPOSITORY, RUN_ID, SHA, 178)
     hostile = deepcopy(capture)
     hostile["artifacts"]["artifacts"][1]["id"] = hostile["artifacts"]["artifacts"][0]["id"]
     with pytest.raises(replay.ReplayError, match="IDs are not unique"):
-        replay.validate_capture(hostile, REPOSITORY, RUN_ID, SHA)
+        replay.validate_capture(hostile, REPOSITORY, RUN_ID, SHA, 178)
 
 
 def write_artifacts(replay, root: Path) -> None:
@@ -133,10 +145,25 @@ def write_artifacts(replay, root: Path) -> None:
             (directory / "resource.json").write_text(json.dumps(resource))
 
 
+def write_archives(replay, root: Path, capture: dict, tmp_path: Path) -> None:
+    extracted = tmp_path / "archive-source"
+    extracted.mkdir()
+    write_artifacts(replay, extracted)
+    records = {item["name"]: item for item in capture["artifacts"]["artifacts"]}
+    for name in sorted(replay.expected_artifacts(RUN_ID)):
+        archive_path = root / f"{name}.zip"
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as handle:
+            for path in sorted((extracted / name).iterdir()):
+                handle.write(path, arcname=path.name)
+        archive = archive_path.read_bytes()
+        records[name]["size_in_bytes"] = len(archive)
+        records[name]["digest"] = replay.sha256_bytes(archive)
+
+
 def test_offline_replay_emits_canonical_self_hashed_receipt(replay, capture, monkeypatch, tmp_path: Path) -> None:
-    artifact_root = tmp_path / "artifacts"
-    artifact_root.mkdir()
-    write_artifacts(replay, artifact_root)
+    archive_root = tmp_path / "archives"
+    archive_root.mkdir()
+    write_archives(replay, archive_root, capture, tmp_path)
     capture_path = tmp_path / "capture.json"
     capture_path.write_text(json.dumps(capture))
     monkeypatch.setattr(replay, "bind_replay_sources", lambda repo, sha: (
@@ -145,13 +172,17 @@ def test_offline_replay_emits_canonical_self_hashed_receipt(replay, capture, mon
         b"verifier", {},
     ))
     monkeypatch.setattr(replay.hostile, "semantic_replay", lambda *args: None)
-    receipt = replay.replay(REPOSITORY, RUN_ID, SHA, artifact_root, capture_path, tmp_path)
+    receipt = replay.replay(REPOSITORY, RUN_ID, SHA, 178, archive_root, capture_path, tmp_path)
     replay.validate_receipt(receipt)
     jsonschema.Draft202012Validator(json.loads(SCHEMA.read_text())).validate(receipt)
     unsigned = dict(receipt)
     supplied = unsigned.pop("receiptHash")
     assert supplied == replay.sha256_bytes(replay.canonical_json(unsigned).encode())
     assert receipt["githubCapture"]["captureFileSha256"] == replay.sha256_bytes(capture_path.read_bytes())
+    assert receipt["checks"]["capturedDigestMatchedDownloadedArchive"] is True
+    assert receipt["nonClaims"]["githubCaptureAuthenticated"] is False
+    assert receipt["githubCapture"]["mainRef"]["sha"] == SHA
+    assert receipt["githubCapture"]["pullRequest"]["mergeCommitSha"] == SHA
     hostile = deepcopy(receipt)
     hostile["artifacts"][0]["artifactId"] += 1
     hostile_unsigned = dict(hostile)
@@ -175,7 +206,91 @@ def test_artifact_root_rejects_extra_directory(replay, tmp_path: Path) -> None:
         replay.capture_artifact_snapshot(tmp_path, names)
 
 
-def test_v2_schema_is_closed_and_valid() -> None:
+def test_archive_root_rejects_extra_file_and_digest_mismatch(replay, capture, tmp_path: Path) -> None:
+    archive_root = tmp_path / "archives"
+    archive_root.mkdir()
+    write_archives(replay, archive_root, capture, tmp_path)
+    (archive_root / "caller-extra.zip").write_bytes(b"extra")
+    with pytest.raises(replay.ReplayError, match="exactly.*ten ZIP"):
+        replay.read_archive_set(archive_root, set(replay.expected_artifacts(RUN_ID)))
+    (archive_root / "caller-extra.zip").unlink()
+    archives = replay.read_archive_set(archive_root, set(replay.expected_artifacts(RUN_ID)))
+    api_by_name = {
+        item["name"]: {
+            "digest": item["digest"],
+            "sizeInBytes": item["size_in_bytes"],
+        }
+        for item in capture["artifacts"]["artifacts"]
+    }
+    first = sorted(archives)[0]
+    archives[first] += b"tamper"
+    with pytest.raises(replay.ReplayError, match="digest does not match"):
+        replay.extract_verified_archives(
+            archives,
+            api_by_name,
+            replay.expected_artifacts(RUN_ID),
+            tmp_path / "tampered-extraction",
+        )
+
+
+def test_archive_replay_enforces_aggregate_resource_bounds(replay, capture, monkeypatch, tmp_path: Path) -> None:
+    archive_root = tmp_path / "archives"
+    archive_root.mkdir()
+    write_archives(replay, archive_root, capture, tmp_path)
+    monkeypatch.setattr(replay, "MAX_TOTAL_ARCHIVE_BYTES", 1)
+    with pytest.raises(replay.ReplayError, match="aggregate archive size"):
+        replay.read_archive_set(archive_root, set(replay.expected_artifacts(RUN_ID)))
+
+    monkeypatch.setattr(replay, "MAX_TOTAL_ARCHIVE_BYTES", 1024 * 1024 * 1024)
+    archives = replay.read_archive_set(archive_root, set(replay.expected_artifacts(RUN_ID)))
+    api_by_name = {
+        item["name"]: {
+            "digest": item["digest"],
+            "sizeInBytes": item["size_in_bytes"],
+        }
+        for item in capture["artifacts"]["artifacts"]
+    }
+    monkeypatch.setattr(replay, "MAX_TOTAL_EXTRACTED_BYTES", 1)
+    with pytest.raises(replay.ReplayError, match="aggregate extracted ZIP size"):
+        replay.extract_verified_archives(
+            archives,
+            api_by_name,
+            replay.expected_artifacts(RUN_ID),
+            tmp_path / "bounded-extraction",
+        )
+
+
+def test_verified_extraction_rejects_unsafe_member(replay, capture, tmp_path: Path) -> None:
+    archive_root = tmp_path / "archives"
+    archive_root.mkdir()
+    write_archives(replay, archive_root, capture, tmp_path)
+    archives = replay.read_archive_set(archive_root, set(replay.expected_artifacts(RUN_ID)))
+    first = sorted(archives)[0]
+    malicious_path = archive_root / "malicious.zip"
+    with zipfile.ZipFile(malicious_path, "w") as handle:
+        handle.writestr("../escape", b"blocked")
+    archives[first] = malicious_path.read_bytes()
+    api_by_name = {
+        item["name"]: {
+            "digest": item["digest"],
+            "sizeInBytes": item["size_in_bytes"],
+        }
+        for item in capture["artifacts"]["artifacts"]
+    }
+    api_by_name[first] = {
+        "digest": replay.sha256_bytes(archives[first]),
+        "sizeInBytes": len(archives[first]),
+    }
+    with pytest.raises(replay.ReplayError, match="unsafe or unexpected"):
+        replay.extract_verified_archives(
+            archives,
+            api_by_name,
+            replay.expected_artifacts(RUN_ID),
+            tmp_path / "unsafe-extraction",
+        )
+
+
+def test_v3_schema_is_closed_and_valid() -> None:
     schema = json.loads(SCHEMA.read_text())
     jsonschema.Draft202012Validator.check_schema(schema)
     assert schema["additionalProperties"] is False

@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.ai/schemas/exact-main-ci-artifact-replay-v3.schema.json",
+  "title": "P42 current-main exact CI artifact replay receipt v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "result", "inputs", "githubCapture", "verifier", "tooling", "directoryDigestAlgorithm", "artifacts", "programs", "provenance", "checks", "nonClaims", "limitations", "receiptHash"],
+  "properties": {
+    "schema": { "const": "p42-prizes/exact-main-ci-artifact-replay/v3" },
+    "result": { "const": "captured-current-main-exact-ci-artifact-replay-validated" },
+    "inputs": {
+      "type": "object", "additionalProperties": false, "required": ["repository", "runId", "mainSha", "pullRequestNumber"],
+      "properties": { "repository": { "$ref": "#/$defs/repository" }, "runId": { "$ref": "#/$defs/positiveInteger" }, "mainSha": { "$ref": "#/$defs/sha" }, "pullRequestNumber": { "$ref": "#/$defs/positiveInteger" } }
+    },
+    "githubCapture": {
+      "type": "object", "additionalProperties": false,
+      "required": ["capturedAt", "mainRef", "pullRequest", "run", "jobs", "artifactApiRecords", "capturedArtifactCount", "captureFileSha256"],
+      "properties": {
+        "capturedAt": { "type": "string", "minLength": 1 },
+        "captureFileSha256": { "$ref": "#/$defs/digest" },
+        "capturedArtifactCount": { "type": "integer", "minimum": 10 },
+        "mainRef": { "type": "object", "additionalProperties": false, "required": ["ref", "objectType", "sha"], "properties": { "ref": { "const": "refs/heads/main" }, "objectType": { "const": "commit" }, "sha": { "$ref": "#/$defs/sha" } } },
+        "pullRequest": { "type": "object", "additionalProperties": false, "required": ["number", "state", "merged", "mergedAt", "mergeCommitSha", "headSha", "baseRef", "repository", "repositoryId"], "properties": { "number": { "$ref": "#/$defs/positiveInteger" }, "state": { "const": "closed" }, "merged": { "const": true }, "mergedAt": { "type": "string", "minLength": 1 }, "mergeCommitSha": { "$ref": "#/$defs/sha" }, "headSha": { "$ref": "#/$defs/sha" }, "baseRef": { "const": "main" }, "repository": { "$ref": "#/$defs/repository" }, "repositoryId": { "$ref": "#/$defs/positiveInteger" } } },
+        "run": {
+          "type": "object", "additionalProperties": false,
+          "required": ["id", "event", "headBranch", "headSha", "status", "conclusion", "repository", "repositoryId", "headRepositoryId", "workflowId", "runAttempt"],
+          "properties": {
+            "id": { "$ref": "#/$defs/positiveInteger" }, "event": { "const": "push" }, "headBranch": { "const": "main" }, "headSha": { "$ref": "#/$defs/sha" },
+            "status": { "const": "completed" }, "conclusion": { "const": "success" }, "repository": { "$ref": "#/$defs/repository" },
+            "repositoryId": { "$ref": "#/$defs/positiveInteger" }, "headRepositoryId": { "$ref": "#/$defs/positiveInteger" }, "workflowId": { "const": 310385148 }, "runAttempt": { "$ref": "#/$defs/positiveInteger" }
+          }
+        },
+        "jobs": { "type": "array", "minItems": 7, "maxItems": 7, "items": { "$ref": "#/$defs/job" } },
+        "artifactApiRecords": { "type": "array", "minItems": 10, "maxItems": 10, "items": { "$ref": "#/$defs/artifactApiRecord" } }
+      }
+    },
+    "verifier": {
+      "type": "object", "additionalProperties": false, "required": ["path", "sourceCommit", "gitBlobSha1", "sha256", "candidateSourceFiles"],
+      "properties": { "path": { "const": "scripts/verify-sp1-objective-reproduction.py" }, "sourceCommit": { "$ref": "#/$defs/sha" }, "gitBlobSha1": { "$ref": "#/$defs/gitBlob" }, "sha256": { "$ref": "#/$defs/digest" }, "candidateSourceFiles": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/sourceFile" } } }
+    },
+    "tooling": {
+      "type": "object", "additionalProperties": false, "required": ["generator", "schema", "hostileChecks"],
+      "properties": { "generator": { "$ref": "#/$defs/toolFile" }, "schema": { "$ref": "#/$defs/toolFile" }, "hostileChecks": { "$ref": "#/$defs/toolFile" } }
+    },
+    "directoryDigestAlgorithm": { "const": "sha256(canonical-json(file records sorted by name))" },
+    "artifacts": { "type": "array", "minItems": 10, "maxItems": 10, "items": { "$ref": "#/$defs/artifact" } },
+    "programs": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "$ref": "#/$defs/program" } },
+    "provenance": {
+      "type": "object", "additionalProperties": false, "required": ["classification", "identity", "pairwiseExactBytes", "sha256", "directorySha256"],
+      "properties": { "classification": { "const": "untrusted-candidate" }, "identity": { "$ref": "#/$defs/provenanceIdentity" }, "pairwiseExactBytes": { "const": true }, "sha256": { "$ref": "#/$defs/digest" }, "directorySha256": { "$ref": "#/$defs/digestPair" } }
+    },
+    "checks": {
+      "type": "object", "additionalProperties": false,
+      "required": ["captureReportsPushMainSuccess", "captureReportsCurrentMainRef", "captureReportsMergedPullRequest", "completeJobsCapture", "exactArtifactNames", "capturedArtifactMetadataBound", "capturedDigestMatchedDownloadedArchive", "stableNoFollowSnapshot", "exactFileInventories", "semanticReplay", "pairwiseExactBytes", "identityElfBinding", "sourceCommitBinding", "toolingBytesBound"],
+      "properties": { "captureReportsPushMainSuccess": { "const": true }, "captureReportsCurrentMainRef": { "const": true }, "captureReportsMergedPullRequest": { "const": true }, "completeJobsCapture": { "const": true }, "exactArtifactNames": { "const": true }, "capturedArtifactMetadataBound": { "const": true }, "capturedDigestMatchedDownloadedArchive": { "const": true }, "stableNoFollowSnapshot": { "const": true }, "exactFileInventories": { "const": true }, "semanticReplay": { "const": true }, "pairwiseExactBytes": { "const": true }, "identityElfBinding": { "const": true }, "sourceCommitBinding": { "const": true }, "toolingBytesBound": { "const": true } }
+    },
+    "nonClaims": { "type": "object", "additionalProperties": false, "required": ["githubCaptureAuthenticated", "githubSignature", "transparencyLogInclusion", "independentOperator"], "properties": { "githubCaptureAuthenticated": { "const": false }, "githubSignature": { "const": false }, "transparencyLogInclusion": { "const": false }, "independentOperator": { "const": false } } },
+    "limitations": { "type": "string", "minLength": 1 },
+    "receiptHash": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "positiveInteger": { "type": "integer", "minimum": 1 },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "gitBlob": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "bytes32": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
+    "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+    "toolFile": { "type": "object", "additionalProperties": false, "required": ["path", "sha256", "size"], "properties": { "path": { "type": "string", "minLength": 1 }, "sha256": { "$ref": "#/$defs/digest" }, "size": { "$ref": "#/$defs/positiveInteger" } } },
+    "sourceFile": { "type": "object", "additionalProperties": false, "required": ["path", "gitBlobSha1", "sha256", "size"], "properties": { "path": { "type": "string", "minLength": 1 }, "gitBlobSha1": { "$ref": "#/$defs/gitBlob" }, "sha256": { "$ref": "#/$defs/digest" }, "size": { "$ref": "#/$defs/positiveInteger" } } },
+    "job": { "type": "object", "additionalProperties": false, "required": ["id", "name", "status", "conclusion", "runId", "headSha"], "properties": { "id": { "$ref": "#/$defs/positiveInteger" }, "name": { "enum": ["Python verifier gates", "Autonomous agent gates", "Portal gates", "Contract gates", "SP1 objective-program gates (ubuntu-22.04)", "SP1 objective-program gates (ubuntu-24.04)", "SP1 objective-program reproducibility"] }, "status": { "const": "completed" }, "conclusion": { "const": "success" }, "runId": { "$ref": "#/$defs/positiveInteger" }, "headSha": { "$ref": "#/$defs/sha" } } },
+    "workflowRun": { "type": "object", "additionalProperties": false, "required": ["id", "headBranch", "headSha"], "properties": { "id": { "$ref": "#/$defs/positiveInteger" }, "headBranch": { "const": "main" }, "headSha": { "$ref": "#/$defs/sha" } } },
+    "artifactApiRecord": { "type": "object", "additionalProperties": false, "required": ["id", "name", "sizeInBytes", "digest", "expired", "workflowRun"], "properties": { "id": { "$ref": "#/$defs/positiveInteger" }, "name": { "$ref": "#/$defs/artifactName" }, "sizeInBytes": { "$ref": "#/$defs/positiveInteger" }, "digest": { "$ref": "#/$defs/digest" }, "expired": { "const": false }, "workflowRun": { "$ref": "#/$defs/workflowRun" } } },
+    "file": { "type": "object", "additionalProperties": false, "required": ["name", "sha256", "size"], "properties": { "name": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" }, "sha256": { "$ref": "#/$defs/digest" }, "size": { "$ref": "#/$defs/positiveInteger" } } },
+    "artifactName": { "type": "string", "pattern": "^p42-validated-(distinct-subset-sums-a11-x86-elf|hadamard-668-x86-elf|q6-candidate|edges-candidate|sp1-build-provenance)-ubuntu-(22\\.04|24\\.04)-[1-9][0-9]*$" },
+    "artifact": { "type": "object", "additionalProperties": false, "required": ["artifactId", "name", "subject", "runnerImage", "capturedArchiveDigest", "downloadedArchiveSha256", "downloadedArchiveSizeInBytes", "capturedDigestMatchedDownloadedArchive", "files", "directorySha256"], "properties": { "artifactId": { "$ref": "#/$defs/positiveInteger" }, "name": { "$ref": "#/$defs/artifactName" }, "subject": { "enum": ["distinct-subset-sums-a11", "hadamard-668-defect", "q6-intersecting-hypergraph", "edges-vs-triangles", "sp1-build-provenance"] }, "runnerImage": { "enum": ["ubuntu-22.04", "ubuntu-24.04"] }, "capturedArchiveDigest": { "$ref": "#/$defs/digest" }, "downloadedArchiveSha256": { "$ref": "#/$defs/digest" }, "downloadedArchiveSizeInBytes": { "$ref": "#/$defs/positiveInteger" }, "capturedDigestMatchedDownloadedArchive": { "const": true }, "files": { "type": "array", "minItems": 1, "maxItems": 5, "items": { "$ref": "#/$defs/file" } }, "directorySha256": { "$ref": "#/$defs/digest" } } },
+    "identity": { "type": "object", "additionalProperties": false, "required": ["guestElfSha256", "programVKey", "journalDigest", "totalInstructionCount", "resourceJournalDigest", "resourceInstructionCount"], "properties": { "guestElfSha256": { "$ref": "#/$defs/bytes32" }, "programVKey": { "$ref": "#/$defs/bytes32" }, "journalDigest": { "$ref": "#/$defs/bytes32" }, "totalInstructionCount": { "$ref": "#/$defs/positiveInteger" }, "resourceJournalDigest": { "oneOf": [{ "$ref": "#/$defs/bytes32" }, { "type": "null" }] }, "resourceInstructionCount": { "oneOf": [{ "$ref": "#/$defs/positiveInteger" }, { "type": "null" }] } } },
+    "provenanceIdentity": { "type": "object", "additionalProperties": false, "required": ["schema", "trust", "platform", "sp1Version", "sp1Commit", "cargoProveExecutableSha256", "guestToolchainTreeSha256"], "properties": { "schema": { "type": "string", "minLength": 1 }, "trust": { "const": "candidate-build-inputs-only" }, "platform": { "type": "object", "additionalProperties": false, "required": ["architecture", "os"], "properties": { "architecture": { "type": "string", "minLength": 1 }, "os": { "type": "string", "minLength": 1 } } }, "sp1Version": { "type": "string", "minLength": 1 }, "sp1Commit": { "type": "string", "minLength": 1 }, "cargoProveExecutableSha256": { "$ref": "#/$defs/digest" }, "guestToolchainTreeSha256": { "$ref": "#/$defs/digest" } } },
+    "digestPair": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/digest" } },
+    "program": { "type": "object", "additionalProperties": false, "required": ["program", "identity", "pairwiseExactBytes", "directorySha256"], "properties": { "program": { "enum": ["distinct-subset-sums-a11", "hadamard-668-defect", "q6-intersecting-hypergraph", "edges-vs-triangles"] }, "identity": { "$ref": "#/$defs/identity" }, "pairwiseExactBytes": { "const": true }, "directorySha256": { "$ref": "#/$defs/digestPair" } } }
+  }
+}

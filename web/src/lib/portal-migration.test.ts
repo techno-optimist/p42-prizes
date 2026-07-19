@@ -74,6 +74,7 @@ describe("portal database migration", () => {
       "startCommand: npm run db:migrate && exec env -u P42_PORTAL_MIGRATION_DATABASE_URL npm run start:prizes",
     );
     expect(render).not.toContain("&& unset P42_PORTAL_MIGRATION_DATABASE_URL &&");
+    expect(render).toContain("healthCheckPath: /prizes/api/health");
     expect(render).toContain("P42_PORTAL_RUNTIME_ROLE");
     expect(render).toContain("P42_PORTAL_DATABASE_NAME");
   });

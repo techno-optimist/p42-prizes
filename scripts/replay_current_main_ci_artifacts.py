@@ -6,22 +6,26 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from typing import Any, Mapping, Sequence
+import zipfile
 
 import jsonschema
 
 
 ROOT = Path(__file__).resolve().parents[1]
 HISTORICAL_TOOL = ROOT / "scripts/replay_exact_main_ci_artifacts.py"
-SCHEMA_PATH = ROOT / "docs/operations/schemas/exact-main-ci-artifact-replay-v2.schema.json"
-SCHEMA_NAME = "p42-prizes/exact-main-ci-artifact-replay/v2"
+SCHEMA_PATH = ROOT / "docs/operations/schemas/exact-main-ci-artifact-replay-v3.schema.json"
+SCHEMA_NAME = "p42-prizes/exact-main-ci-artifact-replay/v3"
 SEMANTIC_VERIFIER_PATH = "scripts/verify-sp1-objective-reproduction.py"
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -35,6 +39,11 @@ EXPECTED_JOB_NAMES = frozenset({
     "SP1 objective-program gates (ubuntu-24.04)",
     "SP1 objective-program reproducibility",
 })
+MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
+MAX_TOTAL_ARCHIVE_BYTES = 1024 * 1024 * 1024
+MAX_MEMBER_BYTES = 256 * 1024 * 1024
+MAX_ARCHIVE_EXTRACTED_BYTES = 512 * 1024 * 1024
+MAX_TOTAL_EXTRACTED_BYTES = 1024 * 1024 * 1024
 
 ARTIFACT_KINDS = (
     ("p42-validated-distinct-subset-sums-a11-x86-elf", "distinct-subset-sums-a11"),
@@ -101,11 +110,36 @@ def require_list(value: object, label: str) -> list[Any]:
 
 
 def validate_capture(
-    capture: Mapping[str, Any], repository: str, run_id: int, main_sha: str
+    capture: Mapping[str, Any], repository: str, run_id: int, main_sha: str, pr_number: int
 ) -> dict[str, Any]:
-    if set(capture) != {"capturedAt", "run", "jobs", "artifacts"}:
-        raise ReplayError("capture must contain exactly capturedAt, run, jobs, and artifacts")
+    if set(capture) != {"capturedAt", "mainRef", "pullRequest", "run", "jobs", "artifacts"}:
+        raise ReplayError("capture must contain exactly capturedAt, mainRef, pullRequest, run, jobs, and artifacts")
     captured_at = require_string(capture["capturedAt"], "capturedAt")
+    main_ref = require_object(capture["mainRef"], "mainRef")
+    main_ref_object = require_object(main_ref.get("object"), "mainRef.object")
+    if main_ref.get("ref") != "refs/heads/main" or main_ref_object.get("type") != "commit" or main_ref_object.get("sha") != main_sha:
+        raise ReplayError("captured refs/heads/main does not equal the requested main SHA")
+
+    pull_request = require_object(capture["pullRequest"], "pullRequest")
+    if require_int(pull_request.get("number"), "pullRequest.number") != pr_number:
+        raise ReplayError("captured pull request number does not match the requested PR")
+    if pull_request.get("state") != "closed" or pull_request.get("merged") is not True:
+        raise ReplayError("captured pull request must be merged")
+    if pull_request.get("merge_commit_sha") != main_sha:
+        raise ReplayError("captured pull request merge commit does not equal the requested main SHA")
+    merged_at = require_string(pull_request.get("merged_at"), "pullRequest.merged_at")
+    base = require_object(pull_request.get("base"), "pullRequest.base")
+    base_repo = require_object(base.get("repo"), "pullRequest.base.repo")
+    head = require_object(pull_request.get("head"), "pullRequest.head")
+    head_repo = require_object(head.get("repo"), "pullRequest.head.repo")
+    if base.get("ref") != "main" or base_repo.get("full_name") != repository:
+        raise ReplayError("captured pull request base is not the requested repository main branch")
+    if head_repo.get("full_name") != repository or head_repo.get("id") != base_repo.get("id"):
+        raise ReplayError("fork or foreign pull-request heads are not accepted")
+    pr_head_sha = require_string(head.get("sha"), "pullRequest.head.sha")
+    if SHA_PATTERN.fullmatch(pr_head_sha) is None:
+        raise ReplayError("captured pull request head SHA is invalid")
+
     run = require_object(capture["run"], "run")
     if require_int(run.get("id"), "run.id") != run_id:
         raise ReplayError("captured run ID does not match the requested run")
@@ -117,6 +151,8 @@ def validate_capture(
         raise ReplayError("fork or foreign head repositories are not accepted")
     if head_repository.get("id") != run_repository.get("id"):
         raise ReplayError("head repository ID does not match the run repository")
+    if base_repo.get("id") != run_repository.get("id"):
+        raise ReplayError("pull request repository ID does not match the run repository")
     if run.get("workflow_id") != EXPECTED_WORKFLOW_ID:
         raise ReplayError("run.workflow_id does not match the pinned CI workflow")
     required_run = {
@@ -207,6 +243,18 @@ def validate_capture(
 
     return {
         "capturedAt": captured_at,
+        "mainRef": {"ref": "refs/heads/main", "objectType": "commit", "sha": main_sha},
+        "pullRequest": {
+            "number": pr_number,
+            "state": "closed",
+            "merged": True,
+            "mergedAt": merged_at,
+            "mergeCommitSha": main_sha,
+            "headSha": pr_head_sha,
+            "baseRef": "main",
+            "repository": repository,
+            "repositoryId": require_int(base_repo.get("id"), "pullRequest.base.repo.id"),
+        },
         "run": {
             "id": run_id,
             "event": "push",
@@ -224,6 +272,128 @@ def validate_capture(
         "artifactApiRecords": [selected[name] for name in sorted(selected)],
         "capturedArtifactCount": total_artifacts,
     }
+
+
+def read_archive_set(root: Path, names: set[str]) -> dict[str, bytes]:
+    absolute = root.absolute()
+    parent_descriptor = os.open(absolute.parent, hostile.open_flags(directory=True))
+    root_descriptor = -1
+    files: dict[str, Any] = {}
+    try:
+        root_path_metadata = os.stat(absolute.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        root_descriptor = os.open(absolute.name, hostile.open_flags(directory=True), dir_fd=parent_descriptor)
+        root_metadata = os.fstat(root_descriptor)
+        if not stat.S_ISDIR(root_path_metadata.st_mode) or hostile.stable_identity(root_path_metadata) != hostile.stable_identity(root_metadata):
+            raise ReplayError("archive root must be a stable no-follow directory")
+        expected_files = {f"{name}.zip" for name in names}
+        observed = set(os.listdir(root_descriptor))
+        if observed != expected_files:
+            raise ReplayError(f"expected exactly the current run's ten ZIP archives; missing={sorted(expected_files-observed)}, extra={sorted(observed-expected_files)}")
+        total_size = 0
+        for file_name in sorted(observed):
+            metadata = os.stat(file_name, dir_fd=root_descriptor, follow_symlinks=False)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size < 1 or metadata.st_size > MAX_ARCHIVE_BYTES:
+                raise ReplayError(f"{file_name}: archive size is outside the bounded envelope")
+            total_size += metadata.st_size
+            if total_size > MAX_TOTAL_ARCHIVE_BYTES:
+                raise ReplayError("aggregate archive size exceeds the bounded envelope")
+            files[file_name] = hostile.read_stable_file_at(root_descriptor, file_name, file_name)
+        if set(os.listdir(root_descriptor)) != observed:
+            raise ReplayError("archive root inventory changed during capture")
+        if hostile.stable_identity(os.fstat(root_descriptor)) != hostile.stable_identity(root_metadata):
+            raise ReplayError("archive root changed during capture")
+        result = {}
+        for file_name, item in files.items():
+            path_metadata = os.stat(file_name, dir_fd=root_descriptor, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(path_metadata.st_mode)
+                or hostile.stable_identity(path_metadata) != hostile.stable_identity(item.metadata)
+                or hostile.stable_identity(os.fstat(item.descriptor)) != hostile.stable_identity(item.metadata)
+            ):
+                raise ReplayError(f"archive changed during capture: {file_name}")
+            result[file_name[:-4]] = item.data
+        return result
+    finally:
+        for item in files.values():
+            item.close()
+        if root_descriptor >= 0:
+            os.close(root_descriptor)
+        os.close(parent_descriptor)
+
+
+def extract_verified_archives(
+    archives: Mapping[str, bytes],
+    api_by_name: Mapping[str, Any],
+    expected: Mapping[str, tuple[str, str]],
+    destination: Path,
+) -> dict[str, dict[str, Any]]:
+    destination.mkdir(mode=0o700, exist_ok=True)
+    if any(destination.iterdir()):
+        raise ReplayError("archive extraction destination must be empty")
+    bindings = {}
+    aggregate_extracted_size = 0
+    for name in sorted(archives):
+        archive = archives[name]
+        if not archive or len(archive) > MAX_ARCHIVE_BYTES:
+            raise ReplayError(f"{name}: archive size is outside the bounded envelope")
+        downloaded_digest = sha256_bytes(archive)
+        if downloaded_digest != api_by_name[name]["digest"]:
+            raise ReplayError(f"{name}: downloaded ZIP digest does not match GitHub API metadata")
+        if len(archive) != api_by_name[name]["sizeInBytes"]:
+            raise ReplayError(f"{name}: downloaded ZIP size does not match GitHub API metadata")
+        output = destination / name
+        output.mkdir(mode=0o700)
+        total_size = 0
+        seen: set[str] = set()
+        try:
+            with zipfile.ZipFile(io.BytesIO(archive), "r") as handle:
+                for member in handle.infolist():
+                    member_name = member.filename
+                    if (
+                        not member_name
+                        or member_name in seen
+                        or member.is_dir()
+                        or "/" in member_name
+                        or "\\" in member_name
+                        or member_name not in EXPECTED_FILES[expected[name][0]]
+                    ):
+                        raise ReplayError(f"{name}: ZIP member inventory is unsafe or unexpected")
+                    seen.add(member_name)
+                    mode = member.external_attr >> 16
+                    if stat.S_IFMT(mode) not in (0, stat.S_IFREG):
+                        raise ReplayError(f"{name}: ZIP member is not a regular file")
+                    if member.flag_bits & 0x1:
+                        raise ReplayError(f"{name}: encrypted ZIP members are not accepted")
+                    if member.file_size < 1 or member.file_size > MAX_MEMBER_BYTES:
+                        raise ReplayError(f"{name}: ZIP member size is outside the bounded envelope")
+                    total_size += member.file_size
+                    aggregate_extracted_size += member.file_size
+                    if total_size > MAX_ARCHIVE_EXTRACTED_BYTES:
+                        raise ReplayError(f"{name}: extracted ZIP size exceeds the bounded envelope")
+                    if aggregate_extracted_size > MAX_TOTAL_EXTRACTED_BYTES:
+                        raise ReplayError("aggregate extracted ZIP size exceeds the bounded envelope")
+                    data = handle.read(member)
+                    if len(data) != member.file_size:
+                        raise ReplayError(f"{name}: ZIP member size changed during extraction")
+                    target = output / member_name
+                    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                    try:
+                        with os.fdopen(descriptor, "wb", closefd=False) as stream:
+                            stream.write(data)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                    finally:
+                        os.close(descriptor)
+        except zipfile.BadZipFile as exc:
+            raise ReplayError(f"{name}: invalid ZIP archive") from exc
+        if seen != EXPECTED_FILES[expected[name][0]]:
+            raise ReplayError(f"{name}: exact ZIP member inventory mismatch")
+        bindings[name] = {
+            "downloadedArchiveSha256": downloaded_digest,
+            "downloadedArchiveSizeInBytes": len(archive),
+            "capturedDigestMatchedDownloadedArchive": True,
+        }
+    return bindings
 
 
 def capture_artifact_snapshot(root: Path, names: set[str]):
@@ -334,21 +504,33 @@ def tooling_binding() -> tuple[dict[str, Any], bytes]:
     return dict(files), schema_bytes
 
 
-def replay(repository: str, run_id: int, main_sha: str, artifact_root: Path, capture_path: Path, source_repo: Path) -> dict[str, Any]:
+def replay(
+    repository: str,
+    run_id: int,
+    main_sha: str,
+    pr_number: int,
+    archive_root: Path,
+    capture_path: Path,
+    source_repo: Path,
+) -> dict[str, Any]:
     if REPOSITORY_PATTERN.fullmatch(repository) is None:
         raise ReplayError("repository must be an explicit owner/name")
     if SHA_PATTERN.fullmatch(main_sha) is None:
         raise ReplayError("main SHA must be exactly 40 lowercase hexadecimal characters")
     capture_bytes = hostile.read_stable_path(capture_path, "GitHub API capture")
     capture = hostile.strict_json_bytes(capture_bytes, capture_path.name)
-    github = validate_capture(capture, repository, run_id, main_sha)
+    github = validate_capture(capture, repository, run_id, main_sha, pr_number)
     github["captureFileSha256"] = sha256_bytes(capture_bytes)
     tooling, schema_bytes = tooling_binding()
     expected = expected_artifacts(run_id)
-    snapshot = capture_artifact_snapshot(artifact_root, set(expected))
+    api_by_name = {item["name"]: item for item in github["artifactApiRecords"]}
+    archives = read_archive_set(archive_root, set(expected))
+    extracted_root = Path(tempfile.mkdtemp(prefix="p42-exact-main-replay-"))
+    snapshot = None
     try:
+        archive_bindings = extract_verified_archives(archives, api_by_name, expected, extracted_root)
+        snapshot = capture_artifact_snapshot(extracted_root, set(expected))
         verifier, verifier_bytes, candidate_sources = bind_replay_sources(source_repo, main_sha)
-        api_by_name = {item["name"]: item for item in github["artifactApiRecords"]}
         artifacts = []
         pair_files: dict[str, dict[str, Mapping[str, Any]]] = {}
         pair_digests: dict[str, list[str]] = {}
@@ -362,7 +544,8 @@ def replay(repository: str, run_id: int, main_sha: str, artifact_root: Path, cap
             digest = hostile.directory_digest(manifest)
             artifacts.append({
                 "artifactId": api_by_name[name]["id"], "name": name, "subject": subject,
-                "runnerImage": image, "githubArchiveDigest": api_by_name[name]["digest"],
+                "runnerImage": image, "capturedArchiveDigest": api_by_name[name]["digest"],
+                **archive_bindings[name],
                 "files": manifest, "directorySha256": digest,
             })
             pair_files.setdefault(subject, {})[image] = directory.files
@@ -388,13 +571,15 @@ def replay(repository: str, run_id: int, main_sha: str, artifact_root: Path, cap
             raise ReplayError("SP1 provenance trust classification is not candidate-build-inputs-only")
         snapshot.revalidate()
     finally:
-        snapshot.close()
+        if snapshot is not None:
+            snapshot.close()
+        shutil.rmtree(extracted_root)
     if tooling_binding()[0] != tooling:
         raise ReplayError("generator, schema, or hostile checks changed during replay")
     unsigned = {
         "schema": SCHEMA_NAME,
-        "result": "current-main-exact-ci-artifact-replay-validated",
-        "inputs": {"repository": repository, "runId": run_id, "mainSha": main_sha},
+        "result": "captured-current-main-exact-ci-artifact-replay-validated",
+        "inputs": {"repository": repository, "runId": run_id, "mainSha": main_sha, "pullRequestNumber": pr_number},
         "githubCapture": github,
         "verifier": verifier,
         "tooling": tooling,
@@ -402,8 +587,9 @@ def replay(repository: str, run_id: int, main_sha: str, artifact_root: Path, cap
         "artifacts": artifacts,
         "programs": [{"program": subject, "identity": identities[subject], "pairwiseExactBytes": True, "directorySha256": pair_digests[subject]} for _, subject in ARTIFACT_KINDS if subject != "sp1-build-provenance"],
         "provenance": {"classification": "untrusted-candidate", "identity": provenance_identity, "pairwiseExactBytes": True, "sha256": sha256_bytes(provenance_bytes), "directorySha256": pair_digests["sp1-build-provenance"]},
-        "checks": {"pushMainSuccess": True, "completeJobsCapture": True, "exactArtifactNames": True, "artifactApiAttribution": True, "stableNoFollowSnapshot": True, "exactFileInventories": True, "semanticReplay": True, "pairwiseExactBytes": True, "identityElfBinding": True, "sourceCommitBinding": True, "toolingBytesBound": True},
-        "limitations": "Offline replay of captured GitHub REST metadata and extracted artifact bytes. GitHub artifact digests describe downloaded archives; without retained ZIP bytes this receipt does not claim an archive-digest recheck, GitHub signature, independent operator, non-x86 execution, candidate promotion, or gate mutation.",
+        "checks": {"captureReportsPushMainSuccess": True, "captureReportsCurrentMainRef": True, "captureReportsMergedPullRequest": True, "completeJobsCapture": True, "exactArtifactNames": True, "capturedArtifactMetadataBound": True, "capturedDigestMatchedDownloadedArchive": True, "stableNoFollowSnapshot": True, "exactFileInventories": True, "semanticReplay": True, "pairwiseExactBytes": True, "identityElfBinding": True, "sourceCommitBinding": True, "toolingBytesBound": True},
+        "nonClaims": {"githubCaptureAuthenticated": False, "githubSignature": False, "transparencyLogInclusion": False, "independentOperator": False},
+        "limitations": "Offline replay of caller-supplied GitHub REST records and retained artifact ZIP bytes. The receipt self-hash binds those inputs but does not authenticate GitHub provenance; online API capture, release-authority signatures, and independent review remain separate gates.",
     }
     unsigned["receiptHash"] = sha256_bytes(canonical_json(unsigned).encode())
     validate_receipt(unsigned, schema_bytes)
@@ -432,6 +618,7 @@ def validate_receipt_bindings(receipt: Mapping[str, Any]) -> None:
     run_id = inputs["runId"]
     main_sha = inputs["mainSha"]
     repository = inputs["repository"]
+    pr_number = inputs["pullRequestNumber"]
     run = receipt["githubCapture"]["run"]
     if (run["id"], run["headSha"], run["repository"]) != (run_id, main_sha, repository):
         raise ReplayError("receipt run identity does not match its explicit inputs")
@@ -442,6 +629,17 @@ def validate_receipt_bindings(receipt: Mapping[str, Any]) -> None:
         raise ReplayError("receipt workflow identity does not match the pinned CI workflow")
     if {job["name"] for job in receipt["githubCapture"]["jobs"]} != EXPECTED_JOB_NAMES:
         raise ReplayError("receipt does not contain the exact seven required CI jobs")
+    main_ref = receipt["githubCapture"]["mainRef"]
+    pull_request = receipt["githubCapture"]["pullRequest"]
+    if (main_ref["ref"], main_ref["objectType"], main_ref["sha"]) != ("refs/heads/main", "commit", main_sha):
+        raise ReplayError("receipt main-ref binding does not match its explicit inputs")
+    if (
+        pull_request["number"] != pr_number
+        or pull_request["mergeCommitSha"] != main_sha
+        or pull_request["repository"] != repository
+        or pull_request["repositoryId"] != run["repositoryId"]
+    ):
+        raise ReplayError("receipt pull-request binding does not match its explicit inputs")
 
     expected = expected_artifacts(run_id)
     api_records = receipt["githubCapture"]["artifactApiRecords"]
@@ -460,8 +658,14 @@ def validate_receipt_bindings(receipt: Mapping[str, Any]) -> None:
         workflow_run = api["workflowRun"]
         if (workflow_run["id"], workflow_run["headBranch"], workflow_run["headSha"]) != (run_id, "main", main_sha):
             raise ReplayError(f"receipt API attribution mismatch for {name}")
-        if artifact["artifactId"] != api["id"] or artifact["githubArchiveDigest"] != api["digest"]:
+        if artifact["artifactId"] != api["id"] or artifact["capturedArchiveDigest"] != api["digest"]:
             raise ReplayError(f"receipt artifact authority binding mismatch for {name}")
+        if (
+            artifact["downloadedArchiveSha256"] != api["digest"]
+            or artifact["downloadedArchiveSizeInBytes"] != api["sizeInBytes"]
+            or artifact["capturedDigestMatchedDownloadedArchive"] is not True
+        ):
+            raise ReplayError(f"receipt downloaded archive binding mismatch for {name}")
         if (artifact["subject"], artifact["runnerImage"]) != (subject, image):
             raise ReplayError(f"receipt artifact classification mismatch for {name}")
 
@@ -475,13 +679,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--repository", required=True, help="GitHub owner/name")
     parser.add_argument("--run-id", required=True, type=int)
     parser.add_argument("--main-sha", required=True)
-    parser.add_argument("--artifact-root", required=True, type=Path)
+    parser.add_argument("--pull-request-number", required=True, type=int)
+    parser.add_argument("--archive-root", required=True, type=Path)
     parser.add_argument("--github-capture", required=True, type=Path)
     parser.add_argument("--source-repo", required=True, type=Path, help="local Git checkout containing the exact SHA")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
-        receipt = replay(args.repository, args.run_id, args.main_sha, args.artifact_root, args.github_capture, args.source_repo)
+        receipt = replay(args.repository, args.run_id, args.main_sha, args.pull_request_number, args.archive_root, args.github_capture, args.source_repo)
         write_receipt(args.output, receipt)
         print(f"current-main exact CI artifact replay receipt written: {args.output}")
         return 0
