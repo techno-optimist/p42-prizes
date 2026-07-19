@@ -16,7 +16,7 @@ from typing import Any, Mapping
 import jsonschema
 
 from p42_prizes.admission import compute_source_hash, run_verifier_once
-from p42_prizes.legal import _verify_ed25519
+from p42_prizes.legal import _verify_ed25519, ethereum_keccak256
 from p42_prizes.problem import load_manifest
 from p42_prizes.verdict import canonical_json
 
@@ -616,6 +616,11 @@ def _verify_typed_promotion(
     solidity = evidence["solidity_replay"]
     if solidity["claims"]["public_values_digest"] != public_digest:
         raise BoardBindingError(f"{prefix} Solidity replay substitutes public values")
+    if solidity["claims"]["chain_id"] != expected_binding["chain_id"]:
+        raise BoardBindingError(f"{prefix} Solidity replay chain ID does not bind the release network")
+    runtime_bytecode = bytes.fromhex(solidity["claims"]["runtime_bytecode_hex"].removeprefix("0x"))
+    if ethereum_keccak256(runtime_bytecode) != solidity["claims"]["contract_codehash"]:
+        raise BoardBindingError(f"{prefix} Solidity replay codehash does not match its runtime bytecode")
     economics = evidence["economics"]["claims"]
     _verify_ref(root, economics["worst_case_fixture"], f"{prefix}.economics.claims.worst_case_fixture")
     for field, measured in economics["measured"].items():

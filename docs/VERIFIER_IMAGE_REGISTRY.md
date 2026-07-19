@@ -181,7 +181,7 @@ PYTHONPATH=src python3 -m p42_prizes.cli admit-release-ready \
 ```
 
 `admit-ready` remains a matrix-only preflight and is not sufficient to activate
-a v2 image release. Canonical contract release preparation, offline
+a v3 image release. Canonical contract release preparation, offline
 verification, and production deployment use `admit-release-ready` with both
 independent file pins, every independently pinned signed host-set bundle, and
 the exact `R` checkout.

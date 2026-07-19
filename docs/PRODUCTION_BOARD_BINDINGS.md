@@ -100,6 +100,9 @@ by canonical JSON digest. Every v2 record is required to remain
 evidence object. V2 validates and binds migration evidence only; it cannot
 authorize funding. Eligibility requires a later protocol version with pinned
 executable SP1 Groth16 verification and deployed-Solidity replay adapters.
+The v2 migration envelope is fixed to Base Sepolia (chain 84532); a mainnet
+promotion requires that later activating protocol rather than a coordinated
+rewrite of signed v2 evidence.
 
 The overlay contains only typed evidence references. Referenced JSON must use
 the schemas in `protocol/objective-proof-promotion-evidence-v2.schema.json`, be
@@ -116,7 +119,8 @@ The typed evidence derives and cross-binds:
 - a claimed nonempty Groth16 artifact with `mock: false`, typed public values, and exact
   ELF/vkey/image/journal/admission/release bindings;
 - exact journal and Solidity replay evidence, public-values digest, contract
-  codehash, and chain ID;
+  address, nonempty runtime bytecode, its derived Ethereum Keccak-256 codehash,
+  and the fixed Base Sepolia chain ID;
 - measured worst-case admitted-input instructions, proving time, memory, proof
   size, verification gas, and prover cost, each within a release limit;
 - an explicit N-host matrix with at least three distinct hosts, operators, and

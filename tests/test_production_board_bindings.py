@@ -10,6 +10,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from p42_prizes.legal import ethereum_keccak256
 from p42_prizes.verdict import canonical_json
 import scripts.verify_production_board_bindings as bindings_module
 from scripts.verify_production_board_bindings import (
@@ -180,7 +181,8 @@ def _synthetic_v2_dossier(tmp_path: Path) -> tuple[Path, Path, dict[str, object]
          "program_vkey": vkey, "verifier_image_digest": image_digest, "build_id": "build:q6-v2"},
     )
     binding = {
-        "slug": "q6-intersecting-hypergraph", "release_digest": release_digest,
+        "slug": "q6-intersecting-hypergraph", "network": "base-sepolia", "chain_id": 84532,
+        "release_digest": release_digest,
         "admission_digest": admission_digest, "program_identity_digest": program["artifact_hash"],
         "elf_sha256": elf["sha256"], "program_vkey": vkey,
         "verifier_image_digest": image_digest, "journal_digest": journal_digest, "build_id": "build:q6-v2",
@@ -197,10 +199,13 @@ def _synthetic_v2_dossier(tmp_path: Path) -> tuple[Path, Path, dict[str, object]
          "public_values_digest": public_values["artifact_hash"]},
     )
     proof_digest = proof["artifact_hash"]
+    runtime_bytecode = bytes.fromhex("60006000")
     solidity, solidity_ref = signed_evidence(
         "solidity", "p42-prizes/solidity-objective-replay/v2", "exact-match", "solidity",
         {"binding": binding, "proof_receipt_digest": proof_digest,
-         "public_values_digest": public_values["artifact_hash"], "contract_codehash": "sha256:" + "f" * 64,
+         "public_values_digest": public_values["artifact_hash"],
+         "contract_address": "0x" + "a" * 40, "runtime_bytecode_hex": "0x" + runtime_bytecode.hex(),
+         "contract_codehash": ethereum_keccak256(runtime_bytecode),
          "chain_id": 84532},
     )
     measured = {"total_instruction_count": 100, "proof_generation_ms": 200, "peak_rss_bytes": 300,
@@ -354,11 +359,39 @@ def test_v2_rejects_non_rfc3339_signed_evidence_time(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("contract_codehash", "sha256:" + "f" * 64, "typed evidence validation failed"),
+        ("contract_codehash", "0x" + "f" * 64, "codehash does not match its runtime bytecode"),
+        ("chain_id", 1, "typed evidence validation failed"),
+        ("chain_id", 8453, "typed evidence validation failed"),
+    ],
+)
+def test_v2_rejects_unbound_solidity_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    root, dossier_path, dossier = _synthetic_v2_dossier(tmp_path)
+    _fast_recursive_v1(monkeypatch, dossier)
+    ref = dossier["records"][0]["promotion"]["solidity_replay"]
+    evidence = json.loads((root / ref["path"]).read_text())
+    evidence["claims"][field] = value
+    _rewrite_typed_evidence(root, ref, evidence)
+    dossier_path.write_text(json.dumps(dossier))
+    with pytest.raises(BoardBindingError, match=message):
+        verify_board_bindings(root, dossier_path)
+
+
+@pytest.mark.parametrize(
     ("attack", "message"),
     [
         ("missing", "schema validation failed"),
         ("mixed-release", "mixed release, admission, program, or proof"),
         ("mixed-admission", "mixed release, admission, program, or proof"),
+        ("network-substitution", "typed evidence validation failed"),
         ("schema-downgrade", "typed evidence validation failed"),
         ("status-downgrade", "typed evidence validation failed"),
         ("copied-review", "distinct content digests"),
@@ -386,11 +419,15 @@ def test_v2_rejects_hostile_promotion_evidence(
     promotion = dossier["records"][0]["promotion"]
     if attack == "missing":
         del promotion["dependency_security"]
-    elif attack in {"mixed-release", "mixed-admission"}:
+    elif attack in {"mixed-release", "mixed-admission", "network-substitution"}:
         ref = promotion["economics"]
         value = json.loads((root / ref["path"]).read_text())
-        field = "release_digest" if attack == "mixed-release" else "admission_digest"
-        value["claims"]["binding"][field] = "sha256:" + "9" * 64
+        if attack == "network-substitution":
+            value["claims"]["binding"]["network"] = "base-mainnet"
+            value["claims"]["binding"]["chain_id"] = 8453
+        else:
+            field = "release_digest" if attack == "mixed-release" else "admission_digest"
+            value["claims"]["binding"][field] = "sha256:" + "9" * 64
         _rewrite_typed_evidence(root, ref, value)
     elif attack == "mock":
         ref = promotion["proof_receipt"]

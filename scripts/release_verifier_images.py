@@ -1585,7 +1585,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--finalize-journal", type=Path, help="completed authority-bound v3 publication journal to adopt")
     parser.add_argument("--release-config-commit", help="clean commit containing all ten immutable image digests")
-    parser.add_argument("--output", type=Path, help="non-overwriting finalized v2 dossier path")
+    parser.add_argument("--output", type=Path, help="non-overwriting finalized v3 dossier path")
     return parser
 
 
