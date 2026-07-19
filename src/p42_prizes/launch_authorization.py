@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping
 
 import jsonschema
 
+from p42_prizes.admission import SOURCE_HASH_ALGORITHM
 from p42_prizes.adversarial import normalize_adversarial_campaign_report
 from p42_prizes.bounded_process import OutputLimitExceeded, run_bounded_process
 from p42_prizes.governance import normalize_governance_signoff
@@ -907,6 +908,7 @@ def _validate_problem_reviews(
             review_context,
             issued,
             deployed_release_binding=deployed_release_binding,
+            board_binding=binding_record,
         )
         if review.get("review_hash") != packet.get("review_hash"):
             raise LaunchAuthorizationError(f"problem review {problem_id} hash mismatch")
@@ -920,6 +922,7 @@ def _validate_math_review(
     issued: datetime,
     *,
     deployed_release_binding: Mapping[str, Any],
+    board_binding: Mapping[str, Any],
 ) -> None:
     del trust_registry
     try:
@@ -935,6 +938,11 @@ def _validate_math_review(
             raise LaunchAuthorizationError(f"math review {packet_key} does not match authorization")
     if packet.get("deployed_release_binding") != dict(deployed_release_binding):
         raise LaunchAuthorizationError("math review deployed_release_binding does not match exact deployed release")
+    _validate_math_review_evidence_bindings(
+        packet,
+        board_binding=board_binding,
+        deployed_release_binding=deployed_release_binding,
+    )
     completed = _require_utc(packet.get("completed_at_utc"), "math_review.completed_at_utc", LaunchAuthorizationError)
     if completed > issued:
         raise LaunchAuthorizationError("math review completion must not follow authorization issuance")
@@ -1006,26 +1014,13 @@ def _validate_math_review(
 
 def _math_review_artifacts(packet: Mapping[str, Any]) -> list[tuple[str, Any]]:
     expertise = packet["expertise_and_conflicts"]
-    statement = packet["literal_statement_and_reduction"]
     verifier = packet["verifier_schema_and_fixtures"]
     literature = packet["literature_review"]
     artifacts = [
         ("math_review.expertise_and_conflicts.expertise_evidence", expertise["expertise_evidence"]),
-        ("math_review.literal_statement_and_reduction.statement_artifact", statement["statement_artifact"]),
-        ("math_review.literal_statement_and_reduction.reduction_artifact", statement["reduction_artifact"]),
-        ("math_review.verifier_schema_and_fixtures.verifier_source", verifier["verifier_source"]),
-        ("math_review.verifier_schema_and_fixtures.solution_schema", verifier["solution_schema"]),
         ("math_review.verifier_schema_and_fixtures.replay_result", verifier["replay_result"]),
         ("math_review.literature_review.search_record", literature["search_record"]),
     ]
-    artifacts.extend(
-        (f"math_review.verifier_schema_and_fixtures.valid_fixtures[{index}]", artifact)
-        for index, artifact in enumerate(verifier["valid_fixtures"])
-    )
-    artifacts.extend(
-        (f"math_review.verifier_schema_and_fixtures.invalid_fixtures[{index}]", artifact)
-        for index, artifact in enumerate(verifier["invalid_fixtures"])
-    )
     remediation = packet["remediation_and_retest"]
     if remediation["status"] == "completed":
         artifacts.extend([
@@ -1033,3 +1028,74 @@ def _math_review_artifacts(packet: Mapping[str, Any]) -> list[tuple[str, Any]]:
             ("math_review.remediation_and_retest.retest_artifact", remediation["retest_artifact"]),
         ])
     return artifacts
+
+
+def _validate_math_review_evidence_bindings(
+    packet: Mapping[str, Any],
+    *,
+    board_binding: Mapping[str, Any],
+    deployed_release_binding: Mapping[str, Any],
+) -> None:
+    slug = packet["problem_slug"]
+    if board_binding.get("slug") != slug:
+        raise LaunchAuthorizationError("math review evidence board binding does not match problem slug")
+    verifier_binding = board_binding.get("verifier")
+    if not isinstance(verifier_binding, Mapping):
+        raise LaunchAuthorizationError("math review evidence has no canonical verifier binding")
+    source_identity = {
+        "commit": deployed_release_binding.get("deployment_commit"),
+        "problem_slug": slug,
+        "tree_hash_algorithm": SOURCE_HASH_ALGORITHM,
+        "tree_hash": verifier_binding.get("source_tree_sha256"),
+    }
+
+    statement = packet["literal_statement_and_reduction"]
+    verifier = packet["verifier_schema_and_fixtures"]
+    expected_board_artifacts = (
+        ("statement_artifact", statement["statement_artifact"], board_binding.get("specification")),
+        ("reduction_artifact", statement["reduction_artifact"], board_binding.get("problem_yaml")),
+        ("solution_schema", verifier["solution_schema"], board_binding.get("solution_schema")),
+    )
+    bound_refs: list[tuple[str, str]] = []
+    for role, observed, canonical in expected_board_artifacts:
+        expected = dict(canonical) | {"source_identity": source_identity} if isinstance(canonical, Mapping) else None
+        if observed != expected:
+            raise LaunchAuthorizationError(
+                f"math review {role} does not match its canonical board artifact and source identity"
+            )
+        bound_refs.append((observed["path"], observed["sha256"]))
+
+    expected_verifier_source = {
+        "problem_path": f"problems/{slug}",
+        "version": verifier_binding.get("version"),
+        "command": verifier_binding.get("command"),
+        "source_identity": source_identity,
+    }
+    if verifier["verifier_source"] != expected_verifier_source:
+        raise LaunchAuthorizationError(
+            "math review verifier_source does not match the canonical verifier and source identity"
+        )
+
+    valid_fixtures = verifier["valid_fixtures"]
+    invalid_fixtures = verifier["invalid_fixtures"]
+    canonical_seed = board_binding.get("seed")
+    if not isinstance(canonical_seed, Mapping):
+        raise LaunchAuthorizationError("math review evidence has no canonical board fixture")
+    expected_seed = {
+        "path": canonical_seed.get("path"),
+        "sha256": canonical_seed.get("sha256"),
+        "fixture_role": "valid-input",
+        "source_identity": source_identity,
+    }
+    if expected_seed not in valid_fixtures:
+        raise LaunchAuthorizationError("math review valid_fixtures must include the canonical board seed")
+
+    for fixture_role, fixtures in (("valid-input", valid_fixtures), ("invalid-input", invalid_fixtures)):
+        for index, fixture in enumerate(fixtures):
+            if fixture.get("fixture_role") != fixture_role or fixture.get("source_identity") != source_identity:
+                raise LaunchAuthorizationError(
+                    f"math review {fixture_role} fixture {index} does not match the exact current source identity"
+                )
+            bound_refs.append((fixture["path"], fixture["sha256"]))
+    if len(bound_refs) != len(set(bound_refs)):
+        raise LaunchAuthorizationError("math review evidence roles must use distinct canonical source references")

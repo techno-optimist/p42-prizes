@@ -470,6 +470,33 @@ def _deployed_math_review_binding() -> dict:
     }
 
 
+def _math_review_board_binding() -> dict:
+    return {
+        "slug": "hadamard-mini",
+        "problem_yaml": {
+            "path": "problems/hadamard-mini/problem.yaml",
+            "sha256": "sha256:" + "5" * 64,
+        },
+        "specification": {
+            "path": "problems/hadamard-mini/SPEC.md",
+            "sha256": "sha256:" + "6" * 64,
+        },
+        "solution_schema": {
+            "path": "problems/hadamard-mini/solution.schema.json",
+            "sha256": "sha256:" + "7" * 64,
+        },
+        "seed": {
+            "path": "problems/hadamard-mini/examples/seed.json",
+            "sha256": "sha256:" + "8" * 64,
+        },
+        "verifier": {
+            "version": "1.2.3",
+            "command": "python3 verifier/verify.py --solution {solution}",
+            "source_tree_sha256": "sha256:" + "9" * 64,
+        },
+    }
+
+
 def _math_review_packet(tmp_path: Path) -> tuple[dict, dict, object, dict]:
     fixture = AttestationFixture(tmp_path)
     reviewer = fixture.identity(
@@ -492,14 +519,37 @@ def _math_review_packet(tmp_path: Path) -> tuple[dict, dict, object, dict]:
         created_at_utc="2026-07-08T15:00:00Z",
     )
     sections["expertise_and_conflicts"]["expertise_evidence"] = evidence
+    board_binding = _math_review_board_binding()
+    source_identity = {
+        "commit": _deployed_math_review_binding()["deployment_commit"],
+        "problem_slug": board_binding["slug"],
+        "tree_hash_algorithm": "p42-source-tree-sha256/v2",
+        "tree_hash": board_binding["verifier"]["source_tree_sha256"],
+    }
     sections["literal_statement_and_reduction"].update(
-        statement_artifact=evidence, reduction_artifact=evidence,
+        statement_artifact=board_binding["specification"] | {"source_identity": source_identity},
+        reduction_artifact=board_binding["problem_yaml"] | {"source_identity": source_identity},
     )
     sections["verifier_schema_and_fixtures"].update(
-        verifier_source=evidence,
-        solution_schema=evidence,
-        valid_fixtures=[evidence],
-        invalid_fixtures=[evidence],
+        verifier_source={
+            "problem_path": "problems/hadamard-mini",
+            "version": board_binding["verifier"]["version"],
+            "command": board_binding["verifier"]["command"],
+            "source_identity": source_identity,
+        },
+        solution_schema=board_binding["solution_schema"] | {"source_identity": source_identity},
+        valid_fixtures=[
+            board_binding["seed"] | {
+                "fixture_role": "valid-input",
+                "source_identity": source_identity,
+            }
+        ],
+        invalid_fixtures=[{
+            "path": "problems/hadamard-mini/tests/invalid.json",
+            "sha256": "sha256:" + "a" * 64,
+            "fixture_role": "invalid-input",
+            "source_identity": source_identity,
+        }],
         replay_result=evidence,
     )
     sections["literature_review"]["search_record"] = evidence
@@ -574,6 +624,7 @@ def test_math_review_v3_schema_and_dual_registered_signatures(tmp_path: Path) ->
         context,
         datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
         deployed_release_binding=_deployed_math_review_binding(),
+        board_binding=_math_review_board_binding(),
     )
 
 
@@ -596,6 +647,7 @@ def test_math_review_rejects_hostile_section_omissions(tmp_path: Path, omission:
             context,
             datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
             deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
         )
 
 
@@ -627,6 +679,7 @@ def test_math_review_rejects_hostile_binding_substitutions(
             context,
             datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
             deployed_release_binding=expected_release,
+            board_binding=_math_review_board_binding(),
         )
 
 
@@ -638,6 +691,7 @@ def test_math_review_rejects_legacy_v2_even_when_resealed(tmp_path: Path) -> Non
             packet, row, registry, context,
             datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
             deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
         )
 
 
@@ -649,6 +703,7 @@ def test_math_review_rejects_owner_signature_substitution(tmp_path: Path) -> Non
             packet, row, registry, context,
             datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
             deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
         )
 
 
@@ -663,22 +718,84 @@ def test_math_review_rejects_unregistered_problem_owner(tmp_path: Path) -> None:
             packet, row, registry, context,
             datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
             deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
         )
 
 
-def test_math_review_rejects_evidence_digest_substitution(tmp_path: Path) -> None:
+def test_math_review_rejects_verifier_source_identity_substitution(tmp_path: Path) -> None:
     packet, row, context, registry = _math_review_packet(tmp_path)
     packet["verifier_schema_and_fixtures"]["verifier_source"] = dict(
         packet["verifier_schema_and_fixtures"]["verifier_source"]
     )
-    packet["verifier_schema_and_fixtures"]["verifier_source"]["sha256"] = (
+    packet["verifier_schema_and_fixtures"]["verifier_source"]["source_identity"] = dict(
+        packet["verifier_schema_and_fixtures"]["verifier_source"]["source_identity"]
+    )
+    packet["verifier_schema_and_fixtures"]["verifier_source"]["source_identity"]["tree_hash"] = (
         "sha256:" + "0123456789abcdef" * 4
     )
-    with pytest.raises(LaunchAuthorizationError, match="sha256 does not match resolved bytes"):
+    with pytest.raises(LaunchAuthorizationError, match="canonical verifier and source identity"):
         _validate_math_review(
             packet, row, registry, context,
             datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
             deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("target", "message"),
+    [
+        ("statement", "statement_artifact"),
+        ("reduction", "reduction_artifact"),
+        ("solution_schema", "solution_schema"),
+    ],
+)
+def test_math_review_rejects_arbitrary_self_hashed_source_artifacts(
+    tmp_path: Path, target: str, message: str,
+) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    generic = dict(packet["literal_statement_and_reduction"]["statement_artifact"])
+    generic["path"] = "reviews/generic-evidence.json"
+    generic["sha256"] = "sha256:" + "b" * 64
+    if target in {"statement", "reduction"}:
+        packet["literal_statement_and_reduction"][f"{target}_artifact"] = generic
+    else:
+        packet["verifier_schema_and_fixtures"][target] = generic
+
+    with pytest.raises(LaunchAuthorizationError, match=message):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+def test_math_review_rejects_same_generic_artifact_reused_across_roles(tmp_path: Path) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    statement = packet["literal_statement_and_reduction"]["statement_artifact"]
+    packet["literal_statement_and_reduction"]["reduction_artifact"] = statement
+
+    with pytest.raises(LaunchAuthorizationError, match="reduction_artifact"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+def test_math_review_rejects_same_fixture_reused_for_valid_and_invalid_roles(tmp_path: Path) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    fixture = packet["verifier_schema_and_fixtures"]["valid_fixtures"][0]
+    packet["verifier_schema_and_fixtures"]["invalid_fixtures"] = [fixture]
+
+    with pytest.raises(LaunchAuthorizationError, match="invalid-input fixture"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
         )
 
 
@@ -690,6 +807,7 @@ def test_math_review_rejects_incomplete_remediation_coverage(tmp_path: Path) -> 
             packet, row, registry, context,
             datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
             deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
         )
 
 
