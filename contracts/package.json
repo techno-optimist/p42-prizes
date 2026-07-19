@@ -18,7 +18,7 @@
     "explorer:record-attestation": "node scripts/record-explorer-verification-attestation.js",
     "explorer:assemble": "node scripts/assemble-explorer-verification-dossier.js",
     "inspect:base-sepolia-reservation": "P42_DEPLOY_MODE=inspect-reservation hardhat run scripts/deploy-base-sepolia.js --network baseSepolia",
-    "reconcile:base-sepolia": "hardhat run scripts/reconcile-base-sepolia.js --network baseSepolia"
+    "reconcile:base-sepolia": "hardhat compile && node scripts/reconcile-base-sepolia.js"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-ethers": "4.0.14",

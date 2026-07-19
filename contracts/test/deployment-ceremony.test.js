@@ -79,6 +79,7 @@ const ADMISSION_MATRIX_DIGEST = `sha256:${"c".repeat(64)}`;
 
 describe("production deployment runbook command contract", () => {
   it("documents the exact executable multi-board production mode", () => {
+    const packageJson = JSON.parse(readFileSync(resolve(REPO_ROOT, "contracts/package.json"), "utf8"));
     const executable = readFileSync(
       resolve(REPO_ROOT, "contracts/scripts/deploy-base-sepolia.js"),
       "utf8",
@@ -96,6 +97,11 @@ describe("production deployment runbook command contract", () => {
     assert.match(executable, /assertObjectiveVerifierCapsuleBinding\(ethersLibrary, capsule, slate, objectiveVerifierArtifact\)/);
     assert.doesNotMatch(executable, /productionReleaseInputs\(ethers,/);
     assert.match(executable, /P42_EXPECTED_DEPLOYER_ADDRESS/);
+    assert.equal(
+      packageJson.scripts["reconcile:base-sepolia"],
+      "hardhat compile && node scripts/reconcile-base-sepolia.js",
+      "reconciliation must compile exact checkout artifacts before loading them",
+    );
     assert.match(executable, /readManifestOutputReservation\(reservationIdentity\)/);
     assert.match(executable, /factoryCreation:\s*\{/);
     assert.match(executable, /transactionHash:\s*durable\.expectedHash/);
@@ -161,6 +167,8 @@ describe("production deployment runbook command contract", () => {
       "P42_PRODUCTION_SLATE_PATH",
       "P42_SECONDARY_BASE_SEPOLIA_RPC_URL",
       "P42_SECONDARY_RPC_OPERATOR_ID",
+      "P42_ACTIVATION_RPC_OPERATOR_REGISTRY_PATH",
+      "P42_ACTIVATION_RPC_REGISTRY_TRUSTED_ROOT",
       "P42_EXPLORER_DOSSIER_PATH",
       "P42_EXPLORER_DOSSIER_SHA256",
       "P42_RELEASE_CAPSULE",

@@ -22,6 +22,10 @@ import { collectFinalityAnchor, recheckFinalityAnchor, validateMonotonicFinality
 import { canonicalRoleAcceptanceJson, readRoleAcceptancePacketExact, validateDeploymentRoleAcceptances, validateDurableRoleAcceptanceTimestamp } from "./role-acceptance-helper.js";
 import { readExplorerDossierExact, validateExplorerVerificationAnchor, validateExplorerVerificationDossier } from "./explorer-verification-helper.js";
 import { readReleaseBuildJson } from "./release-capsule-helper.js";
+import {
+  assertActivationRpcAuthorityRegistryMembership,
+  canonicalActivationRpcEndpoint,
+} from "../../agent/activation-rpc-endpoints.mjs";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532;
 const PRIVATE_FILE_MODE = 0o600;
@@ -158,47 +162,36 @@ export function assertReconciliationPublishable(manifest, report, freshAnchor, {
   }
 }
 
-export async function reconcileWithProvider({ ethers, manifest, outputPath = null, finalityEndpoints = null }) {
-  const validationContext = await loadProductionValidationContext(manifest.data, { provider: ethers.provider });
-  const binding = validateManifestEvidence(manifest.data, validationContext);
-  const explorerDossier = readExplorerDossierExact(process.env.P42_EXPLORER_DOSSIER_PATH, process.env.P42_EXPLORER_DOSSIER_SHA256);
-  const capsule = await readReleaseBuildJson(process.env.P42_RELEASE_CAPSULE);
-  const trustedOperators = String(process.env.P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES ?? "").split(",");
-  validateExplorerVerificationDossier(explorerDossier, { manifest: manifest.data, capsule, trustedOperators, now: manifest.data.governanceSetup.completionBlockTimestamp * 1000 });
-  const policy = manifest.data.indexer.finalityPolicy;
-  const chain = await ethers.provider.getNetwork();
-  if (Number(chain.chainId) !== BASE_SEPOLIA_CHAIN_ID) {
-    throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId}`);
-  }
-  if (Number(chain.chainId) !== manifest.data.network.chainId) {
+export function assertReconciliationReportsAgree(primary, corroborating, primaryOperatorId, corroboratingOperatorId) {
+  if (stableStringify(primary) !== stableStringify(corroborating)) {
     throw new Error(
-      `Manifest chainId ${manifest.data.network.chainId} does not match RPC chainId ${chain.chainId}`
+      `full reconciliation disagreement between RPC operators ${primaryOperatorId} and ${corroboratingOperatorId}`,
     );
   }
+}
 
-  if (manifest.data.releaseMode !== "production") throw new Error("production reconciliation publication requires explicit production release evidence");
-  const finalityAnchor = await collectFinalityAnchor({ endpoints: finalityEndpoints, policy: manifest.data.releaseEvidence?.finalityPolicy });
-  await validateMonotonicFinalityAnchor({ previous: manifest.data.governanceSetup.finalityAnchor, current: finalityAnchor, endpoints: finalityEndpoints });
-  await validateExplorerVerificationAnchor({ dossier: explorerDossier, endpoints: finalityEndpoints, currentAnchor: finalityAnchor });
-  const fromBlock = manifest.data.indexer.startBlock;
-  const toBlock = finalityAnchor.l2.finalized.number;
-  if (toBlock < fromBlock) {
-    throw new Error(`Finalized block ${toBlock} is before manifest start block ${fromBlock}`);
-  }
-
-  const artifacts = loadContractArtifacts();
-  const multiBoard = isMultiBoardManifest(manifest.data);
+async function collectReconciliationReport({
+  provider,
+  manifest,
+  manifestPath,
+  binding,
+  artifacts,
+  multiBoard,
+  fromBlock,
+  toBlock,
+  policy,
+}) {
   let checkpoint;
   if (multiBoard) {
-    const contractsByProblem = manifest.data.problems.map((problem) => ({
+    const contractsByProblem = manifest.problems.map((problem) => ({
       problem,
-      contracts: instantiateBoardContracts(ethers.provider, manifest.data, problem, artifacts),
+      contracts: instantiateBoardContracts(provider, manifest, problem, artifacts),
     }));
     const { anchor, boards } = await collectMultiBoardFinalizedReconciliation({
-      provider: ethers.provider,
+      provider,
       contractsByProblem,
       artifacts,
-      manifest: manifest.data,
+      manifest,
       fromBlock,
       toBlock,
       policy,
@@ -213,12 +206,12 @@ export async function reconcileWithProvider({ ethers, manifest, outputPath = nul
       boards,
     });
   } else {
-    const contracts = instantiateContracts(ethers.provider, manifest.data, artifacts);
+    const contracts = instantiateContracts(provider, manifest, artifacts);
     const { anchor, scan, replay, snapshot, checks } = await collectFinalizedReconciliation({
-      provider: ethers.provider,
+      provider,
       contracts,
       artifacts,
-      manifest: manifest.data,
+      manifest,
       fromBlock,
       toBlock,
       policy,
@@ -236,13 +229,109 @@ export async function reconcileWithProvider({ ethers, manifest, outputPath = nul
       checks,
     });
   }
-
-  const report = buildReconciliationReport({
+  return buildReconciliationReport({
     checkpoint,
-    manifest: manifest.data,
-    manifestPath: manifest.path,
+    manifest,
+    manifestPath,
     multiBoard,
   });
+}
+
+export async function reconcileWithProvider({
+  ethers,
+  manifest,
+  outputPath = null,
+  finalityEndpoints = null,
+  rpcAuthority = null,
+  rpcRegistry = null,
+  pinnedRpcRegistryDigest = null,
+}) {
+  if (!Array.isArray(finalityEndpoints) || finalityEndpoints.length !== 2) {
+    throw new Error("full production reconciliation requires exactly two RPC operators");
+  }
+  const authority = assertActivationRpcAuthorityRegistryMembership(rpcRegistry, rpcAuthority);
+  if (!/^sha256:[0-9a-f]{64}$/.test(pinnedRpcRegistryDigest ?? "")
+      || pinnedRpcRegistryDigest !== authority.registryDigest) {
+    throw new Error("reconciliation RPC registry does not match the protected out-of-band digest pin");
+  }
+  const endpoints = finalityEndpoints.map((endpoint, index) => {
+    if (!endpoint?.provider || typeof endpoint.operatorId !== "string" || endpoint.operatorId.length === 0
+        || typeof endpoint.url !== "string") {
+      throw new Error(`reconciliation RPC endpoint ${index} is incomplete`);
+    }
+    return endpoint;
+  });
+  if (new Set(endpoints.map((endpoint) => endpoint.operatorId)).size !== endpoints.length) {
+    throw new Error("full production reconciliation requires distinct RPC operator IDs");
+  }
+  if (endpoints[0].provider !== ethers.provider) {
+    throw new Error("primary finality endpoint must use the configured primary provider");
+  }
+  for (const [index, role] of ["primary", "secondary"].entries()) {
+    const endpoint = canonicalActivationRpcEndpoint(endpoints[index].url);
+    if (endpoints[index].operatorId !== authority[role].operatorId
+        || endpoint.origin !== authority[role].endpointOrigin) {
+      throw new Error(`reconciliation ${role} endpoint differs from the protected RPC authority`);
+    }
+  }
+
+  const validationContext = await loadProductionValidationContext(manifest.data, {
+    provider: endpoints[0].provider,
+    secondaryProvider: endpoints[1].provider,
+  });
+  const binding = validateManifestEvidence(manifest.data, validationContext);
+  const explorerDossier = readExplorerDossierExact(process.env.P42_EXPLORER_DOSSIER_PATH, process.env.P42_EXPLORER_DOSSIER_SHA256);
+  const capsule = await readReleaseBuildJson(process.env.P42_RELEASE_CAPSULE);
+  const trustedOperators = String(process.env.P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES ?? "").split(",");
+  validateExplorerVerificationDossier(explorerDossier, { manifest: manifest.data, capsule, trustedOperators, now: manifest.data.governanceSetup.completionBlockTimestamp * 1000 });
+  const policy = manifest.data.indexer.finalityPolicy;
+  for (const endpoint of endpoints) {
+    const chain = await endpoint.provider.getNetwork();
+    if (Number(chain.chainId) !== BASE_SEPOLIA_CHAIN_ID) {
+      throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId} from ${endpoint.operatorId}`);
+    }
+    if (Number(chain.chainId) !== manifest.data.network.chainId) {
+      throw new Error(
+        `Manifest chainId ${manifest.data.network.chainId} does not match ${endpoint.operatorId} RPC chainId ${chain.chainId}`
+      );
+    }
+  }
+
+  if (manifest.data.releaseMode !== "production") throw new Error("production reconciliation publication requires explicit production release evidence");
+  const finalityAnchor = await collectFinalityAnchor({ endpoints: finalityEndpoints, policy: manifest.data.releaseEvidence?.finalityPolicy });
+  await validateMonotonicFinalityAnchor({ previous: manifest.data.governanceSetup.finalityAnchor, current: finalityAnchor, endpoints: finalityEndpoints });
+  await validateExplorerVerificationAnchor({ dossier: explorerDossier, endpoints: finalityEndpoints, currentAnchor: finalityAnchor });
+  const fromBlock = manifest.data.indexer.startBlock;
+  const toBlock = finalityAnchor.l2.finalized.number;
+  if (toBlock < fromBlock) {
+    throw new Error(`Finalized block ${toBlock} is before manifest start block ${fromBlock}`);
+  }
+
+  const artifacts = loadContractArtifacts();
+  const multiBoard = isMultiBoardManifest(manifest.data);
+  const reports = [];
+  for (const endpoint of endpoints) {
+    reports.push(await collectReconciliationReport({
+      provider: endpoint.provider,
+      manifest: manifest.data,
+      manifestPath: manifest.path,
+      binding,
+      artifacts,
+      multiBoard,
+      fromBlock,
+      toBlock,
+      policy,
+    }));
+  }
+  const report = reports[0];
+  for (let index = 1; index < reports.length; index += 1) {
+    assertReconciliationReportsAgree(
+      report,
+      reports[index],
+      endpoints[0].operatorId,
+      endpoints[index].operatorId,
+    );
+  }
 
   if (outputPath) {
     const roleAcceptanceExact = readRoleAcceptancePacketExact(process.env.P42_ROLE_ACCEPTANCE_PACKET, process.env.P42_ROLE_ACCEPTANCE_PACKET_SHA256, { privateFile: true });

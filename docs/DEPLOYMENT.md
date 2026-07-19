@@ -253,6 +253,22 @@ deployment creates governance-owned contracts and pending operation bundles;
 independent governance signers schedule, confirm, and execute those bundles;
 then a keyless continuation verifies finalized on-chain completion.
 
+Reconciliation is also dual-RPC end to end. Each registered operator endpoint
+independently supplies runtime bytecode, the complete event catalog, replayed
+state, storage snapshots, and configuration reads at the agreed finalized
+block. The canonical reports must match exactly before `latest.json` can be
+published; agreement on the finalized header alone is insufficient. The two
+operator IDs and canonical HTTPS origins must be exact members of the protected
+activation RPC registry. Reconciliation consumes the registry digest from the
+owner-provisioned, root-owned, non-writable fixed pin at
+`/etc/p42/activation-rpc-operator-registry.sha256` and consumes the registry's
+trusted root through
+`P42_ACTIVATION_RPC_OPERATOR_REGISTRY_PATH`,
+`P42_ACTIVATION_RPC_REGISTRY_TRUSTED_ROOT`; ambient labels do not establish
+operator identity. This observation authority deliberately precedes the final
+launch authorization: that authorization binds the completed reconciliation
+report and cannot bootstrap its own first publication.
+
 For a fresh public prize deployment, the only canonical route is
 `npm run deploy:base-sepolia` and the typed procedure in
 [MULTIBOARD_CEREMONY.md](MULTIBOARD_CEREMONY.md). It refuses to broadcast until
@@ -524,6 +540,8 @@ env -u BASE_SEPOLIA_PRIVATE_KEY \
   P42_PRIMARY_RPC_OPERATOR_ID=... \
   P42_SECONDARY_BASE_SEPOLIA_RPC_URL=... \
   P42_SECONDARY_RPC_OPERATOR_ID=... \
+  P42_ACTIVATION_RPC_OPERATOR_REGISTRY_PATH=/secure/p42/rpc/registry.json \
+  P42_ACTIVATION_RPC_REGISTRY_TRUSTED_ROOT=/secure/p42/rpc \
   P42_DEPLOYMENT_MANIFEST=../deployments/base-sepolia/p42-prizes.json \
   P42_EXPLORER_DOSSIER_PATH=... \
   P42_EXPLORER_DOSSIER_SHA256=sha256:... \
@@ -536,6 +554,24 @@ env -u BASE_SEPOLIA_PRIVATE_KEY \
   P42_ROLE_ACCEPTANCE_PACKET_SHA256=sha256:... \
   npm run continue:base-sepolia
 ```
+
+Run `npm run reconcile:base-sepolia` with the same keyless environment after
+continuation. Its RPC registry digest must come from the protected release
+observation-authority pin, not from the registry directory or the
+reconciliation caller. Provision that fixed pin before the ceremony:
+
+```bash
+install -d -o root -g root -m 0755 /etc/p42
+printf '%s\n' 'sha256:<canonical-registry-digest>' \
+  | sudo tee /etc/p42/activation-rpc-operator-registry.sha256 >/dev/null
+sudo chown root:root /etc/p42/activation-rpc-operator-registry.sha256
+sudo chmod 0444 /etc/p42/activation-rpc-operator-registry.sha256
+```
+
+The command compiles the pinned contract sources before loading their
+artifacts, performs a raw chain-ID probe with redirect rejection,
+reconstructs the complete finalized state independently through both exact
+registry members, and writes no report unless their canonical reports agree.
 
 `P42_ROLE_ACCEPTANCE_PACKET_SHA256` must be obtained independently from the
 packet path. Continuation hashes the exact packet bytes and rejects a packet

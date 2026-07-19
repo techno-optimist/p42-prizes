@@ -438,7 +438,6 @@ function commonInputs() {
     trustRegistryPath: required("trust-registry"),
     artifactRoot: required("artifact-root"),
     sp1SecurityReportPath: required("sp1-security-report"),
-    chainRpcUrl: process.env.P42_SECONDARY_BASE_RPC_URL,
   });
   return { manifest, validatedAuthorization, primary, secondary };
 }

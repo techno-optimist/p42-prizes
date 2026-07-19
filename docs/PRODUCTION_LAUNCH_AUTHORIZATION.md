@@ -65,7 +65,6 @@ PYTHONPATH=src python3 -m p42_prizes.cli \
   --authorization /srv/p42/release/launch-authorization.json \
   --trust-registry /srv/p42/release/production-trust-registry.json \
   --artifact-root /srv/p42/release \
-  --chain-rpc-url https://independent-base-rpc.example \
   --output /srv/p42/release/validated-launch-authorization.json
 ```
 

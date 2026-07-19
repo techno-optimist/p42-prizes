@@ -12,10 +12,12 @@ import {
 } from "../../agent/indexer.mjs";
 import {
   assertReconciliationPublishable,
+  assertReconciliationReportsAgree,
   buildReconciliationReport,
   reconcileWithProvider,
 } from "../scripts/reconciliation-helper.js";
 import { validateMonotonicFinalityAnchor } from "../scripts/finality-anchor.js";
+import { sha256Canonical } from "../../agent/lib.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../..");
@@ -24,9 +26,102 @@ function readJson(path) {
   return JSON.parse(readFileSync(resolve(REPO_ROOT, path), "utf8"));
 }
 
+function rpcEvidence() {
+  const profile = (operatorId, endpointOrigin) => ({
+    operatorId,
+    endpointOrigin,
+    endpointProfileDigest: sha256Canonical({ operatorId, endpointOrigin }),
+  });
+  const primary = profile("operator-a", "https://primary.example");
+  const secondary = profile("operator-b", "https://secondary.example");
+  const registryDigest = `sha256:${"9".repeat(64)}`;
+  return {
+    registry: { schema: "p42-activation-rpc-operator-registry/v1", registryDigest, profiles: [primary, secondary] },
+    authority: { schema: "p42-activation-rpc-authority/v1", registryDigest, primary, secondary },
+  };
+}
+
 describe("Base Sepolia reconciliation evidence gate", () => {
   it("loads without RPC/deployer environment and exports the focused runner", () => {
     assert.equal(typeof reconcileWithProvider, "function");
+    const entrypoint = readFileSync(resolve(REPO_ROOT, "contracts/scripts/reconcile-base-sepolia.js"), "utf8");
+    assert.match(entrypoint, /loadPinnedActivationRpcRegistryDigest\(\)/);
+    assert.doesNotMatch(entrypoint, /runProductionAuthorizationValidator/);
+    assert.doesNotMatch(entrypoint, /P42_ACTIVATION_RPC_OPERATOR_REGISTRY_SHA256/);
+  });
+
+  it("requires distinct full-reconstruction RPC operators before loading release evidence", async () => {
+    const primary = {};
+    const secondary = {};
+    const ethers = { provider: primary };
+    const manifest = { data: {} };
+    const { registry, authority } = rpcEvidence();
+    await assert.rejects(
+      () => reconcileWithProvider({ ethers, manifest, rpcAuthority: authority, rpcRegistry: registry, pinnedRpcRegistryDigest: authority.registryDigest, finalityEndpoints: [{ operatorId: "operator-a", url: "https://primary.example", provider: primary }] }),
+      /requires exactly two RPC operators/,
+    );
+    await assert.rejects(
+      () => reconcileWithProvider({
+        ethers,
+        manifest,
+        rpcAuthority: authority,
+        rpcRegistry: registry,
+        pinnedRpcRegistryDigest: authority.registryDigest,
+        finalityEndpoints: [
+          { operatorId: "operator-a", url: "https://primary.example", provider: primary },
+          { operatorId: "operator-a", url: "https://secondary.example", provider: secondary },
+        ],
+      }),
+      /requires distinct RPC operator IDs/,
+    );
+    await assert.rejects(
+      () => reconcileWithProvider({
+        ethers,
+        manifest,
+        rpcAuthority: authority,
+        rpcRegistry: registry,
+        pinnedRpcRegistryDigest: authority.registryDigest,
+        finalityEndpoints: [
+          { operatorId: "operator-a", url: "https://primary.example", provider: secondary },
+          { operatorId: "operator-b", url: "https://secondary.example", provider: primary },
+        ],
+      }),
+      /primary finality endpoint must use the configured primary provider/,
+    );
+    const forgedAuthority = structuredClone(authority);
+    forgedAuthority.primary.endpointOrigin = "https://forged.example";
+    forgedAuthority.primary.endpointProfileDigest = sha256Canonical({
+      operatorId: "operator-a",
+      endpointOrigin: "https://forged.example",
+    });
+    await assert.rejects(
+      () => reconcileWithProvider({
+        ethers,
+        manifest,
+        rpcAuthority: forgedAuthority,
+        rpcRegistry: registry,
+        pinnedRpcRegistryDigest: authority.registryDigest,
+        finalityEndpoints: [
+          { operatorId: "operator-a", url: "https://forged.example", provider: primary },
+          { operatorId: "operator-b", url: "https://secondary.example", provider: secondary },
+        ],
+      }),
+      /not an exact protected registry member/,
+    );
+    await assert.rejects(
+      () => reconcileWithProvider({
+        ethers,
+        manifest,
+        rpcAuthority: authority,
+        rpcRegistry: registry,
+        pinnedRpcRegistryDigest: `sha256:${"8".repeat(64)}`,
+        finalityEndpoints: [
+          { operatorId: "operator-a", url: "https://primary.example", provider: primary },
+          { operatorId: "operator-b", url: "https://secondary.example", provider: secondary },
+        ],
+      }),
+      /does not match the protected out-of-band digest pin/,
+    );
   });
 
   it("accepts the pinned example and binds its full deployment config hash", () => {
@@ -157,6 +252,40 @@ describe("Base Sepolia reconciliation evidence gate", () => {
         validateMultiBoard() { throw new Error("must not be reached"); },
       }),
       /unsupported multi-board checkpoint schema/,
+    );
+  });
+
+  it("rejects any log or storage divergence between full RPC reconstructions", () => {
+    const report = {
+      schema: "p42-prizes/reconciliation-report/v4",
+      range: { fromBlock: 10, toBlock: 20, toBlockHash: `0x${"1".repeat(64)}` },
+      events: { digest: `0x${"2".repeat(64)}`, counts: { "submissions.Revealed": 1 } },
+      boards: [{
+        problemId: "1",
+        events: [{ transactionHash: `0x${"3".repeat(64)}` }],
+        onchain: { submissionCount: "1", bestScoreAtoms: "42" },
+      }],
+      reconstruction: { ok: true, complete: true },
+    };
+    assert.doesNotThrow(() => assertReconciliationReportsAgree(
+      report,
+      structuredClone(report),
+      "operator-a",
+      "operator-b",
+    ));
+
+    const changedLog = structuredClone(report);
+    changedLog.boards[0].events[0].transactionHash = `0x${"4".repeat(64)}`;
+    assert.throws(
+      () => assertReconciliationReportsAgree(report, changedLog, "operator-a", "operator-b"),
+      /full reconciliation disagreement between RPC operators operator-a and operator-b/,
+    );
+
+    const changedStorage = structuredClone(report);
+    changedStorage.boards[0].onchain.bestScoreAtoms = "43";
+    assert.throws(
+      () => assertReconciliationReportsAgree(report, changedStorage, "operator-a", "operator-b"),
+      /full reconciliation disagreement between RPC operators operator-a and operator-b/,
     );
   });
 

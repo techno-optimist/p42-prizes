@@ -5073,7 +5073,6 @@ export async function runIndexer(options) {
       trustRegistryPath: activationTrustRegistryPath,
       artifactRoot: activationArtifactRoot,
       sp1SecurityReportPath,
-      chainRpcUrl: secondaryRpcUrl,
     }).value
     : null;
   const authorizationRegistryDigest = activationAuthorization
