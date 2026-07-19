@@ -76,17 +76,16 @@ def test_exact_ten_math_review_fixture_corpora_are_deterministic() -> None:
     for record in dossier["records"]:
         corpus = canonical_math_review_fixtures(ROOT, record)
         assert record["math_review_fixtures"] == corpus
-        assert [item for item in corpus if item["role"] == "valid-input"] == [
-            {
-                "path": record["seed"]["path"],
-                "sha256": record["seed"]["sha256"],
-                "role": "valid-input",
-            }
-        ]
-        assert any(item["role"] == "invalid-input" for item in corpus)
+        seed = next(item for item in corpus if item["path"] == record["seed"]["path"])
+        assert seed["expected_verdict"]["status"] == "rejected"
+        assert seed["expected_verdict"]["reason"] == "NOT_STRICT_IMPROVEMENT"
+        assert all(item["expected_verdict"]["status"] == "rejected" for item in corpus)
 
 
-@pytest.mark.parametrize("attack", ["invent", "omit", "role-flip", "hash-substitution"])
+@pytest.mark.parametrize(
+    "attack",
+    ["invent", "omit", "status-flip", "reason-substitution", "report-substitution", "hash-substitution"],
+)
 def test_exact_ten_board_bindings_reject_fixture_corpus_substitution(
     tmp_path: Path, attack: str,
 ) -> None:
@@ -96,12 +95,16 @@ def test_exact_ten_board_bindings_reject_fixture_corpus_substitution(
         fixtures.append({
             "path": "problems/q6-intersecting-hypergraph/tests/invented.json",
             "sha256": "sha256:" + "0" * 64,
-            "role": "invalid-input",
+            "expected_verdict": deepcopy(fixtures[0]["expected_verdict"]),
         })
     elif attack == "omit":
         fixtures.pop()
-    elif attack == "role-flip":
-        next(item for item in fixtures if item["role"] == "valid-input")["role"] = "invalid-input"
+    elif attack == "status-flip":
+        fixtures[0]["expected_verdict"].update(status="accepted", valid=True, returncode=0)
+    elif attack == "reason-substitution":
+        fixtures[0]["expected_verdict"]["reason"] = "SUBSTITUTED_REASON"
+    elif attack == "report-substitution":
+        fixtures[0]["expected_verdict"]["report_sha256"] = "sha256:" + "0" * 64
     else:
         fixtures[0]["sha256"] = "sha256:" + "0" * 64
     mutated = tmp_path / "bindings.json"

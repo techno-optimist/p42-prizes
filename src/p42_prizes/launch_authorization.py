@@ -7,12 +7,17 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 from typing import Any, Callable, Mapping
 
 import jsonschema
 
-from p42_prizes.admission import SOURCE_HASH_ALGORITHM
+from p42_prizes.admission import (
+    AdmissionError,
+    SOURCE_HASH_ALGORITHM,
+    validate_image_release_checkout,
+)
 from p42_prizes.adversarial import normalize_adversarial_campaign_report
 from p42_prizes.bounded_process import OutputLimitExceeded, run_bounded_process
 from p42_prizes.governance import normalize_governance_signoff
@@ -35,7 +40,14 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 SCHEMA_VERSION = "p42-production-launch-authorization/v1"
-MATH_REVIEW_SCHEMA_VERSION = "p42-math-review/v3"
+MATH_REVIEW_SCHEMA_VERSION = "p42-math-review/v4"
+SOURCE_ONLY_ACCEPTANCE_LIMITATION = (
+    "No canonical fixture exercises verifier acceptance; acceptance-path review is limited to source inspection."
+)
+FIXTURE_REPLAY_ACCEPTANCE_LIMITATION = (
+    "Canonical accepted fixtures exercise the verifier acceptance path; this does not prove complete "
+    "acceptance-boundary coverage."
+)
 NETWORK_CHAIN_IDS = {"base-sepolia": 84532, "base-mainnet": 8453}
 AUTHORIZER_ROLES = {
     "production-launch-authority",
@@ -138,7 +150,13 @@ def normalize_launch_authorization(
         raise LaunchAuthorizationError("release_binding network does not match authorization")
 
     artifacts = authorization.get("artifacts")
-    expected_artifacts = {*GATE_NORMALIZERS, "production_release_verification", "production_release_slate", "production_board_bindings", "release_capsule", "deployment_manifest", "reconciliation_report", "explorer_dossier", "explorer_operator_policy", "activation_rpc_operator_registry"}
+    expected_artifacts = {
+        *GATE_NORMALIZERS,
+        "production_release_verification", "production_release_slate", "production_board_bindings",
+        "verifier_image_release", "verifier_image_publication_journal", "release_capsule",
+        "deployment_manifest", "reconciliation_report", "explorer_dossier",
+        "explorer_operator_policy", "activation_rpc_operator_registry",
+    }
     if not isinstance(artifacts, Mapping) or set(artifacts) != expected_artifacts:
         raise LaunchAuthorizationError("artifacts must contain the exact launch evidence set")
     normalized_gate_hashes: dict[str, str] = {}
@@ -182,6 +200,32 @@ def normalize_launch_authorization(
         "authorization.artifacts.production_board_bindings",
         context,
     )
+    image_release_ref = _validate_artifact_reference(
+        artifacts["verifier_image_release"],
+        "authorization.artifacts.verifier_image_release",
+        LaunchAuthorizationError,
+        context,
+    )
+    image_release = _read_json_artifact(
+        artifacts["verifier_image_release"],
+        "authorization.artifacts.verifier_image_release",
+        context,
+    )
+    journal_ref = _validate_artifact_reference(
+        artifacts["verifier_image_publication_journal"],
+        "authorization.artifacts.verifier_image_publication_journal",
+        LaunchAuthorizationError,
+        context,
+    )
+    _validate_frozen_board_release(
+        image_release=image_release,
+        image_release_ref=image_release_ref,
+        publication_journal_ref=journal_ref,
+        board_bindings=board_bindings,
+        release_report=release_report,
+        release_slate=release_slate,
+        context=context,
+    )
     manifest = _read_json_artifact(artifacts["deployment_manifest"], "authorization.artifacts.deployment_manifest", context)
     _validate_deployment_manifest(manifest, release_report, network)
     reconciliation = _read_json_artifact(
@@ -215,6 +259,7 @@ def normalize_launch_authorization(
         release_slate=release_slate,
         deployment_manifest=manifest,
         board_bindings=board_bindings,
+        image_release=image_release,
         trust_registry=trust_registry,
         context=context,
         issued=issued,
@@ -778,6 +823,78 @@ def _validate_explorer_with_node(
         raise LaunchAuthorizationError(f"explorer dossier failed independent static validation: {detail}")
 
 
+def _validate_frozen_board_release(
+    *,
+    image_release: Mapping[str, Any],
+    image_release_ref: Mapping[str, Any],
+    publication_journal_ref: Mapping[str, Any],
+    board_bindings: Mapping[str, Any],
+    release_report: Mapping[str, Any],
+    release_slate: Mapping[str, Any],
+    context: AttestationValidationContext,
+) -> None:
+    release_commit = image_release.get("release_config_commit")
+    if release_commit != release_report.get("sourceCommit"):
+        raise LaunchAuthorizationError(
+            "verifier image release config commit does not match deployment release commit"
+        )
+    image_registry = release_slate.get("imageRegistry")
+    if (
+        not isinstance(image_registry, Mapping)
+        or image_registry.get("path") != image_release_ref["local_path"]
+        or image_registry.get("digest") != image_release_ref["sha256"]
+    ):
+        raise LaunchAuthorizationError("release slate image registry does not bind the exact image release dossier")
+
+    validator_root = _SCHEMA_DIR.parent
+
+    def verify_snapshot(snapshot: Path) -> None:
+        script = validator_root / "scripts" / "verify_production_board_bindings.py"
+        try:
+            result = run_bounded_process(
+                [sys.executable, str(script), "--repo-root", str(snapshot)],
+                cwd=validator_root,
+                env={
+                    "PATH": os.environ.get("PATH", os.defpath),
+                    "PYTHONPATH": str(snapshot / "src"),
+                },
+                timeout=300,
+            )
+        except (OSError, subprocess.SubprocessError, OutputLimitExceeded) as exc:
+            raise AdmissionError(f"exact-ten frozen board replay could not run: {exc}") from exc
+        if result.returncode != 0:
+            raise AdmissionError("exact-ten frozen board replay failed")
+        try:
+            frozen_bindings = loads_strict_json(
+                (snapshot / "protocol" / "production-board-bindings-v1.json").read_bytes()
+            )
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            raise AdmissionError("frozen canonical board bindings are unreadable") from exc
+        if frozen_bindings != board_bindings:
+            raise AdmissionError("supplied board bindings do not equal the frozen canonical checkout")
+
+    journal_payload = context.resolved_artifacts.get(
+        (publication_journal_ref["local_path"], publication_journal_ref["sha256"])
+    )
+    if not isinstance(journal_payload, bytes):
+        raise LaunchAuthorizationError("verifier image publication journal was not resolved exactly")
+    try:
+        with tempfile.TemporaryDirectory(prefix="p42-launch-journal-") as temporary:
+            journal_path = Path(temporary) / "publication-journal.json"
+            journal_path.write_bytes(journal_payload)
+            validate_image_release_checkout(
+                validator_root,
+                image_release,
+                publication_journal_path=journal_path,
+                publication_journal_file_sha256=publication_journal_ref["sha256"],
+                board_binding_verifier=verify_snapshot,
+            )
+    except (AdmissionError, OSError, subprocess.SubprocessError) as exc:
+        raise LaunchAuthorizationError(
+            f"verifier image source/release checkout failed independent exact replay: {exc}"
+        ) from exc
+
+
 def _validate_problem_reviews(
     reviews: Any,
     *,
@@ -785,6 +902,7 @@ def _validate_problem_reviews(
     release_slate: Mapping[str, Any],
     deployment_manifest: Mapping[str, Any],
     board_bindings: Mapping[str, Any],
+    image_release: Mapping[str, Any],
     trust_registry: Mapping[str, Any],
     context: AttestationValidationContext,
     issued: datetime,
@@ -816,9 +934,28 @@ def _validate_problem_reviews(
         raise LaunchAuthorizationError("production board bindings release source does not match verified release")
     if not isinstance(slate_boards, list) or len(slate_boards) != 10:
         raise LaunchAuthorizationError("production release slate must contain exactly ten ordered boards")
-    for position, (binding_record, slate_board) in enumerate(zip(binding_records, slate_boards), start=1):
+    image_boards = image_release.get("boards")
+    if (
+        image_release.get("release_config_commit") != release_report.get("sourceCommit")
+        or not isinstance(image_boards, list)
+        or len(image_boards) != 10
+    ):
+        raise LaunchAuthorizationError("verifier image release does not match the exact deployment release")
+    for position, (binding_record, slate_board, image_board) in enumerate(
+        zip(binding_records, slate_boards, image_boards, strict=True), start=1
+    ):
         if not isinstance(slate_board, Mapping):
             raise LaunchAuthorizationError("production release slate contains an invalid board")
+        if (
+            not isinstance(image_board, Mapping)
+            or image_board.get("slug") != binding_record["slug"]
+            or image_board.get("source_hash") != binding_record["verifier"]["source_tree_sha256"]
+            or image_board.get("version") != binding_record["verifier"]["version"]
+            or image_board.get("index_digest") != slate_board.get("verifierImageDigest")
+        ):
+            raise LaunchAuthorizationError(
+                f"production board binding {position} does not match verifier image source evidence"
+            )
         expected_slate_binding = {
             "problemId": str(position),
             "problemSlug": binding_record["slug"],
@@ -837,6 +974,11 @@ def _validate_problem_reviews(
         row.get("problemId"): row
         for row in deployment_manifest.get("problems", [])
         if isinstance(row, Mapping)
+    }
+    image_by_slug = {
+        row.get("slug"): row
+        for row in image_boards
+        if isinstance(row, Mapping) and isinstance(row.get("slug"), str)
     }
     seen_ids: set[str] = set()
     seen_slugs: set[str] = set()
@@ -872,6 +1014,8 @@ def _validate_problem_reviews(
         binding_record = binding_by_slug.get(slug)
         if binding_record is None:
             raise LaunchAuthorizationError(f"problem review {problem_id} has no production board binding")
+        if image_by_slug.get(slug, {}).get("index_digest") != review.get("verifier_image_digest"):
+            raise LaunchAuthorizationError(f"problem review {problem_id} does not match exact verifier image release")
         board_binding_hash = sha256_bytes(canonical_json(binding_record).encode("utf-8"))
         if review.get("board_bindings_digest") != board_bindings_digest:
             raise LaunchAuthorizationError(f"problem review {problem_id} board bindings digest mismatch")
@@ -892,6 +1036,10 @@ def _validate_problem_reviews(
             raise LaunchAuthorizationError("deployment manifest has no production release evidence")
         deployed_release_binding = {
             "board_position": binding_position,
+            "verifier_source_commit": image_release.get("verifier_source_commit"),
+            "verifier_source_archive_digest": image_release.get("verifier_source_archive_digest"),
+            "release_config_commit": image_release.get("release_config_commit"),
+            "release_config_archive_digest": image_release.get("release_config_archive_digest"),
             "deployment_commit": release_report.get("sourceCommit"),
             "release_capsule_digest": release_report.get("capsuleDigest"),
             "release_slate_digest": release_report.get("slateDigest"),
@@ -932,12 +1080,14 @@ def _validate_math_review(
             schema, format_checker=jsonschema.FormatChecker()
         ).validate(packet)
     except (OSError, ValueError, jsonschema.SchemaError, jsonschema.ValidationError) as exc:
-        raise LaunchAuthorizationError(f"math review packet failed v3 schema validation: {exc}") from exc
+        raise LaunchAuthorizationError(f"math review packet failed v4 schema validation: {exc}") from exc
     for packet_key, row_key in (("problem_id", "problem_id"), ("problem_slug", "problem_slug"), ("board_bindings_digest", "board_bindings_digest"), ("board_binding_hash", "board_binding_hash"), ("verifier_image_digest", "verifier_image_digest"), ("admission_matrix_digest", "admission_matrix_digest")):
         if packet.get(packet_key) != row.get(row_key):
             raise LaunchAuthorizationError(f"math review {packet_key} does not match authorization")
     if packet.get("deployed_release_binding") != dict(deployed_release_binding):
         raise LaunchAuthorizationError("math review deployed_release_binding does not match exact deployed release")
+    if deployed_release_binding.get("release_config_commit") != deployed_release_binding.get("deployment_commit"):
+        raise LaunchAuthorizationError("math review release config commit R does not match deployment commit R")
     _validate_math_review_evidence_bindings(
         packet,
         board_binding=board_binding,
@@ -1043,7 +1193,8 @@ def _validate_math_review_evidence_bindings(
     if not isinstance(verifier_binding, Mapping):
         raise LaunchAuthorizationError("math review evidence has no canonical verifier binding")
     source_identity = {
-        "commit": deployed_release_binding.get("deployment_commit"),
+        "verifier_source_commit": deployed_release_binding.get("verifier_source_commit"),
+        "release_config_commit": deployed_release_binding.get("release_config_commit"),
         "problem_slug": slug,
         "tree_hash_algorithm": SOURCE_HASH_ALGORITHM,
         "tree_hash": verifier_binding.get("source_tree_sha256"),
@@ -1053,7 +1204,6 @@ def _validate_math_review_evidence_bindings(
     verifier = packet["verifier_schema_and_fixtures"]
     expected_board_artifacts = (
         ("statement_artifact", statement["statement_artifact"], board_binding.get("specification")),
-        ("reduction_artifact", statement["reduction_artifact"], board_binding.get("problem_yaml")),
         ("solution_schema", verifier["solution_schema"], board_binding.get("solution_schema")),
     )
     bound_refs: list[tuple[str, str]] = []
@@ -1064,6 +1214,10 @@ def _validate_math_review_evidence_bindings(
                 f"math review {role} does not match its canonical board artifact and source identity"
             )
         bound_refs.append((observed["path"], observed["sha256"]))
+    if statement["canonical_claim_scope"] != board_binding.get("claim_scope"):
+        raise LaunchAuthorizationError("math review canonical_claim_scope does not match the board claim boundary")
+    if statement["canonical_objective"] != board_binding.get("objective"):
+        raise LaunchAuthorizationError("math review canonical_objective does not match the board objective")
 
     expected_verifier_source = {
         "problem_path": f"problems/{slug}",
@@ -1076,26 +1230,45 @@ def _validate_math_review_evidence_bindings(
             "math review verifier_source does not match the canonical verifier and source identity"
         )
 
-    valid_fixtures = verifier["valid_fixtures"]
-    invalid_fixtures = verifier["invalid_fixtures"]
+    fixture_verdicts = verifier["fixture_verdicts"]
     canonical_fixtures = board_binding.get("math_review_fixtures")
     if not isinstance(canonical_fixtures, list):
         raise LaunchAuthorizationError("math review evidence has no canonical board fixture corpus")
-    expected_fixtures = {"valid-input": [], "invalid-input": []}
+    expected_fixtures = []
     for fixture in canonical_fixtures:
-        if not isinstance(fixture, Mapping) or fixture.get("role") not in expected_fixtures:
+        if not isinstance(fixture, Mapping) or not isinstance(fixture.get("expected_verdict"), Mapping):
             raise LaunchAuthorizationError("math review evidence has an invalid canonical board fixture corpus")
-        expected_fixtures[fixture["role"]].append({
+        expected_fixtures.append({
             "path": fixture.get("path"),
             "sha256": fixture.get("sha256"),
-            "fixture_role": fixture["role"],
+            "expected_verdict": fixture["expected_verdict"],
             "source_identity": source_identity,
         })
-    if valid_fixtures != expected_fixtures["valid-input"]:
-        raise LaunchAuthorizationError("math review valid_fixtures do not exactly match the canonical board corpus")
-    if invalid_fixtures != expected_fixtures["invalid-input"]:
-        raise LaunchAuthorizationError("math review invalid_fixtures do not exactly match the canonical board corpus")
-    for fixture in valid_fixtures + invalid_fixtures:
+    if fixture_verdicts != expected_fixtures:
+        raise LaunchAuthorizationError("math review fixture_verdicts do not exactly match canonical verifier results")
+    accepted_count = sum(
+        fixture["expected_verdict"]["status"] == "accepted" for fixture in expected_fixtures
+    )
+    expected_counts = {
+        "accepted": accepted_count,
+        "rejected": len(expected_fixtures) - accepted_count,
+        "total": len(expected_fixtures),
+    }
+    if verifier["fixture_verdict_counts"] != expected_counts:
+        raise LaunchAuthorizationError("math review fixture_verdict_counts do not match canonical verifier results")
+    expected_acceptance_review = {
+        "method": "canonical-fixture-replay" if accepted_count else "source-inspection-only",
+        "limitation": (
+            FIXTURE_REPLAY_ACCEPTANCE_LIMITATION
+            if accepted_count
+            else SOURCE_ONLY_ACCEPTANCE_LIMITATION
+        ),
+    }
+    if verifier["acceptance_path_review"] != expected_acceptance_review:
+        raise LaunchAuthorizationError(
+            "math review acceptance_path_review overclaims canonical acceptance-path evidence"
+        )
+    for fixture in fixture_verdicts:
         bound_refs.append((fixture["path"], fixture["sha256"]))
     if len(bound_refs) != len(set(bound_refs)):
         raise LaunchAuthorizationError("math review evidence roles must use distinct canonical source references")

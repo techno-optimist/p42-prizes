@@ -63,6 +63,8 @@ def _registry(attestation_class: str, signer_role: str) -> dict[str, object]:
             "p42-incident-drill/v2",
             "external-disclosure-probe-operator",
         ),
+        ("p42-math-review/v4", "independent-math-reviewer"),
+        ("p42-math-review/v4", "problem-owner"),
     ],
 )
 def test_current_gate_attestation_registrations_are_admissible(
@@ -89,6 +91,15 @@ def test_historical_v1_registrations_remain_admissible(
 
 
 @pytest.mark.parametrize(
+    "signer_role", ["independent-math-reviewer", "problem-owner"]
+)
+def test_math_review_v3_registrations_remain_version_scoped(signer_role: str) -> None:
+    jsonschema.Draft202012Validator(SCHEMA).validate(
+        _registry("p42-math-review/v3", signer_role)
+    )
+
+
+@pytest.mark.parametrize(
     ("attestation_class", "signer_role"),
     [
         ("p42-governance-signoff/v2", "treasury"),
@@ -99,6 +110,8 @@ def test_historical_v1_registrations_remain_admissible(
         ("p42-security-audit/v2", "facilitator"),
         ("p42-incident-drill/v2", "incident-lead"),
         ("p42-incident-drill/v2", "external-security-auditor"),
+        ("p42-math-review/v4", "reviewer"),
+        ("p42-math-review/v4", "independent-math-reviewer-v3"),
     ],
 )
 def test_current_gate_attestation_registrations_reject_substitution(

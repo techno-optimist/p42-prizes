@@ -20,7 +20,15 @@
     "replay_command": "python -m verifier solution.json",
     "statement_reduction_verifier_correspondence": true,
     "schema_rejects_out_of_domain_inputs": true,
-    "fixtures_cover_acceptance_boundary": true,
+    "fixture_verdict_counts": {
+      "accepted": 0,
+      "rejected": 3,
+      "total": 3
+    },
+    "acceptance_path_review": {
+      "method": "source-inspection-only",
+      "limitation": "No canonical fixture exercises verifier acceptance; acceptance-path review is limited to source inspection."
+    },
     "status": "passed"
   },
   "literature_review": {

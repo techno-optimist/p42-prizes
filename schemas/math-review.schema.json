@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://p42.xyz/schemas/math-review.schema.json",
-  "title": "P42 production mathematics review packet v3",
+  "title": "P42 production mathematics review packet v4",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -14,7 +14,7 @@
     "review_hash", "reviewer_signature", "problem_owner_signature"
   ],
   "properties": {
-    "schema_version": { "const": "p42-math-review/v3" },
+    "schema_version": { "const": "p42-math-review/v4" },
     "problem_id": { "type": "string", "pattern": "^(?:[1-9]|10)$" },
     "problem_slug": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
     "board_bindings_digest": { "$ref": "#/$defs/hash" },
@@ -58,9 +58,10 @@
     "sourceIdentity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["commit", "problem_slug", "tree_hash_algorithm", "tree_hash"],
+      "required": ["verifier_source_commit", "release_config_commit", "problem_slug", "tree_hash_algorithm", "tree_hash"],
       "properties": {
-        "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "verifier_source_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "release_config_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
         "problem_slug": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
         "tree_hash_algorithm": { "const": "p42-source-tree-sha256/v2" },
         "tree_hash": { "$ref": "#/$defs/hash" }
@@ -87,16 +88,38 @@
         "source_identity": { "$ref": "#/$defs/sourceIdentity" }
       }
     },
-    "sourceFixture": {
+    "sourceFixtureVerdict": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "sha256", "fixture_role", "source_identity"],
+      "required": ["path", "sha256", "expected_verdict", "source_identity"],
       "properties": {
         "path": { "type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$" },
         "sha256": { "$ref": "#/$defs/hash" },
-        "fixture_role": { "enum": ["valid-input", "invalid-input"] },
+        "expected_verdict": { "$ref": "#/$defs/fixtureVerdict" },
         "source_identity": { "$ref": "#/$defs/sourceIdentity" }
       }
+    },
+    "fixtureVerdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "valid", "returncode", "reason", "report_sha256"],
+      "properties": {
+        "status": { "enum": ["accepted", "rejected"] },
+        "valid": { "type": "boolean" },
+        "returncode": { "enum": [0, 1] },
+        "reason": { "type": "string", "minLength": 1 },
+        "report_sha256": { "$ref": "#/$defs/hash" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "valid": { "const": true } }, "required": ["valid"] },
+          "then": { "properties": { "status": { "const": "accepted" }, "returncode": { "const": 0 } } }
+        },
+        {
+          "if": { "properties": { "valid": { "const": false } }, "required": ["valid"] },
+          "then": { "properties": { "status": { "const": "rejected" }, "returncode": { "const": 1 } } }
+        }
+      ]
     },
     "identityBase": {
       "type": "object",
@@ -137,12 +160,17 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "board_position", "deployment_commit", "release_capsule_digest",
+        "board_position", "verifier_source_commit", "verifier_source_archive_digest",
+        "release_config_commit", "release_config_archive_digest", "deployment_commit", "release_capsule_digest",
         "release_slate_digest", "release_index_digest", "release_verification_digest",
         "ceremony_config_digest", "release_binding_digest", "board_set_digest"
       ],
       "properties": {
         "board_position": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "verifier_source_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "verifier_source_archive_digest": { "$ref": "#/$defs/hash" },
+        "release_config_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "release_config_archive_digest": { "$ref": "#/$defs/hash" },
         "deployment_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
         "release_capsule_digest": { "$ref": "#/$defs/hash" },
         "release_slate_digest": { "$ref": "#/$defs/hash" },
@@ -178,7 +206,7 @@
       "required": [
         "literal_problem_statement", "quantifiers_and_domain", "objective_direction",
         "claimed_threshold_or_bound", "reduction_to_submission_format",
-        "acceptance_criterion", "statement_artifact", "reduction_artifact"
+        "acceptance_criterion", "statement_artifact", "canonical_claim_scope", "canonical_objective"
       ],
       "properties": {
         "literal_problem_statement": { "type": "string", "minLength": 20 },
@@ -188,28 +216,63 @@
         "reduction_to_submission_format": { "type": "string", "minLength": 20 },
         "acceptance_criterion": { "type": "string", "minLength": 20 },
         "statement_artifact": { "$ref": "#/$defs/sourceArtifact" },
-        "reduction_artifact": { "$ref": "#/$defs/sourceArtifact" }
+        "canonical_claim_scope": { "type": "string", "minLength": 1 },
+        "canonical_objective": { "$ref": "#/$defs/objective" }
       }
     },
     "verifierReview": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "verifier_source", "solution_schema", "valid_fixtures", "invalid_fixtures",
+        "verifier_source", "solution_schema", "fixture_verdicts",
         "replay_command", "replay_result", "statement_reduction_verifier_correspondence",
-        "schema_rejects_out_of_domain_inputs", "fixtures_cover_acceptance_boundary", "status"
+        "schema_rejects_out_of_domain_inputs", "fixture_verdict_counts",
+        "acceptance_path_review", "status"
       ],
       "properties": {
         "verifier_source": { "$ref": "#/$defs/verifierSource" },
         "solution_schema": { "$ref": "#/$defs/sourceArtifact" },
-        "valid_fixtures": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/sourceFixture" } },
-        "invalid_fixtures": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/sourceFixture" } },
+        "fixture_verdicts": { "type": "array", "minItems": 2, "maxItems": 256, "items": { "$ref": "#/$defs/sourceFixtureVerdict" } },
         "replay_command": { "type": "string", "minLength": 5 },
         "replay_result": { "$ref": "#/$defs/artifact" },
         "statement_reduction_verifier_correspondence": { "const": true },
         "schema_rejects_out_of_domain_inputs": { "const": true },
-        "fixtures_cover_acceptance_boundary": { "const": true },
+        "fixture_verdict_counts": { "$ref": "#/$defs/fixtureVerdictCounts" },
+        "acceptance_path_review": { "$ref": "#/$defs/acceptancePathReview" },
         "status": { "const": "passed" }
+      }
+    },
+    "fixtureVerdictCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accepted", "rejected", "total"],
+      "properties": {
+        "accepted": { "type": "integer", "minimum": 0, "maximum": 256 },
+        "rejected": { "type": "integer", "minimum": 0, "maximum": 256 },
+        "total": { "type": "integer", "minimum": 2, "maximum": 256 }
+      }
+    },
+    "acceptancePathReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "limitation"],
+      "properties": {
+        "method": { "enum": ["canonical-fixture-replay", "source-inspection-only"] },
+        "limitation": { "type": "string", "minLength": 20 }
+      }
+    },
+    "objective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["direction", "score_name", "seed_best", "optimum", "min_improvement", "gauge", "target_classification"],
+      "properties": {
+        "direction": { "enum": ["minimize", "maximize"] },
+        "score_name": { "type": "string", "minLength": 1 },
+        "seed_best": { "type": "string", "pattern": "^-?[0-9]+/[1-9][0-9]*$" },
+        "optimum": { "type": "string", "pattern": "^-?[0-9]+/[1-9][0-9]*$" },
+        "min_improvement": { "type": "string", "pattern": "^-?[0-9]+/[1-9][0-9]*$" },
+        "gauge": { "type": "string", "minLength": 1 },
+        "target_classification": { "enum": ["proven_exact", "proven_lower_bound", "proven_upper_bound", "search_target", "scoped_surrogate"] }
       }
     },
     "literatureReview": {

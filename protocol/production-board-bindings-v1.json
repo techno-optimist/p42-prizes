@@ -20,48 +20,102 @@
       },
       "math_review_fixtures": [
         {
+          "expected_verdict": {
+            "reason": "COVERABLE_BY_5",
+            "report_sha256": "sha256:f7e6a9e982dc0a25c1142da51009bf1584f2d44c414e35d35bb6bbd9ee23c176",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/q6-intersecting-hypergraph/tests/boundary-tau5.json",
-          "role": "invalid-input",
           "sha256": "sha256:cfd40065049172e5cfa8b249c1af1ee6b03c39051ceb82cc885b54e2c654dc0f"
         },
         {
+          "expected_verdict": {
+            "reason": "COVERABLE_BY_5",
+            "report_sha256": "sha256:694b898748be82cf50e3e9a14c5cb9bf69065314492ee40788cfbe298fda0a6d",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/q6-intersecting-hypergraph/tests/coverable-sunflower.json",
-          "role": "invalid-input",
           "sha256": "sha256:e00dbaee4fd6e4909055a0609cbb2f69802cbd614cb3b73abc4814edd2d81fc4"
         },
         {
+          "expected_verdict": {
+            "reason": "DUPLICATE_EDGE",
+            "report_sha256": "sha256:62657942ff348decf4b58fc1f17ee3d237f6e09b5de14e764cfd6308fd2c5a1f",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/q6-intersecting-hypergraph/tests/duplicate-edge.json",
-          "role": "invalid-input",
           "sha256": "sha256:5c6d52d5330aa6cc93be6a2cceee6ed199f815ef1fbfc4a4f951807c5395bd78"
         },
         {
+          "expected_verdict": {
+            "reason": "EDGE_SIZE",
+            "report_sha256": "sha256:846ea7e18a8cd8949320ff5169cefe54c216494567c312906e158f6409b5a24b",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/q6-intersecting-hypergraph/tests/edge-size.json",
-          "role": "invalid-input",
           "sha256": "sha256:e547c4b1e71c542ad87248c61499daab0df87d82e3e5fbc065924b401bb51a74"
         },
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:1d03a2cbe39fb0bc490ed36dbdb0b4e5461a2388c8057d7b591a823c2493dc21",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/q6-intersecting-hypergraph/tests/lying-claim.json",
-          "role": "invalid-input",
           "sha256": "sha256:a1d5a0ee0ab43bedf79c77fefc292db1d51a9b95f1dc3d4e0d7c37cca1f62cf2"
         },
         {
+          "expected_verdict": {
+            "reason": "MALFORMED_JSON",
+            "report_sha256": "sha256:c8a9ee75f0f3dd3557ba1a80c3b08ff712a9e6770f641425492a634a1819fe9a",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/q6-intersecting-hypergraph/tests/malformed.json",
-          "role": "invalid-input",
           "sha256": "sha256:318e9200bcb5c8863a03c339c38795277b9ce26041a11d52e0bab9d2f53abe2c"
         },
         {
+          "expected_verdict": {
+            "reason": "NOT_INTERSECTING",
+            "report_sha256": "sha256:880242dc6a27693852725e616478c572c72b7b90e2244abba652ee5509e5f1e6",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/q6-intersecting-hypergraph/tests/not-intersecting.json",
-          "role": "invalid-input",
           "sha256": "sha256:e87b3c0d69b3210fedb5d61807fbbddad7d1d2013d7ca98e653f3cee4b85f29b"
         },
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:a1fb208b6f99695707fd6d44acb1a82a8104d293fd47cacfc0973f38b677ca19",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/q6-intersecting-hypergraph/tests/seed-pg25.json",
-          "role": "valid-input",
           "sha256": "sha256:4c0e38ba9e174fe95c78de0acc2fa216ade92a52ba41b88ee010fbf7a61092ce"
         },
         {
+          "expected_verdict": {
+            "reason": "VERTEX_RANGE",
+            "report_sha256": "sha256:0640a2f180717ba2f5ec6e9d77ab488bd3ef2482f419b4ecadad28c882c4187f",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/q6-intersecting-hypergraph/tests/vertex-range.json",
-          "role": "invalid-input",
           "sha256": "sha256:a1bda7213c9488fb01793c3a5a473686ef54a0886a55b6f3d972d256ab763c04"
         }
       ],
@@ -123,7 +177,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:21aeb095753bb5a054e02a3f9dd082c807220da84f31d9248ffbea23c6e5bad8",
+        "source_tree_sha256": "sha256:1fcb2ffab37be9f51a902c551a5db48ac295cef7dc437ead4bbcb664f2bb99fb",
         "version": "0.1.0"
       }
     },
@@ -143,18 +197,36 @@
       },
       "math_review_fixtures": [
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:8b193936f9d96a4cfa802b62de857819425450770729cdbb4ac97d6b72824e8c",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/erdos-min-overlap/examples/hyra-upper.json",
-          "role": "valid-input",
           "sha256": "sha256:f37c8f97ae3f3b8a50344d7b9e9ffb3be506457a26a8d55622004b83f5ae64d1"
         },
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:6b5b50b9e68ef2f739c7952bfea98e62e0f2c164410aacd97c0275300f762502",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/erdos-min-overlap/examples/lying-claim.json",
-          "role": "invalid-input",
           "sha256": "sha256:0f6f9027d274a7a99a2d96fb28ba8610e1414adbac1d5e3c0bdf4a3eb0b311be"
         },
         {
+          "expected_verdict": {
+            "reason": "WRONG_SHAPE",
+            "report_sha256": "sha256:91f7c1bfa51f9f5e6de65c5b236b46ff686187cd800ca85a8948264dae377986",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/erdos-min-overlap/examples/wrong-length.json",
-          "role": "invalid-input",
           "sha256": "sha256:2a6e543586b7fa7de6c73ebaede2937f8af62834ce4d5a8137a9fd7f34cb6299"
         }
       ],
@@ -208,7 +280,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:68d12586b3c8fb0547718b3a647b73c345a2aee569d9d0bdd168b7e188f5029c",
+        "source_tree_sha256": "sha256:a9c57bf9df1e3774bd24121ea8e97a39264be91c57fd287e760a4a02aea8071d",
         "version": "0.1.1"
       }
     },
@@ -228,18 +300,36 @@
       },
       "math_review_fixtures": [
         {
+          "expected_verdict": {
+            "reason": "ROW_NOT_NORMALIZED",
+            "report_sha256": "sha256:b00f0ec885a23f269be379869014c19ece16e3c6000b7b000d4c667aaaff8069",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/edges-vs-triangles/examples/bad-row-sum.json",
-          "role": "invalid-input",
           "sha256": "sha256:d139aa3f81f72b3045ff1da9fb61c30f58b48ea85a81fff5dc1d3e5d97a9585c"
         },
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:023be500a7d1d2fe781038977af04f0026ef841b936cb5d57ac8162a7dc3e9cd",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/edges-vs-triangles/examples/lying-claim.json",
-          "role": "invalid-input",
           "sha256": "sha256:cef258dc549e818ddf844f52c5fbaf9300a3752116a1111932726c6f601668f8"
         },
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:730c0ca65e2d62807e837f7f6bf0f0ebcf954b1d73e12582998fa9c958e9a429",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/edges-vs-triangles/examples/rational-curve-sample.json",
-          "role": "valid-input",
           "sha256": "sha256:a662d18c930fbb2c351ca5987e78113be30657a04615cbff87e4781745969214"
         }
       ],
@@ -293,7 +383,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:16afc1ef15f44f303a9664af9be6ebb485df48a727a770874de00f63e7838c51",
+        "source_tree_sha256": "sha256:74e3d640e3b57529241c067b69d7dbb8134b5f39827803468fd420504e655300",
         "version": "0.1.2"
       }
     },
@@ -313,18 +403,36 @@
       },
       "math_review_fixtures": [
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:18e14f2ce967baa8933e2e28cdf1ca6695c92a250b830e8000f3d9efe369ab3b",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/arithmetic-kakeya/examples/kt-2x2-forcing.json",
-          "role": "valid-input",
           "sha256": "sha256:031865755a17795bf2a4c65a24986589b6a8d10085d6a062fae5293c38a7f118"
         },
         {
+          "expected_verdict": {
+            "reason": "CLOSURE_INCOMPLETE",
+            "report_sha256": "sha256:49cc99f446d8b0fceaf134ad0c16ce1b216937ed9885bb940c76a1eb85b550b1",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/arithmetic-kakeya/examples/tampered-seed-claim.json",
-          "role": "invalid-input",
           "sha256": "sha256:dba39f5f39a67b58c867364a22f37cbacc25b1ee4243af0c6118ee191f813f44"
         },
         {
+          "expected_verdict": {
+            "reason": "WRONG_GRID",
+            "report_sha256": "sha256:9fdc40a197d6fc8108a0cd85fccbd57eeb2b4fd2864c9fbb4ec52859ee438866",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/arithmetic-kakeya/examples/wrong-grid.json",
-          "role": "invalid-input",
           "sha256": "sha256:784cf84a5e1f488ee1010c63da20387e3412c557735691361a2d432a7333d9f6"
         }
       ],
@@ -378,7 +486,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:e5fde812dbf3606c54004e72dd3f71bb944e414dd706f9b6f5903426dd861b8b",
+        "source_tree_sha256": "sha256:0a6add9904bd67cf2e5ab447300fe9e173be12fccdad635b47a6ca409e665323",
         "version": "0.2.0"
       }
     },
@@ -398,18 +506,36 @@
       },
       "math_review_fixtures": [
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:8acb58d03480edc1bc6c0c725a707709b33ee0e6c4a6c302f2c176c3b742ae39",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/autoconvolution-c1-upper/examples/hyra-upper.json",
-          "role": "valid-input",
           "sha256": "sha256:0dc121b9404193d8a423400b946645e14ed1403c2d7bcb6c3b23ffc07675ad0e"
         },
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:d921184c3f9e5b233c18715f94d0154ed20f231f5fd4d48320b47a6f947ab62b",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/autoconvolution-c1-upper/examples/lying-claim.json",
-          "role": "invalid-input",
           "sha256": "sha256:3676cee901f0d71dfd258b3c871f8e623e9b458f0e97bb2555064f84db1373f8"
         },
         {
+          "expected_verdict": {
+            "reason": "WRONG_SHAPE",
+            "report_sha256": "sha256:b0a5df21456269c08aa499ea1b23fa56807ce1066dd3f781f78598e076eeafe3",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/autoconvolution-c1-upper/examples/wrong-length.json",
-          "role": "invalid-input",
           "sha256": "sha256:e07e358f066f7b32dd05f1e26ed925166c2391ded44dbb5793310b92151d3f7e"
         }
       ],
@@ -463,7 +589,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:7fd161b81b412491c2f68ff21ed8ca75afa6852bdf3e383b6554aec3d4ecad07",
+        "source_tree_sha256": "sha256:32b4b1a717fdf5f07559174467c127af2806e499d573213feacda569b51ac1c1",
         "version": "0.1.1"
       }
     },
@@ -483,18 +609,36 @@
       },
       "math_review_fixtures": [
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:82b009f62e63da32b08e3f40352f783488542727509ac6cd84e797d6f8c1ba2a",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/autoconvolution-c2-lower/examples/hyra-lower.json",
-          "role": "valid-input",
           "sha256": "sha256:6e785f481b592e0a6d1a77dd367c0379b8a3e55fe3b739c5cd1b352d7a25f064"
         },
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:8292a93ebca7ad0f62969ac20cd2ac2202fdf0d8afc849849c9b41392a9c7d2f",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/autoconvolution-c2-lower/examples/lying-claim.json",
-          "role": "invalid-input",
           "sha256": "sha256:4f2ad63626a4db99ce1e099cc6043279f531cefb0865849b9fdd43b4e70ef4ef"
         },
         {
+          "expected_verdict": {
+            "reason": "WRONG_SHAPE",
+            "report_sha256": "sha256:6d09a371533698d9aa10cc12fb01589625958b646194f3f53f8213a9916bb004",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/autoconvolution-c2-lower/examples/wrong-length.json",
-          "role": "invalid-input",
           "sha256": "sha256:9138ffae3a33091fc002956fd5e4d07d9fdc7c274728d20500436f4bb744fa2d"
         }
       ],
@@ -548,7 +692,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:f3aaaa851a52f75417e2507978da2e8fcc969ff0019a0622da55104f70382ef7",
+        "source_tree_sha256": "sha256:76a12e50f4b8cb0e65f9056691951c4ee020bee860dce8f848e1e4c979839e77",
         "version": "0.1.1"
       }
     },
@@ -568,48 +712,102 @@
       },
       "math_review_fixtures": [
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:b8b1f1f6a30318b34bf6cb38b831806ff67dd083aa2bcdfdf287dd55450e265b",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/distinct-subset-sums-a11/tests/conway-guy-594.json",
-          "role": "valid-input",
           "sha256": "sha256:5081fe54d10220c1ad2862fd872b3cf5dffe14184bb9f52a9e517ad4a5a26768"
         },
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICTLY_INCREASING",
+            "report_sha256": "sha256:6edcbe0b01d9b65d1b19d96599442bf5354b7241d29b66aca37cecf6b47b5670",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/distinct-subset-sums-a11/tests/duplicate-element.json",
-          "role": "invalid-input",
           "sha256": "sha256:38afa746c2a28c3b8f54ed46c55ca4b5aa54a2b78ad93a73480c0c69455b5608"
         },
         {
+          "expected_verdict": {
+            "reason": "DUPLICATE_SUBSET_SUM",
+            "report_sha256": "sha256:b85ebb69c8a5f7bac0cbd1c6d3fdaa7d7d89e057241011695919b84e4cb7d9a0",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/distinct-subset-sums-a11/tests/duplicate-sum.json",
-          "role": "invalid-input",
           "sha256": "sha256:85851603ee48f1f9d0336ab5ca8b72ec672b8366dab465df16f87d65f0872624"
         },
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:03aa3ea1c627ef4efddfc6b5c23a96aa11d1c159d0f5e3e32f22beccfc1387ae",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/distinct-subset-sums-a11/tests/lying-claim.json",
-          "role": "invalid-input",
           "sha256": "sha256:6f32725e0f8eda77e50e6b284d7e5e0516dede282eb88ab729d54448ef567bb5"
         },
         {
+          "expected_verdict": {
+            "reason": "MALFORMED_JSON",
+            "report_sha256": "sha256:00af9c867e04e87f611d27ef2fde27aabacdb46561fbc0d954a1f53463465030",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/distinct-subset-sums-a11/tests/malformed.json",
-          "role": "invalid-input",
           "sha256": "sha256:0144837354e5ce6c535f0ab114321b715504792b50b95eb1e8e67bcacf4e126b"
         },
         {
+          "expected_verdict": {
+            "reason": "NOT_POSITIVE",
+            "report_sha256": "sha256:9c24635236978ceff8c2e4e4b2922eede9aa7e54916b87311a492bed82a572d7",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/distinct-subset-sums-a11/tests/negative-element.json",
-          "role": "invalid-input",
           "sha256": "sha256:50c98585cee20673e229eefccf9869ed21afdd245c27faf5da0452239e919353"
         },
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICTLY_INCREASING",
+            "report_sha256": "sha256:a5680d8163c14d5ebac4009423f39e06554148257a5b3575fc68d49cbf854ccc",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/distinct-subset-sums-a11/tests/not-increasing.json",
-          "role": "invalid-input",
           "sha256": "sha256:baa49aa1924376f24fba2112d7c2767e89da37da4aaece642c968cc788d2e88f"
         },
         {
+          "expected_verdict": {
+            "reason": "WRONG_SHAPE",
+            "report_sha256": "sha256:db04b91e2f309b23fff9c619464bed4032c614f6051415511f65e060b0a48482",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/distinct-subset-sums-a11/tests/wrong-length-12.json",
-          "role": "invalid-input",
           "sha256": "sha256:969aaa674a7e22977049356e19a90c6f07db82d93fbcaf0c2af543fcc129e849"
         },
         {
+          "expected_verdict": {
+            "reason": "WRONG_SHAPE",
+            "report_sha256": "sha256:aa301e0bd3005c882deaaf4bb3e4f875a4f019d045bf6b3d00b8c3c41d471c09",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/distinct-subset-sums-a11/tests/wrong-length.json",
-          "role": "invalid-input",
           "sha256": "sha256:de2a5b167ba4742528ce94dee5b537392b9b3e5d1d404282d1e880502bdd2f38"
         }
       ],
@@ -671,7 +869,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:25657ab564393dd56a14b8c2805819f66ee40fca9e4a85025cfd074357f5d8b8",
+        "source_tree_sha256": "sha256:684e49353f913e6351b3fb68a74f35110804ef2f379acb6851483904de8351ad",
         "version": "0.1.0"
       }
     },
@@ -691,13 +889,25 @@
       },
       "math_review_fixtures": [
         {
+          "expected_verdict": {
+            "reason": "VAULT_FAIL",
+            "report_sha256": "sha256:57dbaebe3fd5d2c855e508d7539c1ceaba47358ac6e8861c6ad36046c3feeca5",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/mertens-lp-ceiling-k12000/examples/bad-decimal.json",
-          "role": "invalid-input",
           "sha256": "sha256:e2d6cc522fb969a3b5fc9671c8956c038024e0732455512807181fa52280e698"
         },
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:58742a4e6b03d94bbd31d3757f4bc713e8ccc9fb282636f84f220dca29f91a9a",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/mertens-lp-ceiling-k12000/examples/certificate-k12000.json",
-          "role": "valid-input",
           "sha256": "sha256:769a2cc98425695b4024d9c6ef549cc668e31882ae7773992967744540cb2795"
         }
       ],
@@ -751,7 +961,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:c3d86c1cf98655708e2755197d408ef551fe46bd1a3415c54ef1bb00a6147f36",
+        "source_tree_sha256": "sha256:fae502435a1ecf4a1616846c987f99b79039a31b01f2cb1fb6e22f8d860d6678",
         "version": "0.1.1"
       }
     },
@@ -771,18 +981,36 @@
       },
       "math_review_fixtures": [
         {
+          "expected_verdict": {
+            "reason": "SCORE_LOWER_BOUND_FAIL",
+            "report_sha256": "sha256:04af14ecea2eb2f9a9a954e6b82a323d0bd43835c89a0ca4301063f62594d380",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/pnt-sparse-mertens-construction/examples/bad-decimal.json",
-          "role": "invalid-input",
           "sha256": "sha256:49d9efa0ee836cb0f9eeab178c2e833834099ccfa49260e8f07cd1d2543fe4fb"
         },
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:9d626c0b63eae462cb03cd48c17f7cb5e61c92f31c6f8d21aafbb7daecccf891",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/pnt-sparse-mertens-construction/examples/chronos-96000.json",
-          "role": "valid-input",
           "sha256": "sha256:a60e6687ed1731009b3e3383fba1429bfac2bff694ee8e4fe256eef1fa42fb05"
         },
         {
+          "expected_verdict": {
+            "reason": "CONSTRAINT_VIOLATION",
+            "report_sha256": "sha256:04a3a05f9b91628553bf7806fbb696bf79a58ac2c4b11f466da9c0628ea83dec",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/pnt-sparse-mertens-construction/examples/constraint-violation.json",
-          "role": "invalid-input",
           "sha256": "sha256:ec5ff4964b359bbed58a044e063d16974da0369ac4b833f15856d5c76b64614f"
         }
       ],
@@ -836,7 +1064,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:9434dd7ac6cfd617c51bee2a68e58e0398f19e1cce8c464056acbda24fce28f1",
+        "source_tree_sha256": "sha256:a14867227f55de4af7eedaaeffbe33051d2825e504ff5b280b138d1bd80df7d7",
         "version": "0.1.2"
       }
     },
@@ -865,18 +1093,36 @@
       },
       "math_review_fixtures": [
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:f2bd3ef991908759c991cb6a94fa0e8b5f60720d3feeb77ad56ae08456c30ee6",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/hadamard-668-defect/examples/lying-claim.json",
-          "role": "invalid-input",
           "sha256": "sha256:0a5b6b5eabde890da4484cc67b706fff61ba9d0d76cc0fa8d41a8e50b40bbf35"
         },
         {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:90d7d4cf27ce28e71e548911467b5d967c9453d7e433e798383c6251a560d069",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/hadamard-668-defect/examples/sylvester-prefix.json",
-          "role": "valid-input",
           "sha256": "sha256:4021e45669d91b63179c730309eb26613e4584aa63ee7ec928b32cd4b1ed2bc6"
         },
         {
+          "expected_verdict": {
+            "reason": "ROW_HEX_LENGTH",
+            "report_sha256": "sha256:acae393017d5833818db2685ecc622acab463d05fc2a205450c53243667002f9",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
           "path": "problems/hadamard-668-defect/examples/wrong-row-length.json",
-          "role": "invalid-input",
           "sha256": "sha256:774d5be4548ab3f3ea798d6d51cae17e5ba8ecfa86ae235d243252ffd25419bc"
         }
       ],
@@ -930,7 +1176,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:69dca8896e21e8fee558e8e44cd1b042f982298fa3d81980c249452184829076",
+        "source_tree_sha256": "sha256:084af78858fc97bf3ac15ce5d6e57964697795c1d8c5e896b82a843599745fa0",
         "version": "0.1.2"
       }
     }

@@ -165,12 +165,34 @@
     "mathReviewFixture": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "sha256", "role"],
+      "required": ["path", "sha256", "expected_verdict"],
       "properties": {
         "path": {"type": "string", "pattern": "^problems/[a-z0-9][a-z0-9-]*/(?:examples|tests)/[^/].*\\.json$"},
         "sha256": {"$ref": "#/$defs/digest"},
-        "role": {"enum": ["valid-input", "invalid-input"]}
+        "expected_verdict": {"$ref": "#/$defs/fixtureVerdict"}
       }
+    },
+    "fixtureVerdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "valid", "returncode", "reason", "report_sha256"],
+      "properties": {
+        "status": {"enum": ["accepted", "rejected"]},
+        "valid": {"type": "boolean"},
+        "returncode": {"enum": [0, 1]},
+        "reason": {"type": "string", "minLength": 1},
+        "report_sha256": {"$ref": "#/$defs/digest"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"valid": {"const": true}}, "required": ["valid"]},
+          "then": {"properties": {"status": {"const": "accepted"}, "returncode": {"const": 0}}}
+        },
+        {
+          "if": {"properties": {"valid": {"const": false}}, "required": ["valid"]},
+          "then": {"properties": {"status": {"const": "rejected"}, "returncode": {"const": 1}}}
+        }
+      ]
     },
     "missingBoard": {
       "allOf": [

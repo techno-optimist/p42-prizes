@@ -119,7 +119,7 @@ def _verify_ref(root: Path, ref: Mapping[str, Any], label: str) -> Path:
     return path
 
 
-def canonical_math_review_fixtures(root: Path, record: Mapping[str, Any]) -> list[dict[str, str]]:
+def canonical_math_review_fixtures(root: Path, record: Mapping[str, Any]) -> list[dict[str, Any]]:
     slug = record.get("slug")
     seed = record.get("seed")
     if not isinstance(slug, str) or not isinstance(seed, Mapping) or not isinstance(seed.get("path"), str):
@@ -159,10 +159,18 @@ def canonical_math_review_fixtures(root: Path, record: Mapping[str, Any]) -> lis
         raise BoardBindingError(f"math-review fixture corpus for {slug} does not contain the canonical seed")
     corpus = []
     for path in sorted(candidates, key=lambda item: item.relative_to(root).as_posix()):
+        run = run_verifier_once(problem, path)
+        valid = bool(run.report["valid"])
         corpus.append({
             "path": path.relative_to(root).as_posix(),
             "sha256": _digest(path),
-            "role": "valid-input" if path == resolved_seed else "invalid-input",
+            "expected_verdict": {
+                "status": "accepted" if valid else "rejected",
+                "valid": valid,
+                "returncode": run.returncode,
+                "reason": run.report["reason"],
+                "report_sha256": run.report_hash,
+            },
         })
     return corpus
 

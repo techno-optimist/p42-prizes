@@ -114,6 +114,7 @@ def test_launch_authorization_schema_resolves_canonical_binding_and_validates_in
         "security_audit", "legal_memo", "governance_signoff", "incident_drill",
         "adversarial_campaign", "operational_controls", "production_release_verification",
         "production_release_slate", "production_board_bindings", "release_capsule",
+        "verifier_image_release", "verifier_image_publication_journal",
         "deployment_manifest", "reconciliation_report", "explorer_dossier",
         "explorer_operator_policy", "activation_rpc_operator_registry",
     )
@@ -459,6 +460,10 @@ def test_reconciliation_checkpoint_v3_requires_independent_semantic_replay() -> 
 def _deployed_math_review_binding() -> dict:
     return {
         "board_position": 1,
+        "verifier_source_commit": "2" * 40,
+        "verifier_source_archive_digest": "sha256:" + "1" * 64,
+        "release_config_commit": "1" * 40,
+        "release_config_archive_digest": "sha256:" + "2" * 64,
         "deployment_commit": "1" * 40,
         "release_capsule_digest": "sha256:" + "a" * 64,
         "release_slate_digest": "sha256:" + "b" * 64,
@@ -494,18 +499,41 @@ def _math_review_board_binding() -> dict:
             "command": "python3 verifier/verify.py --solution {solution}",
             "source_tree_sha256": "sha256:" + "9" * 64,
         },
+        "claim_scope": "Reviews only the finite submitted witness and exact verifier predicate.",
+        "objective": {
+            "direction": "maximize",
+            "score_name": "certified_order",
+            "seed_best": "4/1",
+            "optimum": "668/1",
+            "min_improvement": "1/1",
+            "gauge": "max(0, certified_order - seed_best)",
+            "target_classification": "search_target",
+        },
+    }
+    rejected = {
+        "status": "rejected",
+        "valid": False,
+        "returncode": 1,
+        "reason": "NOT_STRICT_IMPROVEMENT",
+        "report_sha256": "sha256:" + "e" * 64,
     }
     binding["math_review_fixtures"] = [
-        binding["seed"] | {"role": "valid-input"},
+        binding["seed"] | {"expected_verdict": rejected},
         {
             "path": "problems/hadamard-mini/tests/invalid.json",
             "sha256": "sha256:" + "a" * 64,
-            "role": "invalid-input",
+            "expected_verdict": rejected | {
+                "reason": "SCHEMA_INVALID",
+                "report_sha256": "sha256:" + "f" * 64,
+            },
         },
         {
             "path": "problems/hadamard-mini/tests/malformed.json",
             "sha256": "sha256:" + "d" * 64,
-            "role": "invalid-input",
+            "expected_verdict": rejected | {
+                "reason": "MALFORMED_JSON",
+                "report_sha256": "sha256:" + "0" * 64,
+            },
         },
     ]
     return binding
@@ -535,14 +563,16 @@ def _math_review_packet(tmp_path: Path) -> tuple[dict, dict, object, dict]:
     sections["expertise_and_conflicts"]["expertise_evidence"] = evidence
     board_binding = _math_review_board_binding()
     source_identity = {
-        "commit": _deployed_math_review_binding()["deployment_commit"],
+        "verifier_source_commit": _deployed_math_review_binding()["verifier_source_commit"],
+        "release_config_commit": _deployed_math_review_binding()["release_config_commit"],
         "problem_slug": board_binding["slug"],
         "tree_hash_algorithm": "p42-source-tree-sha256/v2",
         "tree_hash": board_binding["verifier"]["source_tree_sha256"],
     }
     sections["literal_statement_and_reduction"].update(
         statement_artifact=board_binding["specification"] | {"source_identity": source_identity},
-        reduction_artifact=board_binding["problem_yaml"] | {"source_identity": source_identity},
+        canonical_claim_scope=board_binding["claim_scope"],
+        canonical_objective=board_binding["objective"],
     )
     sections["verifier_schema_and_fixtures"].update(
         verifier_source={
@@ -552,17 +582,10 @@ def _math_review_packet(tmp_path: Path) -> tuple[dict, dict, object, dict]:
             "source_identity": source_identity,
         },
         solution_schema=board_binding["solution_schema"] | {"source_identity": source_identity},
-        valid_fixtures=[
-            {"path": item["path"], "sha256": item["sha256"], "fixture_role": item["role"],
-             "source_identity": source_identity}
+        fixture_verdicts=[
+            {"path": item["path"], "sha256": item["sha256"],
+             "expected_verdict": item["expected_verdict"], "source_identity": source_identity}
             for item in board_binding["math_review_fixtures"]
-            if item["role"] == "valid-input"
-        ],
-        invalid_fixtures=[
-            {"path": item["path"], "sha256": item["sha256"], "fixture_role": item["role"],
-             "source_identity": source_identity}
-            for item in board_binding["math_review_fixtures"]
-            if item["role"] == "invalid-input"
         ],
         replay_result=evidence,
     )
@@ -626,7 +649,125 @@ def _math_review_packet(tmp_path: Path) -> tuple[dict, dict, object, dict]:
     return packet, row, context, registry
 
 
-def test_math_review_v3_schema_and_dual_registered_signatures(tmp_path: Path) -> None:
+def _image_release_for_problem_reviews(board_bindings: dict, slate_boards: list[dict]) -> dict:
+    return {
+        "verifier_source_commit": "2" * 40,
+        "verifier_source_archive_digest": "sha256:" + "1" * 64,
+        "release_config_commit": "1" * 40,
+        "release_config_archive_digest": "sha256:" + "2" * 64,
+        "boards": [
+            {
+                "slug": record["slug"],
+                "source_hash": record["verifier"]["source_tree_sha256"],
+                "version": record["verifier"]["version"],
+                "index_digest": slate["verifierImageDigest"],
+            }
+            for record, slate in zip(board_bindings["records"], slate_boards, strict=True)
+        ],
+    }
+
+
+def _frozen_replay_fixture(tmp_path: Path) -> tuple[dict, dict, object, dict, dict]:
+    fixture = AttestationFixture(tmp_path)
+    image_release = {
+        "verifier_source_commit": "2" * 40,
+        "release_config_commit": "1" * 40,
+    }
+    image_ref = fixture.artifact("image-release", content=image_release)
+    journal_ref = fixture.artifact("image-journal", content={"journal": "exact"})
+    context = build_attestation_context(
+        "p42-production-launch-authorization/v1",
+        trust_registry=fixture.trust_registry("p42-production-launch-authorization/v1", []),
+        artifact_root=tmp_path,
+        chain_reader=None,
+        error_type=LaunchAuthorizationError,
+    )
+    launch_module._validate_artifact_reference(
+        image_ref, "image_release", LaunchAuthorizationError, context
+    )
+    launch_module._validate_artifact_reference(
+        journal_ref, "image_journal", LaunchAuthorizationError, context
+    )
+    release_report = {"sourceCommit": "1" * 40}
+    release_slate = {
+        "imageRegistry": {"path": image_ref["local_path"], "digest": image_ref["sha256"]}
+    }
+    return image_release, image_ref, context, journal_ref, release_report | {"slate": release_slate}
+
+
+def test_launch_replay_rejects_supplied_board_packet_not_frozen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_release, image_ref, context, journal_ref, release = _frozen_replay_fixture(tmp_path)
+    snapshot = tmp_path / "snapshot"
+    (snapshot / "protocol").mkdir(parents=True)
+    (snapshot / "protocol/production-board-bindings-v1.json").write_text('{"canonical":true}')
+    monkeypatch.setattr(
+        launch_module, "run_bounded_process",
+        lambda *args, **kwargs: type("Result", (), {"returncode": 0})(),
+    )
+
+    def fake_validate(*args, board_binding_verifier, **kwargs):
+        board_binding_verifier(snapshot)
+        return {}
+
+    monkeypatch.setattr(launch_module, "validate_image_release_checkout", fake_validate)
+    with pytest.raises(LaunchAuthorizationError, match="supplied board bindings"):
+        launch_module._validate_frozen_board_release(
+            image_release=image_release,
+            image_release_ref=image_ref,
+            publication_journal_ref=journal_ref,
+            board_bindings={"canonical": False},
+            release_report={"sourceCommit": release["sourceCommit"]},
+            release_slate=release["slate"],
+            context=context,
+        )
+
+
+def test_launch_replay_rejects_failed_exact_ten_frozen_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_release, image_ref, context, journal_ref, release = _frozen_replay_fixture(tmp_path)
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    monkeypatch.setattr(
+        launch_module, "run_bounded_process",
+        lambda *args, **kwargs: type("Result", (), {"returncode": 1})(),
+    )
+
+    def fake_validate(*args, board_binding_verifier, **kwargs):
+        board_binding_verifier(snapshot)
+        return {}
+
+    monkeypatch.setattr(launch_module, "validate_image_release_checkout", fake_validate)
+    with pytest.raises(LaunchAuthorizationError, match="exact-ten frozen board replay failed"):
+        launch_module._validate_frozen_board_release(
+            image_release=image_release,
+            image_release_ref=image_ref,
+            publication_journal_ref=journal_ref,
+            board_bindings={},
+            release_report={"sourceCommit": release["sourceCommit"]},
+            release_slate=release["slate"],
+            context=context,
+        )
+
+
+def test_launch_replay_rejects_image_release_r_substitution(tmp_path: Path) -> None:
+    image_release, image_ref, context, journal_ref, release = _frozen_replay_fixture(tmp_path)
+    image_release["release_config_commit"] = "3" * 40
+    with pytest.raises(LaunchAuthorizationError, match="release config commit"):
+        launch_module._validate_frozen_board_release(
+            image_release=image_release,
+            image_release_ref=image_ref,
+            publication_journal_ref=journal_ref,
+            board_bindings={},
+            release_report={"sourceCommit": release["sourceCommit"]},
+            release_slate=release["slate"],
+            context=context,
+        )
+
+
+def test_math_review_v4_schema_and_dual_registered_signatures(tmp_path: Path) -> None:
     packet, row, context, registry = _math_review_packet(tmp_path)
     schema = json.loads((ROOT / "schemas/math-review.schema.json").read_text(encoding="utf-8"))
     jsonschema.Draft202012Validator.check_schema(schema)
@@ -653,7 +794,7 @@ def test_math_review_v3_schema_and_dual_registered_signatures(tmp_path: Path) ->
 def test_math_review_rejects_hostile_section_omissions(tmp_path: Path, omission: str) -> None:
     packet, row, context, registry = _math_review_packet(tmp_path)
     del packet[omission]
-    with pytest.raises(LaunchAuthorizationError, match="v3 schema validation"):
+    with pytest.raises(LaunchAuthorizationError, match="v4 schema validation"):
         _validate_math_review(
             packet,
             row,
@@ -697,10 +838,10 @@ def test_math_review_rejects_hostile_binding_substitutions(
         )
 
 
-def test_math_review_rejects_legacy_v2_even_when_resealed(tmp_path: Path) -> None:
+def test_math_review_rejects_legacy_v3_even_when_resealed(tmp_path: Path) -> None:
     packet, row, context, registry = _math_review_packet(tmp_path)
-    packet["schema_version"] = "p42-math-review/v2"
-    with pytest.raises(LaunchAuthorizationError, match="v3 schema validation"):
+    packet["schema_version"] = "p42-math-review/v3"
+    with pytest.raises(LaunchAuthorizationError, match="v4 schema validation"):
         _validate_math_review(
             packet, row, registry, context,
             datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
@@ -736,18 +877,12 @@ def test_math_review_rejects_unregistered_problem_owner(tmp_path: Path) -> None:
         )
 
 
-def test_math_review_rejects_verifier_source_identity_substitution(tmp_path: Path) -> None:
+def test_math_review_v3_registrations_cannot_authorize_v4_packet(tmp_path: Path) -> None:
     packet, row, context, registry = _math_review_packet(tmp_path)
-    packet["verifier_schema_and_fixtures"]["verifier_source"] = dict(
-        packet["verifier_schema_and_fixtures"]["verifier_source"]
-    )
-    packet["verifier_schema_and_fixtures"]["verifier_source"]["source_identity"] = dict(
-        packet["verifier_schema_and_fixtures"]["verifier_source"]["source_identity"]
-    )
-    packet["verifier_schema_and_fixtures"]["verifier_source"]["source_identity"]["tree_hash"] = (
-        "sha256:" + "0123456789abcdef" * 4
-    )
-    with pytest.raises(LaunchAuthorizationError, match="canonical verifier and source identity"):
+    for registration in registry["registrations"]:
+        registration["attestation_class"] = "p42-math-review/v3"
+
+    with pytest.raises(LaunchAuthorizationError, match="not pre-registered for p42-math-review/v4"):
         _validate_math_review(
             packet, row, registry, context,
             datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
@@ -757,10 +892,52 @@ def test_math_review_rejects_verifier_source_identity_substitution(tmp_path: Pat
 
 
 @pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("tree_hash", "sha256:" + "0123456789abcdef" * 4),
+        ("verifier_source_commit", "1" * 40),
+        ("release_config_commit", "3" * 40),
+    ],
+)
+def test_math_review_rejects_verifier_source_identity_substitution(
+    tmp_path: Path, field: str, value: str,
+) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    packet["verifier_schema_and_fixtures"]["verifier_source"] = dict(
+        packet["verifier_schema_and_fixtures"]["verifier_source"]
+    )
+    packet["verifier_schema_and_fixtures"]["verifier_source"]["source_identity"] = dict(
+        packet["verifier_schema_and_fixtures"]["verifier_source"]["source_identity"]
+    )
+    packet["verifier_schema_and_fixtures"]["verifier_source"]["source_identity"][field] = value
+    with pytest.raises(LaunchAuthorizationError, match="canonical verifier and source identity"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+def test_math_review_rejects_release_config_deployment_commit_split(tmp_path: Path) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    expected_release = _deployed_math_review_binding()
+    expected_release["release_config_commit"] = "3" * 40
+    packet["deployed_release_binding"] = expected_release
+
+    with pytest.raises(LaunchAuthorizationError, match="release config commit R"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=expected_release,
+            board_binding=_math_review_board_binding(),
+        )
+
+
+@pytest.mark.parametrize(
     ("target", "message"),
     [
         ("statement", "statement_artifact"),
-        ("reduction", "reduction_artifact"),
         ("solution_schema", "solution_schema"),
     ],
 )
@@ -771,8 +948,8 @@ def test_math_review_rejects_arbitrary_self_hashed_source_artifacts(
     generic = dict(packet["literal_statement_and_reduction"]["statement_artifact"])
     generic["path"] = "reviews/generic-evidence.json"
     generic["sha256"] = "sha256:" + "b" * 64
-    if target in {"statement", "reduction"}:
-        packet["literal_statement_and_reduction"][f"{target}_artifact"] = generic
+    if target == "statement":
+        packet["literal_statement_and_reduction"]["statement_artifact"] = generic
     else:
         packet["verifier_schema_and_fixtures"][target] = generic
 
@@ -785,12 +962,13 @@ def test_math_review_rejects_arbitrary_self_hashed_source_artifacts(
         )
 
 
-def test_math_review_rejects_same_generic_artifact_reused_across_roles(tmp_path: Path) -> None:
+def test_math_review_rejects_fake_problem_yaml_reduction_artifact(tmp_path: Path) -> None:
     packet, row, context, registry = _math_review_packet(tmp_path)
-    statement = packet["literal_statement_and_reduction"]["statement_artifact"]
-    packet["literal_statement_and_reduction"]["reduction_artifact"] = statement
+    packet["literal_statement_and_reduction"]["reduction_artifact"] = (
+        packet["literal_statement_and_reduction"]["statement_artifact"]
+    )
 
-    with pytest.raises(LaunchAuthorizationError, match="reduction_artifact"):
+    with pytest.raises(LaunchAuthorizationError, match="v4 schema validation"):
         _validate_math_review(
             packet, row, registry, context,
             datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
@@ -799,34 +977,38 @@ def test_math_review_rejects_same_generic_artifact_reused_across_roles(tmp_path:
         )
 
 
-def test_math_review_rejects_same_fixture_reused_for_valid_and_invalid_roles(tmp_path: Path) -> None:
-    packet, row, context, registry = _math_review_packet(tmp_path)
-    fixture = packet["verifier_schema_and_fixtures"]["valid_fixtures"][0]
-    packet["verifier_schema_and_fixtures"]["invalid_fixtures"] = [fixture]
-
-    with pytest.raises(LaunchAuthorizationError, match="invalid_fixtures"):
-        _validate_math_review(
-            packet, row, registry, context,
-            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
-            deployed_release_binding=_deployed_math_review_binding(),
-            board_binding=_math_review_board_binding(),
-        )
-
-
-@pytest.mark.parametrize("fixture_group", ["valid_fixtures", "invalid_fixtures"])
-def test_math_review_rejects_invented_fixture_with_correct_source_identity(
-    tmp_path: Path, fixture_group: str,
+@pytest.mark.parametrize("field", ["canonical_claim_scope", "canonical_objective"])
+def test_math_review_rejects_canonical_reduction_semantics_substitution(
+    tmp_path: Path, field: str,
 ) -> None:
     packet, row, context, registry = _math_review_packet(tmp_path)
-    fixtures = packet["verifier_schema_and_fixtures"][fixture_group]
+    section = packet["literal_statement_and_reduction"]
+    if field == "canonical_claim_scope":
+        section[field] += " substituted"
+    else:
+        section[field] = dict(section[field])
+        section[field]["seed_best"] = "5/1"
+
+    with pytest.raises(LaunchAuthorizationError, match=field):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+def test_math_review_rejects_invented_fixture_with_correct_source_identity(tmp_path: Path) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    fixtures = packet["verifier_schema_and_fixtures"]["fixture_verdicts"]
     fixtures.append({
         "path": "problems/hadamard-mini/tests/invented.json",
         "sha256": "sha256:" + "c" * 64,
-        "fixture_role": "valid-input" if fixture_group == "valid_fixtures" else "invalid-input",
+        "expected_verdict": fixtures[0]["expected_verdict"],
         "source_identity": fixtures[0]["source_identity"],
     })
 
-    with pytest.raises(LaunchAuthorizationError, match=fixture_group):
+    with pytest.raises(LaunchAuthorizationError, match="fixture_verdicts"):
         _validate_math_review(
             packet, row, registry, context,
             datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
@@ -837,9 +1019,67 @@ def test_math_review_rejects_invented_fixture_with_correct_source_identity(
 
 def test_math_review_rejects_missing_canonical_fixture(tmp_path: Path) -> None:
     packet, row, context, registry = _math_review_packet(tmp_path)
-    packet["verifier_schema_and_fixtures"]["invalid_fixtures"].pop()
+    packet["verifier_schema_and_fixtures"]["fixture_verdicts"].pop()
 
-    with pytest.raises(LaunchAuthorizationError, match="invalid_fixtures"):
+    with pytest.raises(LaunchAuthorizationError, match="fixture_verdicts"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+@pytest.mark.parametrize("field", ["status", "valid", "returncode", "reason", "report_sha256"])
+def test_math_review_rejects_fixture_verdict_substitution(tmp_path: Path, field: str) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    verdict = packet["verifier_schema_and_fixtures"]["fixture_verdicts"][0]["expected_verdict"]
+    substitutions = {
+        "status": "accepted",
+        "valid": True,
+        "returncode": 0,
+        "reason": "ACCEPTED",
+        "report_sha256": "sha256:" + "9" * 64,
+    }
+    verdict[field] = substitutions[field]
+
+    message = "v4 schema validation" if field in {"status", "valid", "returncode"} else "fixture_verdicts"
+    with pytest.raises(LaunchAuthorizationError, match=message):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+@pytest.mark.parametrize("field", ["accepted", "rejected", "total"])
+def test_math_review_rejects_fixture_verdict_count_substitution(
+    tmp_path: Path, field: str,
+) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    packet["verifier_schema_and_fixtures"]["fixture_verdict_counts"][field] += 1
+
+    with pytest.raises(LaunchAuthorizationError, match="fixture_verdict_counts"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+@pytest.mark.parametrize("field", ["method", "limitation"])
+def test_math_review_rejects_acceptance_path_overclaim(tmp_path: Path, field: str) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    review = packet["verifier_schema_and_fixtures"]["acceptance_path_review"]
+    review[field] = (
+        "canonical-fixture-replay"
+        if field == "method"
+        else "Canonical fixtures prove complete runtime acceptance coverage."
+    )
+
+    with pytest.raises(LaunchAuthorizationError, match="acceptance_path_review overclaims"):
         _validate_math_review(
             packet, row, registry, context,
             datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
@@ -911,7 +1151,8 @@ def test_problem_reviews_bind_the_exact_canonical_claim_record(
                 "problemPath": f"problems/{record['slug']}",
                 "verifierVersion": record["verifier"]["version"],
                 "specHash": "0x" + record["specification"]["sha256"].removeprefix("sha256:"),
-                "verifierSourceDigest": record["verifier"]["source_tree_sha256"],
+                    "verifierSourceDigest": record["verifier"]["source_tree_sha256"],
+                    "verifierImageDigest": image_digest,
             }
         )
     monkeypatch.setattr(launch_module, "_read_json_artifact", lambda value, *args, **kwargs: value)
@@ -928,6 +1169,7 @@ def test_problem_reviews_bind_the_exact_canonical_claim_record(
         release_slate={"sourceCommit": "1" * 40, "boards": slate_boards},
         deployment_manifest={"problems": deployed, "releaseEvidence": {}},
         board_bindings=board_bindings,
+        image_release=_image_release_for_problem_reviews(board_bindings, slate_boards),
         trust_registry={},
         context=Context(),
         issued=datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
@@ -942,6 +1184,7 @@ def test_problem_reviews_bind_the_exact_canonical_claim_record(
             release_slate={"sourceCommit": "1" * 40, "boards": slate_boards},
             deployment_manifest={"problems": deployed, "releaseEvidence": {}},
             board_bindings=board_bindings,
+            image_release=_image_release_for_problem_reviews(board_bindings, slate_boards),
             trust_registry={},
             context=Context(),
             issued=datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
@@ -959,6 +1202,7 @@ def test_problem_reviews_bind_the_exact_canonical_claim_record(
             release_slate={"sourceCommit": "1" * 40, "boards": slate_boards},
             deployment_manifest={"problems": deployed, "releaseEvidence": {}},
             board_bindings=board_bindings,
+            image_release=_image_release_for_problem_reviews(board_bindings, slate_boards),
             trust_registry={},
             context=Context(),
             issued=datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
@@ -984,6 +1228,7 @@ def test_problem_reviews_reject_reordered_board_bindings(
             release_slate={},
             deployment_manifest={"problems": []},
             board_bindings=board_bindings,
+            image_release={},
             trust_registry={},
             context=None,
             issued=datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
@@ -1025,7 +1270,8 @@ def test_problem_reviews_reject_reordered_review_packets(
             "problemPath": f"problems/{record['slug']}",
             "verifierVersion": record["verifier"]["version"],
             "specHash": "0x" + record["specification"]["sha256"].removeprefix("sha256:"),
-            "verifierSourceDigest": record["verifier"]["source_tree_sha256"],
+                "verifierSourceDigest": record["verifier"]["source_tree_sha256"],
+                "verifierImageDigest": image_digest,
         })
     reviews[0], reviews[1] = reviews[1], reviews[0]
     monkeypatch.setattr(launch_module, "_read_json_artifact", lambda value, *args, **kwargs: value)
@@ -1037,6 +1283,7 @@ def test_problem_reviews_reject_reordered_review_packets(
             release_slate={"sourceCommit": "1" * 40, "boards": slate_boards},
             deployment_manifest={"problems": deployed, "releaseEvidence": {}},
             board_bindings=board_bindings,
+            image_release=_image_release_for_problem_reviews(board_bindings, slate_boards),
             trust_registry={},
             context=None,
             issued=datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
@@ -1208,6 +1455,12 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
             "board_set": {},
             "records": [],
         },
+    )
+    artifacts["verifier_image_release"] = fixture.artifact(
+        "verifier-image-release", content={"schema_version": "test-image-release"}
+    )
+    artifacts["verifier_image_publication_journal"] = fixture.artifact(
+        "verifier-image-publication-journal", content={"schema_version": "test-journal"}
     )
     artifacts["release_capsule"] = fixture.artifact(
         "release-capsule", content={"schema": "test-capsule"}
