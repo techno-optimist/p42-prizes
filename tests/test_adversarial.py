@@ -450,6 +450,51 @@ def test_production_transcript_schemas_require_board_identity(tmp_path: Path) ->
         jsonschema.validate(archive, archive_schema)
 
 
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        (lambda transcript: transcript.pop("board_identity"), "missing required field.*board_identity"),
+        (
+            lambda transcript: transcript["board_identity"].update(extra="forbidden"),
+            "exact production identity fields",
+        ),
+        (
+            lambda transcript: transcript["board_identity"].update(problem_slug=""),
+            "problem_slug must be a non-placeholder string",
+        ),
+        (
+            lambda transcript: transcript["board_identity"].update(problem_path="problems/other"),
+            "problem_path must match",
+        ),
+        (
+            lambda transcript: transcript["board_identity"].update(verifier_image="image:latest"),
+            "immutable repository@sha256 reference",
+        ),
+        (
+            lambda transcript: transcript["board_identity"].update(resource_identity="sha256:bad"),
+            "resource_identity must be a canonical SHA-256 digest",
+        ),
+        (
+            lambda transcript: transcript["board_identity"].update(memory_mb=True),
+            "memory_mb must be a positive integer",
+        ),
+    ],
+)
+def test_adversarial_campaign_rejects_invalid_board_identity(
+    tmp_path: Path, mutation, message: str,
+) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    archive = read_artifact(fixture, report["transcript_archive"])
+    transcript = archive["transcripts"][0]["transcript"]
+    mutation(transcript)
+    transcript.pop("transcript_hash")
+    transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
+    rewrite_signed_runner_evidence(report, fixture, archive)
+
+    with pytest.raises(AdversarialCampaignError, match=message):
+        normalize(report, fixture, registry)
+
+
 def test_adversarial_campaign_rejects_runner_transcript_without_chain_claim(tmp_path: Path) -> None:
     report, fixture, registry = valid_campaign_report(tmp_path)
     archive = read_artifact(fixture, report["transcript_archive"])

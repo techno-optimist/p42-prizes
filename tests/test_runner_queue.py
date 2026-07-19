@@ -228,6 +228,16 @@ def _write_retry_transcript(
         "generated_at_utc": NOW,
         "started_at_utc": NOW,
         "problem": "fixture",
+        "board_identity": {
+            "problem_slug": "fixture",
+            "problem_path": "fixture",
+            "verifier_command": "python3 verifier.py --solution {solution}",
+            "verifier_image": "ghcr.io/p42/fixture@sha256:" + "1" * 64,
+            "verifier_source_sha256": "sha256:" + "2" * 64,
+            "resource_identity": "sha256:" + "3" * 64,
+            "memory_mb": 64,
+            "wall_seconds": 60,
+        },
         "solution": "unavailable",
         "da": {"ok": False, "error": "temporarily unavailable"},
         "resource_limits": {
