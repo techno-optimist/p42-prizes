@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
@@ -25,23 +26,28 @@ from uuid import uuid4
 import jsonschema
 
 from p42_prizes.admission import (
+    AdmissionError,
     OCI_REVISION_LABEL,
     PROBLEM_ID_LABEL,
     SOURCE_HASH_ALGORITHM,
     SOURCE_HASH_ALGORITHM_LABEL,
     SOURCE_HASH_LABEL,
     VERIFIER_VERSION_LABEL,
+    _validate_portable_descriptor_receipt,
     compute_source_hash,
 )
 from p42_prizes.problem import load_manifest
 from p42_prizes.verdict import canonical_json, sha256_bytes, strict_json_loads
 
 
-SCHEMA_VERSION = "p42-verifier-image-release/v2"
+SCHEMA_VERSION = "p42-verifier-image-release/v3"
+LEGACY_SCHEMA_VERSIONS = frozenset({
+    "p42-verifier-image-release/v1", "p42-verifier-image-release/v2",
+})
 LEGACY_SCHEMA_VERSION = "p42-verifier-image-release/v1"
 PLAN_SCHEMA_VERSION = "p42-verifier-image-release-plan/v2"
 JOURNAL_SCHEMA_VERSION = "p42-verifier-image-publish-journal/v2"
-IDENTITY_MODEL = "p42-verifier-source-release-config/v1"
+IDENTITY_MODEL = "p42-verifier-source-release-config/v2"
 INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json"
 MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
 CONFIG_MEDIA_TYPE = "application/vnd.oci.image.config.v1+json"
@@ -522,9 +528,9 @@ def _finalize_dossier(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def validate_release_dossier(value: Mapping[str, Any]) -> dict[str, Any]:
-    if value.get("schema_version") == LEGACY_SCHEMA_VERSION:
+    if value.get("schema_version") in LEGACY_SCHEMA_VERSIONS:
         raise ReleaseError(
-            "v1 release dossiers are historical-only: they do not separate verifier source from release configuration"
+            "legacy release dossiers are historical-only and lack portable raw OCI receipts"
         )
     root_keys = {
         "schema_version", "published_at_utc", "identity_model",
@@ -563,9 +569,12 @@ def validate_release_dossier(value: Mapping[str, Any]) -> dict[str, Any]:
     board_keys = {
         "slug", "problem_id", "version", "source_hash", "repository",
         "index_digest", "immutable_reference", "release_manifest_path",
-        "release_manifest_sha256", "platform_manifests",
+        "release_manifest_sha256", "platform_manifests", "descriptor_receipt",
     }
-    platform_keys = {"platform", "manifest_digest", "manifest_size", "config_digest", "config_size", "layer_count", "labels", "runtime"}
+    platform_keys = {
+        "platform", "manifest_digest", "manifest_size", "config_digest",
+        "config_size", "layer_count", "layer_descriptors", "labels", "runtime",
+    }
     for board in boards:
         if set(board) != board_keys or board["problem_id"] != board["slug"] or board["repository"] != image_repository(base, board["slug"]):
             raise ReleaseError("release dossier board binding is invalid")
@@ -585,6 +594,20 @@ def validate_release_dossier(value: Mapping[str, Any]) -> dict[str, Any]:
                 raise ReleaseError("release dossier platform descriptor is invalid")
             if any(not isinstance(record.get(key), int) or isinstance(record.get(key), bool) or record[key] <= 0 for key in ("manifest_size", "config_size", "layer_count")):
                 raise ReleaseError("release dossier platform sizes are invalid")
+            layers = record.get("layer_descriptors")
+            if not isinstance(layers, list) or len(layers) != record["layer_count"] or not layers:
+                raise ReleaseError("release dossier layer descriptors are invalid")
+            for layer in layers:
+                if (
+                    not isinstance(layer, Mapping)
+                    or set(layer) != {"mediaType", "digest", "size"}
+                    or layer.get("mediaType") not in LAYER_MEDIA_TYPES
+                    or not DIGEST_RE.fullmatch(layer.get("digest") or "")
+                    or not isinstance(layer.get("size"), int)
+                    or isinstance(layer.get("size"), bool)
+                    or layer["size"] <= 0
+                ):
+                    raise ReleaseError("release dossier layer descriptor is invalid")
             expected_labels = {
                 OCI_REVISION_LABEL: verifier_source_commit,
                 SOURCE_HASH_LABEL: board["source_hash"],
@@ -596,6 +619,10 @@ def validate_release_dossier(value: Mapping[str, Any]) -> dict[str, Any]:
             runtime = record.get("runtime")
             if not isinstance(runtime, Mapping) or set(runtime) != {"user", "workdir", "entrypoint", "cmd"} or runtime.get("workdir") != f"/repo/problems/{board['problem_id']}" or runtime.get("entrypoint") is not None or runtime.get("cmd") != [] or runtime.get("user") not in ("inherited-root-overridden-by-runner", "65534", "65534:65534"):
                 raise ReleaseError("release dossier runtime binding is invalid")
+        try:
+            _validate_portable_descriptor_receipt(board)
+        except AdmissionError as exc:
+            raise ReleaseError(f"release dossier portable OCI receipt is invalid: {exc}") from exc
     return dict(value)
 
 
@@ -907,6 +934,7 @@ def _inspect_release_record(
     raw_index = verify_raw_index_digest(raw_index_response, index_digest)
     children = parse_oci_index(raw_index)
     platform_records = []
+    receipt_platforms = []
     for platform in PLATFORMS:
         child = children[platform]
         child_reference = f"{board['repository']}@{child['digest']}"
@@ -925,9 +953,24 @@ def _inspect_release_record(
         platform_records.append({
             "platform": platform, "manifest_digest": child["digest"], "manifest_size": child["size"],
             "config_digest": config_descriptor["digest"], "config_size": config_descriptor["size"],
-            "layer_count": len(child_manifest["layers"]), **validated,
+            "layer_count": len(child_manifest["layers"]),
+            "layer_descriptors": child_manifest["layers"], **validated,
         })
-    return {**dict(board), "index_digest": index_digest, "immutable_reference": f"{board['repository']}@{index_digest}", "platform_manifests": platform_records}
+        receipt_platforms.append({
+            "platform": platform,
+            "manifest_base64": base64.b64encode(raw_child.encode("utf-8")).decode("ascii"),
+            "config_base64": base64.b64encode(raw_config.encode("utf-8")).decode("ascii"),
+        })
+    return {
+        **dict(board),
+        "index_digest": index_digest,
+        "immutable_reference": f"{board['repository']}@{index_digest}",
+        "platform_manifests": platform_records,
+        "descriptor_receipt": {
+            "index_base64": base64.b64encode(raw_index.encode("utf-8")).decode("ascii"),
+            "platforms": receipt_platforms,
+        },
+    }
 
 
 def release(
@@ -1020,7 +1063,7 @@ def release(
     if any(board["state"] != "verified" for board in journal["boards"]):
         raise ReleaseError("publish journal is incomplete after the release run")
     # Publication deliberately stops at a complete, self-hashed journal. The
-    # immutable index digests must first be committed to problem.yaml. A v2
+    # immutable index digests must first be committed to problem.yaml. A v3
     # dossier is finalized only from that later clean release-config commit.
     return journal
 

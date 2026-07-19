@@ -14,6 +14,7 @@ from p42_prizes.admission import (
     HOST_SIGNATURE_NAMESPACE,
     _sign_hash,
     build_admission_matrix,
+    ssh_public_key_fingerprint,
 )
 from p42_prizes.runtime_admission import (
     RuntimeAdmissionError,
@@ -329,6 +330,21 @@ def _signed_host_set(
 ):
     signing_key = _make_signing_key(tmp_path, label)
     host = _host(label, architecture, libc)
+    public_key = subprocess.run(
+        ["ssh-keygen", "-y", "-f", str(signing_key)],
+        text=True, capture_output=True, check=True,
+    ).stdout.strip()
+    public_key = " ".join(public_key.split()[:2])
+    fingerprint = ssh_public_key_fingerprint(public_key)
+    operator_profile = {
+        "label": label,
+        "operator_id": f"operator-{label}",
+        "public_key": public_key,
+        "architecture": architecture,
+        "os": "linux",
+        "libc_name": "glibc",
+        "libc_version": libc,
+    }
     fixtures = {
         "board_set": {"sha256": DIGEST_C},
         "fixtures": [],
@@ -360,7 +376,12 @@ def _signed_host_set(
         )
         filename = f"{slug}.admission-host.json"
         fixtures["fixtures"].append(fixture)
-        dossier["boards"].append({"slug": slug, "source_hash": DIGEST_C, "index_digest": DIGEST_A})
+        dossier["boards"].append({
+            "slug": slug,
+            "source_hash": DIGEST_C,
+            "index_digest": DIGEST_A,
+            "release_manifest_path": f"problems/{slug}/problem.yaml",
+        })
         artifacts[filename] = evidence
         rehearsal_refs = []
         for run_index, report in enumerate((first, second), start=1):
@@ -379,7 +400,7 @@ def _signed_host_set(
             "evidence_hash": evidence["evidence_hash"],
         })
     index = {
-        "schema_version": "p42-admission-host-set/v3",
+        "schema_version": "p42-admission-host-set/v4",
         "generated_at_utc": "2026-07-14T00:00:00Z",
         "dossier": {
             "path": "/independent/release.json",
@@ -394,18 +415,26 @@ def _signed_host_set(
             "board_set_sha256": DIGEST_C,
         },
         "host": host,
+        "operator": {
+            "operator_id": f"operator-{label}",
+            "profile_sha256": sha256_bytes(canonical_json(operator_profile).encode()),
+            "registry_paths": [f"problems/board-{position}/problem.yaml" for position in range(10)],
+        },
         "boards": board_index,
     }
     index["host_set_hash"] = sha256_bytes(canonical_json(index).encode())
-    public_key, fingerprint, signature = _sign_hash(index["host_set_hash"], signing_key)
+    signed_public_key, signed_fingerprint, signature = _sign_hash(index["host_set_hash"], signing_key)
+    assert signed_public_key == public_key
+    assert signed_fingerprint == fingerprint
     index["attestation"] = {
         "type": "ssh-ed25519",
         "namespace": HOST_SIGNATURE_NAMESPACE,
-        "public_key": public_key,
+        "public_key": signed_public_key,
         "key_fingerprint": fingerprint,
         "signed_hash": index["host_set_hash"],
         "signature": signature,
     }
+    dossier["_operator_profile"] = operator_profile
     return index, artifacts, dossier, fixtures
 
 
@@ -532,6 +561,7 @@ def _four_published_host_sets(tmp_path: Path):
     bundles = []
     evidence = []
     bindings = []
+    trusted_profiles = {}
     dossier = fixtures = None
     for label, architecture, libc in specifications:
         source = tmp_path / f"source-{label}"
@@ -551,11 +581,13 @@ def _four_published_host_sets(tmp_path: Path):
             "runtime_rehearsals": board["runtime_rehearsals"],
         })
         bundles.append((output, index["host_set_hash"]))
+        trusted_profiles[index["attestation"]["key_fingerprint"]] = dossier.pop("_operator_profile")
     matrix = build_admission_matrix(
         evidence,
         host_set_bindings=bindings,
         generated_at_utc="2026-07-14T00:00:00Z",
     )
+    dossier["_trusted_operator_profiles"] = trusted_profiles
     return matrix, bundles, dossier, fixtures
 
 
@@ -564,8 +596,23 @@ def test_release_admission_replays_exact_four_host_all_ten_bundles(tmp_path: Pat
     validate_matrix_host_set_bundles(
         matrix, bundles, root=ROOT, dossier=dossier, fixtures=fixtures,
         dossier_sha256=DIGEST_A, fixture_sha256=DIGEST_B,
+        trusted_operator_profiles=dossier["_trusted_operator_profiles"],
         runtime_report_validator=_validate_synthetic_runtime_report,
     )
+
+
+def test_release_admission_rejects_operator_profile_substitution(tmp_path: Path) -> None:
+    matrix, bundles, dossier, fixtures = _four_published_host_sets(tmp_path)
+    profiles = copy.deepcopy(dossier["_trusted_operator_profiles"])
+    fingerprint = matrix["evidence"][0]["attestation"]["key_fingerprint"]
+    profiles[fingerprint]["operator_id"] = "substituted-operator"
+    with pytest.raises(RuntimeAdmissionError, match="external registration"):
+        validate_matrix_host_set_bundles(
+            matrix, bundles, root=ROOT, dossier=dossier, fixtures=fixtures,
+            dossier_sha256=DIGEST_A, fixture_sha256=DIGEST_B,
+            trusted_operator_profiles=profiles,
+            runtime_report_validator=_validate_synthetic_runtime_report,
+        )
 
 
 @pytest.mark.parametrize("mutation", ["missing", "duplicate", "substituted"])
@@ -582,6 +629,7 @@ def test_release_admission_rejects_bad_bundle_cohort(tmp_path: Path, mutation: s
         validate_matrix_host_set_bundles(
             matrix, hostile, root=ROOT, dossier=dossier, fixtures=fixtures,
             dossier_sha256=DIGEST_A, fixture_sha256=DIGEST_B,
+            trusted_operator_profiles=dossier["_trusted_operator_profiles"],
             runtime_report_validator=_validate_synthetic_runtime_report,
         )
 
@@ -611,6 +659,7 @@ def test_release_admission_rejects_hostile_bundle_contents(tmp_path: Path, mutat
         validate_matrix_host_set_bundles(
             matrix, bundles, root=ROOT, dossier=dossier, fixtures=fixtures,
             dossier_sha256=DIGEST_A, fixture_sha256=DIGEST_B,
+            trusted_operator_profiles=dossier["_trusted_operator_profiles"],
             runtime_report_validator=_validate_synthetic_runtime_report,
         )
 

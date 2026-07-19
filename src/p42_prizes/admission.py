@@ -39,8 +39,8 @@ from p42_prizes.verdict import (
 
 HOST_SCHEMA_VERSION = "p42-admission-host/v3"
 MATRIX_SCHEMA_VERSION = "p42-admission-matrix/v4"
-IMAGE_RELEASE_SCHEMA_VERSION = "p42-verifier-image-release/v2"
-IMAGE_RELEASE_IDENTITY_MODEL = "p42-verifier-source-release-config/v1"
+IMAGE_RELEASE_SCHEMA_VERSION = "p42-verifier-image-release/v3"
+IMAGE_RELEASE_IDENTITY_MODEL = "p42-verifier-source-release-config/v2"
 REQUIRED_ARCHITECTURES = ("aarch64", "x86_64")
 MIN_MATRIX_HOSTS = 4
 MIN_GLIBC_VERSIONS = 2
@@ -69,6 +69,7 @@ PINNED_IMAGE_REF_RE = re.compile(r"^(?P<repository>[^\s@]+)@(?P<digest>sha256:[a
 SOURCE_COMMIT_RE = re.compile(r"^[a-f0-9]{40}$")
 SSH_PUBLIC_KEY_RE = re.compile(r"^ssh-ed25519 [A-Za-z0-9+/]+={0,2}$")
 SOURCE_IMAGE_SENTINEL = "sha256:runtime-bound"
+SOURCE_RELEASE_CONFIG_FIELDS = frozenset({"admission", "image_repository"})
 MAX_SOURCE_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_SOURCE_FILES = 20_000
 MAX_SOURCE_FILE_BYTES = 16 * 1024 * 1024
@@ -151,14 +152,18 @@ def _canonical_source_file(path: Path, manifest_path: Path) -> bytes:
     verifier = manifest.get("verifier")
     if isinstance(verifier, dict):
         verifier["image"] = SOURCE_IMAGE_SENTINEL
+        for field in SOURCE_RELEASE_CONFIG_FIELDS:
+            verifier.pop(field, None)
     return (canonical_json(manifest) + "\n").encode("utf-8")
 
 
 def compute_source_hash(problem_dir: str | Path) -> str:
     """Hash the complete canonical verifier build-input bundle.
 
-    ``verifier.image`` is normalized because an image cannot embed its own
-    digest. The image digest is bound separately in every admission record.
+    Release configuration is normalized because an image cannot embed its own
+    digest and source commit S cannot contain the host/image adoption performed
+    later at release commit R. The complete R manifest and exact immutable image
+    reference remain independently bound by the release dossier.
     """
 
     problem = Path(problem_dir).resolve()
@@ -1223,9 +1228,11 @@ def load_image_release_dossier(
 
 
 def validate_image_release_dossier(dossier: Mapping[str, Any]) -> dict[str, Any]:
-    if dossier.get("schema_version") == "p42-verifier-image-release/v1":
+    if dossier.get("schema_version") in {
+        "p42-verifier-image-release/v1", "p42-verifier-image-release/v2",
+    }:
         raise AdmissionError(
-            "v1 image dossiers are historical-only and cannot prove release-config adoption"
+            "legacy image dossiers are historical-only and lack portable raw OCI receipts"
         )
     if dossier.get("schema_version") != IMAGE_RELEASE_SCHEMA_VERSION:
         raise AdmissionError(f"image dossier schema must be {IMAGE_RELEASE_SCHEMA_VERSION}")
@@ -1278,7 +1285,7 @@ def validate_image_release_dossier(dossier: Mapping[str, Any]) -> dict[str, Any]
         if set(board) != {
             "slug", "problem_id", "version", "source_hash", "repository",
             "index_digest", "immutable_reference", "release_manifest_path",
-            "release_manifest_sha256", "platform_manifests",
+            "release_manifest_sha256", "platform_manifests", "descriptor_receipt",
         }:
             raise AdmissionError(f"image dossier board {index} keys are invalid")
         slug = board.get("slug")
@@ -1311,7 +1318,7 @@ def validate_image_release_dossier(dossier: Mapping[str, Any]) -> dict[str, Any]
         for platform in platforms:
             if set(platform) != {
                 "platform", "manifest_digest", "manifest_size", "config_digest",
-                "config_size", "layer_count", "labels", "runtime",
+                "config_size", "layer_count", "layer_descriptors", "labels", "runtime",
             }:
                 raise AdmissionError(f"image dossier board {slug} platform keys are invalid")
             for key in ("manifest_digest", "config_digest"):
@@ -1320,6 +1327,28 @@ def validate_image_release_dossier(dossier: Mapping[str, Any]) -> dict[str, Any]
             for key in ("manifest_size", "config_size", "layer_count"):
                 if not isinstance(platform.get(key), int) or isinstance(platform.get(key), bool) or platform[key] <= 0:
                     raise AdmissionError(f"image dossier board {slug} platform size is invalid")
+            layer_descriptors = platform.get("layer_descriptors")
+            if (
+                not isinstance(layer_descriptors, list)
+                or len(layer_descriptors) != platform["layer_count"]
+                or not layer_descriptors
+            ):
+                raise AdmissionError(f"image dossier board {slug} layer descriptors are invalid")
+            for layer in layer_descriptors:
+                if (
+                    not isinstance(layer, Mapping)
+                    or set(layer) != {"mediaType", "digest", "size"}
+                    or layer.get("mediaType") not in {
+                        "application/vnd.oci.image.layer.v1.tar",
+                        "application/vnd.oci.image.layer.v1.tar+gzip",
+                        "application/vnd.oci.image.layer.v1.tar+zstd",
+                    }
+                    or not SOLUTION_HASH_RE.fullmatch(layer.get("digest") or "")
+                    or not isinstance(layer.get("size"), int)
+                    or isinstance(layer.get("size"), bool)
+                    or layer["size"] <= 0
+                ):
+                    raise AdmissionError(f"image dossier board {slug} layer descriptor is invalid")
             labels = platform.get("labels") if isinstance(platform, Mapping) else None
             expected = {
                 OCI_REVISION_LABEL: dossier["verifier_source_commit"],
@@ -1342,7 +1371,116 @@ def validate_image_release_dossier(dossier: Mapping[str, Any]) -> dict[str, Any]
                 )
             ):
                 raise AdmissionError(f"image dossier board {slug} runtime binding is invalid")
+        _validate_portable_descriptor_receipt(board)
     return dict(dossier)
+
+
+def _decode_receipt_bytes(value: Any, label: str) -> bytes:
+    if not isinstance(value, str):
+        raise AdmissionError(f"{label} must be base64 text")
+    try:
+        payload = base64.b64decode(value, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise AdmissionError(f"{label} is not canonical base64") from exc
+    if not payload or base64.b64encode(payload).decode("ascii") != value:
+        raise AdmissionError(f"{label} is not canonical base64")
+    return payload
+
+
+def _receipt_json(payload: bytes, label: str) -> dict[str, Any]:
+    try:
+        value = strict_json_loads(payload)
+    except (TypeError, ValueError) as exc:
+        raise AdmissionError(f"{label} is not strict JSON") from exc
+    if not isinstance(value, dict):
+        raise AdmissionError(f"{label} must contain a JSON object")
+    return value
+
+
+def _validate_portable_descriptor_receipt(board: Mapping[str, Any]) -> None:
+    """Replay the OCI descriptor chain solely from dossier-carried raw bytes."""
+
+    receipt = board.get("descriptor_receipt")
+    if not isinstance(receipt, Mapping) or set(receipt) != {"index_base64", "platforms"}:
+        raise AdmissionError(f"image dossier board {board.get('slug')} descriptor receipt is invalid")
+    index_bytes = _decode_receipt_bytes(receipt.get("index_base64"), "OCI index receipt")
+    if sha256_bytes(index_bytes) != board.get("index_digest"):
+        raise AdmissionError(f"image dossier board {board.get('slug')} raw index digest mismatch")
+    index = _receipt_json(index_bytes, "OCI index receipt")
+    manifests = index.get("manifests")
+    if (
+        index.get("schemaVersion") != 2
+        or index.get("mediaType") != "application/vnd.oci.image.index.v1+json"
+        or not isinstance(manifests, list)
+    ):
+        raise AdmissionError(f"image dossier board {board.get('slug')} raw index is invalid")
+    children: dict[str, Mapping[str, Any]] = {}
+    for child in manifests:
+        platform = child.get("platform") if isinstance(child, Mapping) else None
+        if not isinstance(platform, Mapping):
+            raise AdmissionError(f"image dossier board {board.get('slug')} raw child descriptor is invalid")
+        key = f"{platform.get('os')}/{platform.get('architecture')}"
+        if key in children:
+            raise AdmissionError(f"image dossier board {board.get('slug')} raw index duplicates a platform")
+        children[key] = child
+    receipt_platforms = receipt.get("platforms")
+    expected_platforms = [item["platform"] for item in board["platform_manifests"]]
+    if (
+        not isinstance(receipt_platforms, list)
+        or [item.get("platform") if isinstance(item, Mapping) else None for item in receipt_platforms]
+        != expected_platforms
+        or set(children) != set(expected_platforms)
+    ):
+        raise AdmissionError(f"image dossier board {board.get('slug')} raw platform cohort is invalid")
+    for record, raw_record in zip(board["platform_manifests"], receipt_platforms, strict=True):
+        if not isinstance(raw_record, Mapping) or set(raw_record) != {
+            "platform", "manifest_base64", "config_base64",
+        }:
+            raise AdmissionError(f"image dossier board {board.get('slug')} raw platform receipt is invalid")
+        child = children[record["platform"]]
+        if (
+            child.get("mediaType") != "application/vnd.oci.image.manifest.v1+json"
+            or child.get("digest") != record["manifest_digest"]
+            or child.get("size") != record["manifest_size"]
+        ):
+            raise AdmissionError(f"image dossier board {board.get('slug')} child descriptor mismatch")
+        manifest_bytes = _decode_receipt_bytes(raw_record.get("manifest_base64"), "OCI manifest receipt")
+        if len(manifest_bytes) != record["manifest_size"] or sha256_bytes(manifest_bytes) != record["manifest_digest"]:
+            raise AdmissionError(f"image dossier board {board.get('slug')} raw manifest mismatch")
+        manifest = _receipt_json(manifest_bytes, "OCI manifest receipt")
+        config = manifest.get("config")
+        layers = manifest.get("layers")
+        if (
+            not isinstance(config, Mapping)
+            or manifest.get("schemaVersion") != 2
+            or manifest.get("mediaType") != "application/vnd.oci.image.manifest.v1+json"
+            or config.get("mediaType") != "application/vnd.oci.image.config.v1+json"
+            or config.get("digest") != record["config_digest"]
+            or config.get("size") != record["config_size"]
+            or layers != record["layer_descriptors"]
+        ):
+            raise AdmissionError(f"image dossier board {board.get('slug')} raw manifest descriptor chain mismatch")
+        config_bytes = _decode_receipt_bytes(raw_record.get("config_base64"), "OCI config receipt")
+        if len(config_bytes) != record["config_size"] or sha256_bytes(config_bytes) != record["config_digest"]:
+            raise AdmissionError(f"image dossier board {board.get('slug')} raw config mismatch")
+        config_value = _receipt_json(config_bytes, "OCI config receipt")
+        image_config = config_value.get("config")
+        expected_os, expected_architecture = record["platform"].split("/", 1)
+        if (
+            config_value.get("os") != expected_os
+            or config_value.get("architecture") != expected_architecture
+            or not isinstance(image_config, Mapping)
+            or image_config.get("Labels") != record["labels"]
+        ):
+            raise AdmissionError(f"image dossier board {board.get('slug')} raw config labels mismatch")
+        derived_runtime = {
+            "user": image_config.get("User") or "inherited-root-overridden-by-runner",
+            "workdir": image_config.get("WorkingDir"),
+            "entrypoint": None if image_config.get("Entrypoint") in (None, []) else image_config.get("Entrypoint"),
+            "cmd": [] if image_config.get("Cmd") in (None, []) else image_config.get("Cmd"),
+        }
+        if derived_runtime != record["runtime"]:
+            raise AdmissionError(f"image dossier board {board.get('slug')} raw config runtime mismatch")
 
 
 def validate_image_publication_journal(

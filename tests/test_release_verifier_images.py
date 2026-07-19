@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from contextlib import contextmanager
+import base64
 import hashlib
 import importlib.util
 import json
@@ -89,6 +90,52 @@ def oci_graph(slug="hadamard-mini", version="0.1.1"):
     return index, blobs
 
 
+def portable_record(board):
+    index, blobs = oci_graph(board["slug"], board["version"])
+    children = release.parse_oci_index(index)
+    records = []
+    receipt_platforms = []
+    for platform in release.PLATFORMS:
+        child = children[platform]
+        raw_child = blobs[child["digest"]]
+        parsed = release.parse_child_manifest(raw_child)
+        raw_config = blobs[parsed["config"]["digest"]]
+        validated = release.validate_platform_config(
+            raw_config,
+            platform=platform,
+            verifier_source_commit=COMMIT,
+            source_hash=SOURCE,
+            problem_id=board["slug"],
+            version=board["version"],
+        )
+        records.append({
+            "platform": platform,
+            "manifest_digest": child["digest"],
+            "manifest_size": child["size"],
+            "config_digest": parsed["config"]["digest"],
+            "config_size": parsed["config"]["size"],
+            "layer_count": len(parsed["layers"]),
+            "layer_descriptors": parsed["layers"],
+            **validated,
+        })
+        receipt_platforms.append({
+            "platform": platform,
+            "manifest_base64": base64.b64encode(raw_child.encode()).decode(),
+            "config_base64": base64.b64encode(raw_config.encode()).decode(),
+        })
+    index_digest = release.sha256_bytes(index.encode())
+    return {
+        **{key: board[key] for key in ("slug", "problem_id", "version", "source_hash", "repository")},
+        "index_digest": index_digest,
+        "immutable_reference": f"{board['repository']}@{index_digest}",
+        "platform_manifests": records,
+        "descriptor_receipt": {
+            "index_base64": base64.b64encode(index.encode()).decode(),
+            "platforms": receipt_platforms,
+        },
+    }
+
+
 def completed_journal(monkeypatch, tmp_path):
     base = "ghcr.io/projectforty2/verifiers"
     monkeypatch.setattr(release, "compute_source_hash", lambda problem: SOURCE)
@@ -100,37 +147,9 @@ def completed_journal(monkeypatch, tmp_path):
         registry_base=base,
     )
     for board in journal["boards"]:
-        records = []
-        for platform in release.PLATFORMS:
-            records.append({
-                "platform": platform,
-                "manifest_digest": DIGEST_A,
-                "manifest_size": 100,
-                "config_digest": DIGEST_B,
-                "config_size": 200,
-                "layer_count": 1,
-                "labels": {
-                    release.OCI_REVISION_LABEL: COMMIT,
-                    release.SOURCE_HASH_LABEL: SOURCE,
-                    release.SOURCE_HASH_ALGORITHM_LABEL: release.SOURCE_HASH_ALGORITHM,
-                    release.PROBLEM_ID_LABEL: board["problem_id"],
-                    release.VERIFIER_VERSION_LABEL: board["version"],
-                },
-                "runtime": {
-                    "user": "65534:65534",
-                    "workdir": f"/repo/problems/{board['problem_id']}",
-                    "entrypoint": None,
-                    "cmd": [],
-                },
-            })
         board["state"] = "verified"
         board["metadata_digest"] = DIGEST_B
-        board["release_record"] = {
-            **{key: board[key] for key in ("slug", "problem_id", "version", "source_hash", "repository")},
-            "index_digest": DIGEST_A,
-            "immutable_reference": f"{board['repository']}@{DIGEST_A}",
-            "platform_manifests": records,
-        }
+        board["release_record"] = portable_record(board)
     journal["generation"] = len(journal["boards"]) * 2
     journal["journal_hash"] = release._journal_hash(journal)
     path = tmp_path / "publication.journal.json"
@@ -466,11 +485,11 @@ def test_finalize_adopts_digest_only_release_commit_without_rebuilding(monkeypat
             "problem_id": board["slug"],
             "verifier": {
                 "version": board["version"],
-                "image": DIGEST_A,
+                "image": journal["boards"][index]["release_record"]["index_digest"],
                 "image_repository": board["repository"],
             },
         }
-        for board in boards
+        for index, board in enumerate(boards)
     }
     monkeypatch.setattr(release, "load_manifest", lambda problem: manifests[Path(problem).name])
     records = {board["slug"]: board["release_record"] for board in journal["boards"]}
@@ -546,7 +565,10 @@ def test_finalize_rejects_stale_manifest_and_registry_evidence(monkeypatch, tmp_
             "problem_id": board["slug"],
             "verifier": {
                 "version": board["version"],
-                "image": DIGEST_B if index == 0 else DIGEST_A,
+                "image": (
+                    DIGEST_B if index == 0
+                    else journal["boards"][index]["release_record"]["index_digest"]
+                ),
                 "image_repository": board["repository"],
             },
         }
@@ -561,7 +583,7 @@ def test_finalize_rejects_stale_manifest_and_registry_evidence(monkeypatch, tmp_
             board_binding_verifier=lambda root: None,
         )
 
-    manifests[boards[0]["slug"]]["verifier"]["image"] = DIGEST_A
+    manifests[boards[0]["slug"]]["verifier"]["image"] = journal["boards"][0]["release_record"]["index_digest"]
     monkeypatch.setattr(
         release, "_inspect_release_record",
         lambda **kwargs: {
@@ -627,6 +649,22 @@ def test_child_manifest_and_config_are_verified_through_digest_and_size():
     assert release.validate_platform_config(verified, platform="linux/amd64", verifier_source_commit=COMMIT, source_hash=SOURCE, problem_id="hadamard-mini", version="0.1.1")
     with pytest.raises(release.ReleaseError, match="digest and size"):
         release.verify_descriptor_bytes(blobs[config["digest"]] + " ", digest=config["digest"], size=config["size"], label="config")
+
+
+def test_portable_receipt_rejects_layer_descriptor_forgery():
+    board = {
+        "slug": "hadamard-mini",
+        "problem_id": "hadamard-mini",
+        "version": "0.1.1",
+        "source_hash": SOURCE,
+        "repository": "ghcr.io/projectforty2/verifiers/hadamard-mini",
+    }
+    record = portable_record(board)
+    release._validate_portable_descriptor_receipt(record)
+    forged = json.loads(json.dumps(record))
+    forged["platform_manifests"][0]["layer_descriptors"][0]["digest"] = DIGEST_A
+    with pytest.raises(release.AdmissionError, match="descriptor chain mismatch"):
+        release._validate_portable_descriptor_receipt(forged)
 
 
 def test_child_manifest_allows_content_addressed_layer_reuse():

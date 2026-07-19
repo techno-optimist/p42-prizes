@@ -149,7 +149,7 @@ Each admission host then runs the all-ten collector locally. The command has no
 offline-report mode: it launches both pull-only rehearsals itself, binds a fresh
 collector challenge into each report, signs each board artifact and the complete
 ordered host-set index with the same host key, and publishes through an atomic
-no-replace directory operation. The v3 bundle contains all 20 canonical raw
+no-replace directory operation. The v4 bundle contains all 20 canonical raw
 runtime rehearsals as well as the ten signed board summaries. Each raw receipt
 is indexed by its path, exact canonical-file SHA-256, and rehearsal self-hash;
 reconciliation independently reruns the semantic validator and rejects missing,
@@ -163,10 +163,14 @@ PYTHONPATH=src python3 scripts/collect_verifier_host_set.py \
   --fixtures protocol/production-verifier-fixtures-v1.json \
   --fixtures-sha256 sha256:<independent-fixture-pin> \
   --signing-key /secure/keys/<host>.ed25519 \
+  --operator-id <pre-registered-operator-id> \
   --host-label <stable-host-label> \
   --output-dir /secure/evidence/<host>-all-ten
 ```
 
+The v4 host-set signature binds the operator ID, canonical trusted-host profile
+digest, and all ten exact-`R` registry paths. Portable release admission
+compares those fields to the externally supplied `trusted_hosts` profiles.
 This is signed host-operator evidence, not a trustless proof that the operator
 owns independent hardware. Matrix admission still requires four distinct
 trusted keys and the architecture/glibc coverage policy; key custody and host

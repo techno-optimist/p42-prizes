@@ -385,6 +385,7 @@ def validate_fundable_release_admission(
             fixtures=fixtures,
             dossier_sha256=dossier_file_sha256,
             fixture_sha256=fixture_sha256,
+            trusted_operator_profiles=trusted_profiles,
         )
     except AdmissionError as exc:
         errors.append(f"host-set bundles: {exc}")
