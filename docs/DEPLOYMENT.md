@@ -530,9 +530,16 @@ env -u BASE_SEPOLIA_PRIVATE_KEY \
   P42_RELEASE_CAPSULE=... \
   P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES=0x...,0x... \
   P42_ROLE_ACCEPTANCE_PACKET=... \
+  P42_ROLE_ACCEPTANCE_PACKET_SHA256=sha256:... \
   ETHERSCAN_API_KEY=... \
   npm run continue:base-sepolia
 ```
+
+`P42_ROLE_ACCEPTANCE_PACKET_SHA256` must be obtained independently from the
+packet path. Continuation hashes the exact packet bytes and rejects a packet
+whose bytes differ even when its internal canonical digest still verifies.
+Reconciliation repeats this exact-byte check against the digest recorded in the
+completed manifest.
 
 Continuation is read-only on chain. It requires two operator-distinct RPCs to
 agree on Base Sepolia's canonical `finalized` and `safe` tags and on

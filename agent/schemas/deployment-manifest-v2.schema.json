@@ -179,6 +179,9 @@
         "completionBlockHash": {
           "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/bytes32" }]
         },
+        "roleAcceptancePacketBytesDigest": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }]
+        },
         "completionBlockEvidence": {
           "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/completionBlockEvidence" }]
         },
@@ -392,7 +395,7 @@
           { "properties": { "status": { "const": "governance-setup-complete" } } }
         ]
       },
-      "then": { "properties": { "governanceSetup": { "required": ["finalityAnchor", "acceptanceValidatedAt", "completionBlockTimestamp", "completionBlockHash", "completionBlockEvidence"] } } }
+      "then": { "properties": { "governanceSetup": { "required": ["finalityAnchor", "acceptanceValidatedAt", "completionBlockTimestamp", "completionBlockHash", "completionBlockEvidence", "roleAcceptancePacketBytesDigest"], "properties": { "roleAcceptancePacketBytesDigest": { "$ref": "#/$defs/digest" } } } } }
     },
     {
       "if": {
@@ -461,17 +464,19 @@
     "roleAcceptances": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "policyVersion", "chainId", "releaseBindingDigest", "capsuleDigest", "slateDigest", "configDigest", "deploymentCommit", "timelock", "topologyDigest", "contractCount", "expiresAt", "acceptances", "packetDigest"],
+      "required": ["schema", "policyVersion", "chainId", "requestSetNonce", "requestSetDigest", "pendingManifestBytesDigest", "manifestBindingDigest", "releaseBindingDigest", "capsuleBytesDigest", "capsuleDigest", "expectedExplorerDossierDigest", "slateDigest", "configDigest", "deploymentCommit", "timelock", "topologyDigest", "contractCount", "expiresAt", "acceptances", "packetDigest"],
       "properties": {
-        "schema": { "const": "p42-prizes/deployment-role-acceptance/v1" },
-        "policyVersion": { "const": "p42-governance-role-policy/v1" },
+        "schema": { "const": "p42-prizes/deployment-role-acceptance/v2" },
+        "policyVersion": { "const": "p42-governance-role-policy/v2" },
         "chainId": { "const": 84532 },
-        "releaseBindingDigest": { "$ref": "#/$defs/digest" }, "capsuleDigest": { "$ref": "#/$defs/digest" }, "slateDigest": { "$ref": "#/$defs/digest" }, "configDigest": { "$ref": "#/$defs/digest" },
+        "requestSetNonce": { "$ref": "#/$defs/bytes32" }, "requestSetDigest": { "$ref": "#/$defs/digest" },
+        "pendingManifestBytesDigest": { "$ref": "#/$defs/digest" }, "manifestBindingDigest": { "$ref": "#/$defs/digest" },
+        "releaseBindingDigest": { "$ref": "#/$defs/digest" }, "capsuleBytesDigest": { "$ref": "#/$defs/digest" }, "capsuleDigest": { "$ref": "#/$defs/digest" }, "expectedExplorerDossierDigest": { "$ref": "#/$defs/digest" }, "slateDigest": { "$ref": "#/$defs/digest" }, "configDigest": { "$ref": "#/$defs/digest" },
         "deploymentCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
         "timelock": { "$ref": "#/$defs/address" }, "topologyDigest": { "$ref": "#/$defs/digest" }, "contractCount": { "const": 47 },
         "expiresAt": { "type": "integer", "minimum": 1 },
         "acceptances": {
-          "type": "array", "minItems": 7,
+          "type": "array", "minItems": 15, "maxItems": 15,
           "items": {
             "type": "object", "additionalProperties": false,
             "required": ["role", "address", "nonce", "riskAccepted", "roleAccepted", "signature"],

@@ -166,6 +166,7 @@ describe("production deployment runbook command contract", () => {
       "P42_RELEASE_CAPSULE",
       "P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES",
       "P42_ROLE_ACCEPTANCE_PACKET",
+      "P42_ROLE_ACCEPTANCE_PACKET_SHA256",
       "ETHERSCAN_API_KEY",
     ]) {
       assert.match(deploymentRunbook, new RegExp(requiredInput));

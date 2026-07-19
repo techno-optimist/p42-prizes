@@ -13,6 +13,37 @@ The agent runtime has three persistent state machines:
 This is Phase 1/testnet plumbing. It does not close the external audit, legal,
 governance, resolver, verifier-image, or real-value gates.
 
+## Detached Role Acceptance
+
+The production role ceremony never loads a signing key. Prepare 15 EIP-712
+requests from the exact pending-manifest and capsule bytes, distribute the
+individual request objects to the five governance signers and other named role
+holders, then assemble externally produced detached signature artifacts:
+
+```bash
+p42-role-acceptance-prepare \
+  --pending-manifest ../deployments/base-sepolia/p42-prizes.json \
+  --capsule /secure/release-capsule.json \
+  --expected-explorer-dossier-sha256 sha256:... \
+  --expires-at 1900000000 \
+  --trusted-root /secure/role-acceptance \
+  --output /secure/role-acceptance/requests.json
+
+p42-role-acceptance-assemble \
+  --pending-manifest ../deployments/base-sepolia/p42-prizes.json \
+  --capsule /secure/release-capsule.json \
+  --expected-explorer-dossier-sha256 sha256:... \
+  --trusted-root /secure/role-acceptance \
+  --request-set /secure/role-acceptance/requests.json \
+  --signature /secure/role-acceptance/signature-01.json \
+  --output /secure/role-acceptance/packet.json
+```
+
+Supply all 15 `--signature` arguments. Both commands create owner-private files
+exclusively and refuse replacement. Assembly is offline: it performs no RPC
+calls and accepts no private key, mnemonic, or seed-phrase input. Expiry is
+checked later against the canonical finalized governance completion timestamp.
+
 ## Operator Path
 
 The only live verification path is:
