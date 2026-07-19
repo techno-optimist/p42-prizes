@@ -277,7 +277,12 @@ def test_missing_offchain_da_emits_terminal_canonical_challenge_candidate(tmp_pa
         da_failure={"kind": "missing", "error": "content-addressed payload is absent"},
     )
 
-    transcript = _run_job(job, tmp_path, policy=RunnerPolicy(sandbox="docker"))
+    transcript = _run_job(
+        job,
+        tmp_path,
+        policy=RunnerPolicy(sandbox="docker"),
+        allow_test_identity_derivation=True,
+    )
     persisted = json.loads(Path(transcript["transcript_path"]).read_text(encoding="utf-8"))
 
     assert persisted["da"]["ok"] is False
@@ -301,7 +306,12 @@ def test_unrecoverable_onchain_calldata_is_quarantined_not_wrongfully_challenged
         da_failure={"kind": "calldata_unrecoverable", "error": "wrapper could not be decoded"},
     )
 
-    transcript = _run_job(job, tmp_path, policy=RunnerPolicy(sandbox="docker"))
+    transcript = _run_job(
+        job,
+        tmp_path,
+        policy=RunnerPolicy(sandbox="docker"),
+        allow_test_identity_derivation=True,
+    )
 
     assert transcript["da"]["challengeable"] is False
     assert transcript["da"]["retryable"] is False
@@ -327,6 +337,7 @@ def test_transient_chain_retrieval_failures_emit_retry_not_terminal_actions(
         ),
         tmp_path,
         policy=RunnerPolicy(sandbox="docker"),
+        allow_test_identity_derivation=True,
     )
 
     assert transcript["da"]["ok"] is False
@@ -360,6 +371,7 @@ def test_retry_state_promotes_later_verified_absence_to_terminal_challenge(tmp_p
         ),
         tmp_path,
         policy=RunnerPolicy(sandbox="docker"),
+        allow_test_identity_derivation=True,
     )
 
     assert transcript["da"]["failure_kind"] == "missing"
@@ -391,6 +403,7 @@ def test_retryable_calldata_failure_requeues_then_verifies_after_recovery(
         memory=_runner_memory(),
         policy=RunnerPolicy(sandbox="docker"),
         docker_host="unix:///run/p42-docker-fixture/docker.sock",
+        allow_test_identity_derivation=True,
     )
 
     assert first["verifier"]["challenge_candidate"]["action"] == "retry"
@@ -413,6 +426,7 @@ def test_retryable_calldata_failure_requeues_then_verifies_after_recovery(
         policy=RunnerPolicy(sandbox="docker"),
         now_utc="2030-01-01T00:00:00Z",
         docker_host="unix:///run/p42-docker-fixture/docker.sock",
+        allow_test_identity_derivation=True,
     )
 
     assert second["verifier"]["challenge_candidate"]["action"] == "none"
@@ -437,6 +451,7 @@ def test_unavailable_docker_fails_before_leasing_a_verifier_job(
             memory=_runner_memory(),
             policy=RunnerPolicy(sandbox="docker"),
             docker_host="unix:///run/p42-docker-fixture/docker.sock",
+            allow_test_identity_derivation=True,
         )
     assert read_runner_queue(queue)["jobs"][0]["status"] == "queued"
 
@@ -468,6 +483,7 @@ def test_retry_stops_at_the_operator_canonical_challenge_expiry(
         policy=RunnerPolicy(sandbox="docker"),
         now_utc="2020-01-01T00:00:00Z",
         docker_host="unix:///run/p42-docker-fixture/docker.sock",
+        allow_test_identity_derivation=True,
     )
 
     assert result["verifier"]["challenge_candidate"]["action"] == "retry"
@@ -508,7 +524,12 @@ def test_exact_score_underclaim_becomes_challenge_candidate(
     monkeypatch.setattr("p42_prizes.runner_worker._run_verifier_for_transcript", fake_verifier)
     job = _job(chain_claim=_claim(claimed="333333333333333333"))
 
-    transcript = _run_job(job, tmp_path, policy=RunnerPolicy(sandbox="docker"))
+    transcript = _run_job(
+        job,
+        tmp_path,
+        policy=RunnerPolicy(sandbox="docker"),
+        allow_test_identity_derivation=True,
+    )
 
     comparison = transcript["verifier"]["claim_comparison"]
     assert comparison["verifier_score_atoms"] == "333333333333333334"
@@ -523,7 +544,12 @@ def test_exact_score_underclaim_becomes_challenge_candidate(
 
 def test_chain_job_refuses_host_policy(tmp_path: Path) -> None:
     with pytest.raises(RunnerWorkerError, match="require policy.sandbox=docker"):
-        _run_job(_job(), tmp_path, policy=RunnerPolicy(sandbox="none"))
+        _run_job(
+            _job(),
+            tmp_path,
+            policy=RunnerPolicy(sandbox="none"),
+            allow_test_identity_derivation=True,
+        )
 
 
 def test_recovered_chain_da_job_still_refuses_host_policy(tmp_path: Path) -> None:
@@ -540,10 +566,15 @@ def test_recovered_chain_da_job_still_refuses_host_policy(tmp_path: Path) -> Non
     )
 
     with pytest.raises(RunnerWorkerError, match="require policy.sandbox=docker"):
-        _run_job(job, tmp_path, policy=RunnerPolicy(sandbox="none"))
+        _run_job(
+            job,
+            tmp_path,
+            policy=RunnerPolicy(sandbox="none"),
+            allow_test_identity_derivation=True,
+        )
 
 
-def test_runtime_bridge_vertical_slice_persists_missing_da_candidate(tmp_path: Path) -> None:
+def test_local_cli_vertical_slice_persists_missing_da_candidate(tmp_path: Path) -> None:
     queue = tmp_path / "queue.json"
     transcripts = tmp_path / "transcripts"
     spec = tmp_path / "job.json"
@@ -556,30 +587,58 @@ def test_runtime_bridge_vertical_slice_persists_missing_da_candidate(tmp_path: P
         ),
         encoding="utf-8",
     )
-    bridge = ROOT / "agent" / "runtime_bridge.py"
-
-    enqueue = subprocess.run(
+    enqueue_runner_job(queue, json.loads(spec.read_text(encoding="utf-8")))
+    work = subprocess.run(
         [
             "python3",
-            str(bridge),
-            "enqueue",
+            "-m",
+            "p42_prizes.cli",
+            "runner-work-once",
             "--queue",
             str(queue),
-            "--job",
-            str(spec),
-            "--chain-now-utc",
-            "2026-07-15T00:00:00Z",
+            "--transcripts",
+            str(transcripts),
+            "--total-memory-mb",
+            "16384",
+            "--available-memory-mb",
+            "16384",
+            "--swap-used-mb",
+            "0",
+            "--reserve-memory-mb",
+            "1024",
+            "--allow-unsafe-local-fixture",
         ],
         cwd=ROOT,
         text=True,
         capture_output=True,
         check=False,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(ROOT / "src"),
+            "P42_RUNNER_CHAIN_TIMESTAMP": "1784160000",
+        },
     )
-    assert enqueue.returncode == 0, enqueue.stderr
+    assert work.returncode == 0, work.stderr
+    result = json.loads(work.stdout)
+    assert result["verifier"]["challenge_candidate"]["action"] == "challenge"
+    queued = read_runner_queue(queue)["jobs"][0]
+    assert queued["status"] == "failed"
+    assert queued["challenge_candidate_hash"] == result["verifier"]["challenge_candidate"]["candidate_hash"]
+
+
+def test_runtime_bridge_terminalizes_job_without_production_board_identity(tmp_path: Path) -> None:
+    queue = tmp_path / "queue.json"
+    transcripts = tmp_path / "transcripts"
+    job = _job(
+        solution=None,
+        da_failure={"kind": "missing", "error": "payload unavailable before challenge window"},
+    )
+    enqueue_runner_job(queue, job)
+
     work = subprocess.run(
         [
             "python3",
-            str(bridge),
+            str(ROOT / "agent" / "runtime_bridge.py"),
             "work-once",
             "--queue",
             str(queue),
@@ -600,9 +659,15 @@ def test_runtime_bridge_vertical_slice_persists_missing_da_candidate(tmp_path: P
         check=False,
         env={**os.environ, "P42_RUNNER_CHAIN_TIMESTAMP": "1784160000"},
     )
+
     assert work.returncode == 0, work.stderr
     result = json.loads(work.stdout)
-    assert result["verifier"]["challenge_candidate"]["action"] == "challenge"
+    assert result["reason"].startswith(
+        "job_run_error: production job lacks the executor-forced closed board identity"
+    )
     queued = read_runner_queue(queue)["jobs"][0]
     assert queued["status"] == "failed"
-    assert queued["challenge_candidate_hash"] == result["verifier"]["challenge_candidate"]["candidate_hash"]
+    assert queued["terminal_disposition"]["reason_code"] == "job_run_error"
+    assert queued["terminal_disposition"]["fence_hash"] == job["source_event_hash"]
+    assert "transcript_path" not in queued
+    assert not transcripts.exists()
