@@ -141,7 +141,7 @@ def normalize_governance_signoff(
     signers, signer_signed_times, control_addresses = _validate_multisig(
         normalized.get("treasury_multisig"), context
     )
-    timelock_address = _validate_timelock(normalized.get("timelock"))
+    timelock_address, timelock_delay_hours = _validate_timelock(normalized.get("timelock"))
     guardian, guardian_signed_at = _validate_guardian(normalized.get("pause_guardian"), context)
     if schema_version == GOVERNANCE_SIGNOFF_SCHEMA_VERSION:
         validate_production_binding(
@@ -150,6 +150,7 @@ def normalize_governance_signoff(
             context,
             GovernanceSignoffError,
             timelock_address=timelock_address,
+            timelock_delay_hours=timelock_delay_hours,
             treasury_multisig_address=normalized["treasury_multisig"]["address"],
             treasury_multisig_threshold=normalized["treasury_multisig"]["threshold"],
             treasury_multisig_signers=[signer["address"] for signer in signers],
@@ -280,7 +281,7 @@ def _validate_multisig(
     return validated, signed_times, addresses
 
 
-def _validate_timelock(value: Any) -> str:
+def _validate_timelock(value: Any) -> tuple[str, int]:
     timelock = _require_mapping(value, "report.timelock")
     address = _require_address(timelock.get("address"), "report.timelock.address", GovernanceSignoffError)
     delay = timelock.get("min_delay_hours")
@@ -290,7 +291,7 @@ def _validate_timelock(value: Any) -> str:
         raise GovernanceSignoffError("report.timelock.applies_to_upgrades must be true")
     if timelock.get("applies_to_fee_changes") is not True:
         raise GovernanceSignoffError("report.timelock.applies_to_fee_changes must be true")
-    return address
+    return address, delay
 
 
 def _validate_guardian(
@@ -486,6 +487,7 @@ def validate_production_binding(
     error_type: type[ValueError],
     *,
     timelock_address: str | None = None,
+    timelock_delay_hours: int | None = None,
     treasury_multisig_address: str | None = None,
     treasury_multisig_threshold: int | None = None,
     treasury_multisig_signers: list[str] | None = None,
@@ -526,6 +528,14 @@ def validate_production_binding(
     canonical_timelock = _require_manifest_address(
         _manifest_address(shared, "timelock"), "contracts.timelock.address", error_type
     )
+    governance_timelock = _require_manifest_address(
+        governance.get("timelock"), "governance.timelock", error_type
+    )
+    if governance_timelock.casefold() != canonical_timelock.casefold():
+        raise error_type(
+            "production deployment manifest governance.timelock must match "
+            "contracts.timelock.address"
+        )
     expected_scalars = {
         "deployment_commit": release.get("deployment_commit"),
         "capsule_digest": release_evidence.get("capsuleDigest"),
@@ -587,6 +597,28 @@ def validate_production_binding(
             raise error_type("production deployment manifest guardian authorities must match")
         if pause_guardian_address.casefold() != governance_guardian.casefold():
             raise error_type("report.pause_guardian.address must match canonical governance guardian")
+    if any(
+        item is not None
+        for item in (
+            timelock_address,
+            timelock_delay_hours,
+            treasury_multisig_address,
+            treasury_multisig_threshold,
+            treasury_multisig_signers,
+            pause_guardian_address,
+        )
+    ):
+        _validate_deployed_governance_state(
+            release=release,
+            context=context,
+            manifest_governance=governance,
+            timelock_address=canonical_timelock,
+            report_delay_hours=timelock_delay_hours,
+            report_threshold=treasury_multisig_threshold,
+            report_signers=treasury_multisig_signers,
+            report_guardian=pause_guardian_address,
+            error_type=error_type,
+        )
     contracts = value.get("contracts")
     release_contracts = release.get("contracts")
     if not isinstance(contracts, list) or len(contracts) != len(CANONICAL_TOPOLOGY):
@@ -618,6 +650,144 @@ def _manifest_address(shared: Mapping[str, Any], key: str) -> Any:
 
 def _require_manifest_address(value: Any, field: str, error_type: type[ValueError]) -> str:
     return _require_address(value, f"production deployment manifest {field}", error_type)
+
+
+def _validate_deployed_governance_state(
+    *,
+    release: Mapping[str, Any],
+    context: AttestationValidationContext,
+    manifest_governance: Mapping[str, Any],
+    timelock_address: str,
+    report_delay_hours: int | None,
+    report_threshold: int | None,
+    report_signers: list[str] | None,
+    report_guardian: str | None,
+    error_type: type[ValueError],
+) -> None:
+    if context.chain_reader is None:
+        raise error_type("production governance cannot be accepted without on-chain state evidence")
+    contracts = release.get("contracts")
+    if not isinstance(contracts, list):
+        raise error_type("report.release_binding.contracts must be an array")
+    timelock_contract = next(
+        (
+            contract
+            for contract in contracts
+            if isinstance(contract, Mapping) and contract.get("topology_key") == "shared.timelock"
+        ),
+        None,
+    )
+    if not isinstance(timelock_contract, Mapping):
+        raise error_type("report.release_binding is missing shared.timelock chain evidence")
+    try:
+        chain_evidence = json.loads(
+            resolved_artifact_bytes(
+                context,
+                timelock_contract.get("chain_bytecode_artifact"),
+                prefix="report.release_binding.contracts[shared.timelock].chain_bytecode_artifact",
+                error_type=error_type,
+            )
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise error_type("shared.timelock chain evidence must contain JSON") from exc
+    block_number = chain_evidence.get("block_number") if isinstance(chain_evidence, Mapping) else None
+    block_hash = chain_evidence.get("block_hash") if isinstance(chain_evidence, Mapping) else None
+    if not isinstance(block_number, int) or isinstance(block_number, bool) or block_number < 0:
+        raise error_type("shared.timelock chain evidence is missing a valid block_number")
+    try:
+        queried = context.chain_reader(
+            str(release.get("network")),
+            int(release.get("chain_id")),
+            timelock_address,
+            block_number,
+        )
+    except Exception as exc:
+        raise error_type("deployed timelock governance state could not be queried") from exc
+    if not isinstance(queried, Mapping):
+        raise error_type("deployed timelock governance state evidence is malformed")
+    queried_block_hash = queried.get("block_hash")
+    if (
+        not isinstance(block_hash, str)
+        or not isinstance(queried_block_hash, str)
+        or queried_block_hash.casefold() != block_hash.casefold()
+    ):
+        raise error_type("deployed timelock governance state is not bound to the recorded block")
+    state = queried.get("governance_state")
+    if not isinstance(state, Mapping):
+        raise error_type("ChainReader did not return deployed timelock governance state evidence")
+
+    signer_count = _require_chain_int(state.get("signer_count"), "signer_count", error_type)
+    threshold = _require_chain_int(state.get("threshold"), "threshold", error_type)
+    delay_seconds = _require_chain_int(state.get("delay_seconds"), "delay_seconds", error_type)
+    guardian = _require_manifest_address(state.get("guardian"), "chain guardian", error_type)
+    state_signers = state.get("signers")
+    if not isinstance(state_signers, list):
+        raise error_type("deployed timelock governance state signers must be an array")
+    chain_signers = [
+        _require_manifest_address(signer, f"chain signers[{index}]", error_type)
+        for index, signer in enumerate(state_signers)
+    ]
+    lowered_chain_signers = [signer.casefold() for signer in chain_signers]
+    if signer_count != len(chain_signers) or len(set(lowered_chain_signers)) != len(chain_signers):
+        raise error_type("deployed timelock signer_count/signers evidence is inconsistent")
+
+    manifest_signers = manifest_governance.get("signers")
+    if not isinstance(manifest_signers, list):
+        raise error_type("production deployment manifest governance.signers must be an array")
+    lowered_manifest_signers = [
+        _require_manifest_address(signer, f"governance.signers[{index}]", error_type).casefold()
+        for index, signer in enumerate(manifest_signers)
+    ]
+    manifest_threshold = _require_mapping_field_int(
+        manifest_governance=manifest_governance,
+        field="threshold",
+        error_type=error_type,
+    )
+    manifest_delay = _require_mapping_field_int(
+        manifest_governance=manifest_governance,
+        field="delaySeconds",
+        error_type=error_type,
+    )
+    manifest_guardian = _require_manifest_address(
+        manifest_governance.get("guardian"), "governance.guardian", error_type
+    )
+    if lowered_chain_signers != lowered_manifest_signers:
+        raise error_type("deployed timelock signers do not match canonical governance.signers")
+    if threshold != manifest_threshold:
+        raise error_type("deployed timelock threshold does not match canonical governance.threshold")
+    if delay_seconds != manifest_delay:
+        raise error_type("deployed timelock delay does not match canonical governance.delaySeconds")
+    if guardian.casefold() != manifest_guardian.casefold():
+        raise error_type("deployed timelock guardian does not match canonical governance.guardian")
+    if report_signers is not None and lowered_chain_signers != [
+        signer.casefold() for signer in report_signers
+    ]:
+        raise error_type("report.treasury_multisig.signers do not match deployed timelock signers")
+    if report_threshold is not None and threshold != report_threshold:
+        raise error_type("report.treasury_multisig.threshold does not match deployed timelock threshold")
+    if report_guardian is not None and guardian.casefold() != report_guardian.casefold():
+        raise error_type("report.pause_guardian.address does not match deployed timelock guardian")
+    if report_delay_hours is not None:
+        if delay_seconds % 3600 != 0 or delay_seconds // 3600 != report_delay_hours:
+            raise error_type("report.timelock.min_delay_hours does not match deployed timelock delay")
+
+
+def _require_mapping_field_int(
+    *,
+    manifest_governance: Mapping[str, Any],
+    field: str,
+    error_type: type[ValueError],
+) -> int:
+    value = manifest_governance.get(field)
+    if not isinstance(value, str) or not value.isdigit() or int(value) <= 0:
+        raise error_type(f"production deployment manifest governance.{field} must be a positive uint string")
+    return int(value)
+
+
+def _require_chain_int(value: Any, field: str, error_type: type[ValueError]) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise error_type(f"deployed timelock governance state {field} must be a non-negative integer")
+    return value
 
 
 def _require_distinct_identities(

@@ -57,7 +57,7 @@ def _production_binding(fixture: AttestationFixture, release: dict) -> dict:
 
 
 def valid_governance_report(
-    tmp_path: Path, *, legacy: bool = False
+    tmp_path: Path, *, legacy: bool = False, mismatched_manifest_timelock: bool = False
 ) -> tuple[dict, AttestationFixture, dict]:
     fixture = AttestationFixture(tmp_path)
     schema_version = (
@@ -106,7 +106,11 @@ def valid_governance_report(
             )
             manifest["governance"]["signers"] = [signer["address"] for signer in signers]
             manifest["governance"]["threshold"] = "3"
+            manifest["governance"]["delaySeconds"] = str(48 * 60 * 60)
+            manifest["governance"]["overrideDelaySeconds"] = str(96 * 60 * 60)
             manifest["governance"]["guardian"] = guardian["address"]
+            if mismatched_manifest_timelock:
+                manifest["governance"]["timelock"] = address("hostile-manifest-timelock")
             manifest["roles"]["treasury"] = treasury_multisig_address
             manifest["roles"]["guardian"] = guardian["address"]
             return manifest
@@ -202,12 +206,35 @@ def valid_governance_report(
     return report, fixture, fixture.trust_registry(schema_version, signer_roles)
 
 
-def normalize(report: dict, fixture: AttestationFixture, registry: dict) -> dict:
+def governance_chain_reader(report: dict, fixture: AttestationFixture, **state_overrides):
+    state = {
+        "signer_count": len(report["treasury_multisig"]["signers"]),
+        "signers": [signer["address"] for signer in report["treasury_multisig"]["signers"]],
+        "threshold": report["treasury_multisig"]["threshold"],
+        "delay_seconds": report["timelock"]["min_delay_hours"] * 60 * 60,
+        "guardian": report["pause_guardian"]["address"],
+    }
+    state.update(state_overrides)
+
+    def read(network: str, chain_id: int, contract: str, block_number: int):
+        evidence = fixture.chain_reader(network, chain_id, contract, block_number)
+        return {**evidence, "governance_state": state}
+
+    return read
+
+
+def normalize(
+    report: dict,
+    fixture: AttestationFixture,
+    registry: dict,
+    *,
+    chain_reader=None,
+) -> dict:
     return normalize_governance_signoff(
         report,
         trust_registry=registry,
         artifact_root=fixture.root,
-        chain_reader=fixture.chain_reader,
+        chain_reader=chain_reader or governance_chain_reader(report, fixture),
     )
 
 
@@ -265,6 +292,53 @@ def test_production_governance_rejects_canonical_control_substitution(
 
     with pytest.raises(GovernanceSignoffError, match="canonical|governance"):
         normalize(report, fixture, registry)
+
+
+def test_production_governance_rejects_manifest_timelock_distinct_from_contract(
+    tmp_path: Path,
+) -> None:
+    report, fixture, registry = valid_governance_report(
+        tmp_path, mismatched_manifest_timelock=True
+    )
+
+    with pytest.raises(GovernanceSignoffError, match=r"governance\.timelock.*contracts\.timelock"):
+        normalize(report, fixture, registry)
+
+
+@pytest.mark.parametrize("control", ["threshold", "signers", "guardian", "delay"])
+def test_production_governance_rejects_self_consistent_packet_mismatched_to_chain(
+    tmp_path: Path, control: str
+) -> None:
+    report, fixture, registry = valid_governance_report(tmp_path)
+    overrides = {}
+    if control == "threshold":
+        overrides["threshold"] = 4
+    elif control == "signers":
+        overrides["signers"] = [
+            *[signer["address"] for signer in report["treasury_multisig"]["signers"][:-1]],
+            address("deployed-hostile-signer"),
+        ]
+    elif control == "guardian":
+        overrides["guardian"] = address("deployed-hostile-guardian")
+    else:
+        overrides["delay_seconds"] = 49 * 60 * 60
+
+    with pytest.raises(GovernanceSignoffError, match="deployed timelock"):
+        normalize(
+            report,
+            fixture,
+            registry,
+            chain_reader=governance_chain_reader(report, fixture, **overrides),
+        )
+
+
+def test_production_governance_fails_closed_without_timelock_state_evidence(
+    tmp_path: Path,
+) -> None:
+    report, fixture, registry = valid_governance_report(tmp_path)
+
+    with pytest.raises(GovernanceSignoffError, match="governance state evidence"):
+        normalize(report, fixture, registry, chain_reader=fixture.chain_reader)
 
 
 def test_legacy_governance_cannot_wrap_production_topology(tmp_path: Path) -> None:
