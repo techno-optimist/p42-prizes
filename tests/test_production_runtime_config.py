@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -14,7 +15,10 @@ from p42_prizes.production_runtime_config import (
     load_runtime_release,
 )
 from p42_prizes.problem import load_manifest
-from p42_prizes.runtime_admission import validate_matrix_host_set_bundles as replay_host_sets
+from p42_prizes.runtime_admission import (
+    validate_clean_checkout as validate_checkout,
+    validate_matrix_host_set_bundles as replay_host_sets,
+)
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
@@ -33,6 +37,7 @@ def _evidence_file(path: Path, value: dict) -> str:
 
 
 def _artifact(evidence_root: Path) -> dict:
+    evidence_root.mkdir(parents=True, exist_ok=True)
     slugs = json.loads((ROOT / "protocol/production-board-set-v1.json").read_text())["boards"]
     records = json.loads((ROOT / "protocol/production-board-bindings-v1.json").read_text())["records"]
     projected = json.loads((ROOT / "scripts/release-guard-problems-v1.json").read_text())["boards"]
@@ -127,6 +132,7 @@ def _stub_expensive_admission_replay(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runtime_config, "load_image_release_dossier", lambda path, **_: json.loads(Path(path).read_text()))
     monkeypatch.setattr(runtime_config, "validate_admission_matrix", lambda matrix: dict(matrix))
     monkeypatch.setattr(runtime_config, "_trusted_operator_profiles", lambda *_: {"fixture-key": {}})
+    monkeypatch.setattr(runtime_config, "validate_clean_checkout", lambda _root: COMMIT_R)
 
     def validate_bundles(matrix, bundles, *, dossier, **_kwargs) -> None:
         matrix_hashes = [item.get("host_set_hash") for item in matrix.get("host_sets", [])]
@@ -153,6 +159,20 @@ def _write(path: Path, value: dict) -> str:
     return sha256_bytes(payload)
 
 
+def _git_checkout(path: Path) -> str:
+    path.mkdir()
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.name", "P42 Test"], check=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.email", "p42@example.invalid"], check=True)
+    (path / "tracked.txt").write_text("release snapshot\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(path), "add", "tracked.txt"], check=True)
+    subprocess.run(["git", "-C", str(path), "commit", "-qm", "release snapshot"], check=True)
+    return subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
 def test_production_config_requires_external_release_ready_exact_ten(tmp_path: Path) -> None:
     with pytest.raises(ProductionRuntimeConfigError, match="path and independent"):
         generate_production_executor_config(ROOT)
@@ -170,6 +190,27 @@ def test_production_config_requires_external_release_ready_exact_ten(tmp_path: P
         "problem_slug", "problem_path", "verifier_command", "verifier_image",
         "verifier_source_sha256", "resource_identity", "memory_mb", "wall_seconds",
     } for board in config["boards"])
+
+
+def test_executor_config_does_not_reread_manifests_after_release_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "runtime-release.json"
+    pin = _write(path, _artifact(tmp_path))
+    original = runtime_config.load_manifest
+    calls: list[Path] = []
+
+    def counted(manifest_path: Path):
+        calls.append(manifest_path)
+        return original(manifest_path)
+
+    monkeypatch.setattr(runtime_config, "load_manifest", counted)
+    generate_production_executor_config(
+        ROOT, release_artifact_path=path, release_artifact_sha256=pin,
+        image_probe=lambda *_: None,
+    )
+
+    assert len(calls) == 10
 
 
 @pytest.mark.parametrize(
@@ -313,3 +354,77 @@ def test_repository_local_artifact_is_test_only_and_never_production_input(tmp_p
             load_runtime_release(ROOT, path, expected_sha256=pin, image_probe=lambda *_: None)
     finally:
         path.unlink(missing_ok=True)
+
+
+def test_runtime_release_rejects_direct_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "runtime-release-target.json"
+    pin = _write(target, _artifact(tmp_path))
+    supplied = tmp_path / "runtime-release.json"
+    supplied.symlink_to(target)
+
+    with pytest.raises(ProductionRuntimeConfigError, match="protected singly linked regular file"):
+        load_runtime_release(ROOT, supplied, expected_sha256=pin, image_probe=lambda *_: None)
+
+
+@pytest.mark.parametrize("target", ["matrix", "dossier"])
+def test_runtime_release_rejects_direct_external_evidence_symlink(
+    tmp_path: Path, target: str,
+) -> None:
+    value = _artifact(tmp_path)
+    if target == "matrix":
+        original = Path(value["boards"][0]["admission"]["matrix_path"])
+        supplied = tmp_path / "linked-matrix.json"
+        supplied.symlink_to(original)
+        value["boards"][0]["admission"]["matrix_path"] = str(supplied)
+    else:
+        original = Path(json.loads(
+            (Path(value["boards"][0]["admission"]["host_sets"][0]["path"]) / "host-set.json").read_text()
+        )["dossier"]["path"])
+        supplied = tmp_path / "linked-dossier.json"
+        supplied.symlink_to(original)
+        for host_file in value["boards"][0]["admission"]["host_sets"]:
+            host_index_path = Path(host_file["path"]) / "host-set.json"
+            host_index = json.loads(host_index_path.read_text())
+            host_index["dossier"]["path"] = str(supplied)
+            new_pin = _evidence_file(host_index_path, host_index)
+            for board in value["boards"]:
+                matching = next(item for item in board["admission"]["host_sets"] if item["path"] == host_file["path"])
+                matching["file_sha256"] = new_pin
+    path = tmp_path / "runtime-release.json"
+    pin = _write(path, value)
+
+    with pytest.raises(ProductionRuntimeConfigError, match="protected singly linked regular file"):
+        load_runtime_release(ROOT, path, expected_sha256=pin, image_probe=lambda *_: None)
+
+
+def test_runtime_release_rejects_dirty_checkout_before_local_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "checkout"
+    head = _git_checkout(checkout)
+    value = _artifact(tmp_path / "evidence")
+    value["verifier_image_release"]["release_config_commit"] = head
+    (checkout / "dirty.txt").write_text("untracked\n", encoding="utf-8")
+    path = tmp_path / "runtime-release.json"
+    pin = _write(path, value)
+    monkeypatch.setattr(runtime_config, "validate_clean_checkout", validate_checkout)
+    monkeypatch.setattr(runtime_config, "_load", lambda *_: pytest.fail("local input read before clean check"))
+
+    with pytest.raises(ProductionRuntimeConfigError, match="entirely clean checkout"):
+        load_runtime_release(checkout, path, expected_sha256=pin, image_probe=lambda *_: None)
+
+
+def test_runtime_release_rejects_wrong_head_before_local_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "checkout"
+    _git_checkout(checkout)
+    value = _artifact(tmp_path / "evidence")
+    value["verifier_image_release"]["release_config_commit"] = "3" * 40
+    path = tmp_path / "runtime-release.json"
+    pin = _write(path, value)
+    monkeypatch.setattr(runtime_config, "validate_clean_checkout", validate_checkout)
+    monkeypatch.setattr(runtime_config, "_load", lambda *_: pytest.fail("local input read before HEAD check"))
+
+    with pytest.raises(ProductionRuntimeConfigError, match="HEAD does not match.*commit R"):
+        load_runtime_release(checkout, path, expected_sha256=pin, image_probe=lambda *_: None)

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 from typing import Any, Callable, Mapping
 
@@ -16,7 +17,11 @@ from .admission import (
     validate_admission_matrix,
 )
 from .problem import load_manifest
-from .runtime_admission import load_fixture_manifest, validate_matrix_host_set_bundles
+from .runtime_admission import (
+    load_fixture_manifest,
+    validate_clean_checkout,
+    validate_matrix_host_set_bundles,
+)
 from .verdict import canonical_json, sha256_bytes, sha256_file
 
 
@@ -27,6 +32,7 @@ class ProductionRuntimeConfigError(ValueError):
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 IMAGE_REF_RE = re.compile(r"^[a-z0-9.-]+(?::[0-9]{1,5})?/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$")
 RUNTIME_RELEASE_SCHEMA = "p42-production-runtime-release/v1"
+MAX_EXTERNAL_JSON_BYTES = 8 * 1024 * 1024
 EXPECTED_BOARD_KEYS = {
     "slug", "problem_id", "registry_problem_id", "verifier_command", "verifier_image",
     "verifier_source_sha256", "verifier_source_commit", "release_config_commit",
@@ -85,19 +91,63 @@ def _trusted_operator_profiles(root: Path, slugs: list[str]) -> dict[str, dict[s
     return trusted or {}
 
 
-def _load_external_evidence(root: Path, path_value: Any, pin: Any, label: str) -> dict[str, Any]:
-    _require_digest(pin, f"{label} file pin")
-    if not isinstance(path_value, str) or not Path(path_value).is_absolute():
+def _read_protected_external_file(
+    root: Path, path: Path, label: str,
+) -> bytes:
+    if not path.is_absolute():
         raise ProductionRuntimeConfigError(f"{label} path must be absolute")
-    path = Path(path_value).resolve()
-    if path.is_relative_to(root):
-        raise ProductionRuntimeConfigError(f"{label} must be external to the source checkout")
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise ProductionRuntimeConfigError(f"{label} requires platform O_NOFOLLOW support")
     try:
-        metadata = path.stat(follow_symlinks=False)
-        raw = path.read_bytes()
+        supplied = path.lstat()
+        if (
+            not stat.S_ISREG(supplied.st_mode)
+            or supplied.st_nlink != 1
+            or supplied.st_mode & 0o022
+            or supplied.st_size < 2
+            or supplied.st_size > MAX_EXTERNAL_JSON_BYTES
+        ):
+            raise ProductionRuntimeConfigError(f"{label} must be a protected singly linked regular file")
+        descriptor = os.open(path, os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0))
     except OSError as exc:
         raise ProductionRuntimeConfigError(f"{label} evidence is unavailable") from exc
-    if not path.is_file() or path.is_symlink() or metadata.st_mode & 0o022 or sha256_bytes(raw) != pin:
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (supplied.st_dev, supplied.st_ino)
+        ):
+            raise ProductionRuntimeConfigError(f"{label} changed while opening")
+        raw = bytearray()
+        while len(raw) < opened.st_size:
+            chunk = os.read(descriptor, opened.st_size - len(raw))
+            if not chunk:
+                raise ProductionRuntimeConfigError(f"{label} was truncated while reading")
+            raw.extend(chunk)
+        resolved = path.resolve(strict=True)
+        final = path.lstat()
+        if (
+            (final.st_dev, final.st_ino, final.st_mode, final.st_nlink, final.st_size)
+            != (opened.st_dev, opened.st_ino, opened.st_mode, opened.st_nlink, opened.st_size)
+        ):
+            raise ProductionRuntimeConfigError(f"{label} changed while reading")
+    except OSError as exc:
+        raise ProductionRuntimeConfigError(f"{label} evidence is unavailable") from exc
+    finally:
+        os.close(descriptor)
+    if resolved.is_relative_to(root):
+        raise ProductionRuntimeConfigError(f"{label} must be external to the source checkout")
+    return bytes(raw)
+
+
+def _load_external_evidence(root: Path, path_value: Any, pin: Any, label: str) -> dict[str, Any]:
+    _require_digest(pin, f"{label} file pin")
+    if not isinstance(path_value, str):
+        raise ProductionRuntimeConfigError(f"{label} path must be absolute")
+    raw = _read_protected_external_file(root, Path(path_value), label)
+    if sha256_bytes(raw) != pin:
         raise ProductionRuntimeConfigError(f"{label} evidence does not match its protected file pin")
     try:
         value = json.loads(raw)
@@ -156,23 +206,26 @@ def load_runtime_release(
     """Validate the externally pinned release artifact and all runtime identities."""
 
     root = root.resolve()
-    path = path.resolve()
     _require_digest(expected_sha256, "runtime release artifact pin")
-    if path.is_relative_to(root):
-        raise ProductionRuntimeConfigError("production runtime release artifact must be external to the source checkout")
-    try:
-        metadata = path.stat(follow_symlinks=False)
-        raw = path.read_bytes()
-    except OSError as exc:
-        raise ProductionRuntimeConfigError("production runtime release artifact is unavailable") from exc
-    if not path.is_file() or path.is_symlink() or metadata.st_mode & 0o022:
-        raise ProductionRuntimeConfigError("production runtime release artifact must be a protected regular file")
+    raw = _read_protected_external_file(root, path, "production runtime release artifact")
     if sha256_bytes(raw) != expected_sha256:
         raise ProductionRuntimeConfigError("production runtime release artifact pin mismatch")
     try:
         value = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ProductionRuntimeConfigError("production runtime release artifact is invalid JSON") from exc
+    image_release = value.get("verifier_image_release") if isinstance(value, dict) else None
+    release_config_commit = image_release.get("release_config_commit") if isinstance(image_release, dict) else None
+    if not isinstance(release_config_commit, str) or re.fullmatch(r"[0-9a-f]{40}", release_config_commit) is None:
+        raise ProductionRuntimeConfigError("verifier image release release_config_commit is invalid")
+    try:
+        checkout_head = validate_clean_checkout(root)
+    except AdmissionError as exc:
+        raise ProductionRuntimeConfigError(f"production runtime checkout is invalid: {exc}") from exc
+    if checkout_head != release_config_commit:
+        raise ProductionRuntimeConfigError(
+            "production runtime checkout HEAD does not match release/config commit R"
+        )
     if not isinstance(value, dict) or value.get("schema_version") != RUNTIME_RELEASE_SCHEMA:
         raise ProductionRuntimeConfigError("unsupported production runtime release artifact schema")
     if value.get("status") != "finalized" or value.get("release_ready") is not True:
@@ -366,16 +419,11 @@ def generate_production_executor_config(
         board_number = item["registry_problem_id"]
         slug = item["slug"]
         base = f"/var/lib/p42/verifier-executor/boards/{board_number}"
-        manifest = load_manifest(root / "problems" / slug)
-        verifier = manifest["verifier"]
-        resource = {
-            "memory_mb": verifier["max_compute"]["memory_mb"],
-            "wall_seconds": verifier["max_compute"]["wall_seconds"],
-        }
+        resource = item["resource"]
         identity = {
             "problem_slug": slug,
             "problem_path": str(root / "problems" / slug),
-            "verifier_command": verifier["command"],
+            "verifier_command": item["verifier_command"],
             "verifier_image": item["verifier_image"],
             "verifier_source_sha256": item["verifier_source_sha256"],
             "resource_identity": _resource_identity(resource),
