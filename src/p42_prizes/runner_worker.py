@@ -87,14 +87,18 @@ class LeaseHeartbeatError(RunnerWorkerError):
     """Raised when a worker can no longer prove exclusive queue ownership."""
 
 
-def _load_job_manifest(job: Mapping[str, Any]) -> dict[str, Any]:
+def _load_job_manifest(
+    job: Mapping[str, Any], *, require_board_identity: bool = False,
+) -> dict[str, Any]:
     problem_value = job.get("problem")
     if not isinstance(problem_value, str) or not problem_value:
         raise RunnerWorkerError("job.problem must be a non-empty string")
     try:
         manifest = load_manifest(Path(problem_value).resolve())
-        _validate_board_identity(job, manifest)
+        _validate_board_identity(job, manifest, required=require_board_identity)
         return manifest
+    except RunnerWorkerError:
+        raise
     except (OSError, TypeError, ValueError) as exc:
         raise RunnerWorkerError("could not load verifier manifest before leasing") from exc
 
@@ -105,11 +109,15 @@ BOARD_IDENTITY_KEYS = {
 }
 
 
-def _validate_board_identity(job: Mapping[str, Any], manifest: Mapping[str, Any]) -> dict[str, Any]:
+def _validate_board_identity(
+    job: Mapping[str, Any], manifest: Mapping[str, Any], *, required: bool = False,
+) -> dict[str, Any]:
     identity = job.get("board_identity")
     # Direct runner invocations are retained solely for local tests. The
     # production executor always injects this field before queue admission.
     if identity is None:
+        if required:
+            raise RunnerWorkerError("production job lacks the executor-forced closed board identity")
         return {}
     if not isinstance(identity, dict) or set(identity) != BOARD_IDENTITY_KEYS:
         raise RunnerWorkerError("job lacks the executor-forced closed board identity")
@@ -165,6 +173,7 @@ def run_next_job_once(
     lease_seconds: int = 3600,
     sandbox_staging_root: str | Path | None = None,
     docker_host: str | None = None,
+    require_board_identity: bool = False,
 ) -> dict[str, Any]:
     if lease_seconds < 60:
         raise RunnerWorkerError("lease_seconds must be at least 60")
@@ -209,7 +218,7 @@ def run_next_job_once(
         job_id = plan["selected_job_id"]
         job = _find_job(queue, job_id)
         try:
-            job_manifest = _load_job_manifest(job)
+            job_manifest = _load_job_manifest(job, require_board_identity=require_board_identity)
         except RunnerWorkerError as exc:
             detail = (str(exc) or "runner manifest load failed")[:512]
             result = set_runner_local_disposition(
@@ -280,6 +289,7 @@ def run_next_job_once(
                 lease_failed=heartbeat_failed,
                 sandbox_staging_root=sandbox_staging_root,
                 docker_host=docker_host,
+                require_board_identity=require_board_identity,
             )
         run_error = None
         retryable_storage_error = False
@@ -661,6 +671,7 @@ def _run_job(
     lease_failed: threading.Event | None = None,
     sandbox_staging_root: str | Path | None = None,
     docker_host: str | None = None,
+    require_board_identity: bool = False,
 ) -> dict[str, Any]:
     job_id = _require_string(job, "job_id")
     problem = Path(_require_string(job, "problem")).resolve()
@@ -675,7 +686,7 @@ def _run_job(
                 "chain job problem path must match the canonical source checkout for its problem_id"
             )
     pinned_manifest = copy.deepcopy(manifest) if manifest is not None else load_manifest(problem)
-    board_identity = _validate_board_identity(job, pinned_manifest)
+    board_identity = _validate_board_identity(job, pinned_manifest, required=require_board_identity)
     solution_value = job.get("solution")
     if not isinstance(solution_value, str) or not solution_value:
         if _is_explicit_retryable_da_failure(job.get("da_failure")):

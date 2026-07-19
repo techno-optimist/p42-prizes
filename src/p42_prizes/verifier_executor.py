@@ -125,6 +125,17 @@ def holder_expired(holder: Mapping[str, Any], *, boot_id: str, monotonic_ns: int
     return monotonic_ns >= deadline
 
 
+def process_start_time_ticks(pid: int, *, proc_root: Path = Path("/proc")) -> int | None:
+    """Return the kernel start-time identity for a live PID, or None if absent."""
+    try:
+        raw = (proc_root / str(pid) / "stat").read_text(encoding="ascii")
+        fields = raw[raw.rindex(") ") + 2:].split()
+        value = fields[19]
+    except (OSError, ValueError, IndexError):
+        return None
+    return int(value) if value.isdecimal() else None
+
+
 def acquire_singleton_lock(path: Path) -> int:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -178,7 +189,9 @@ class VerifierExecutor:
         policy: ExecutorPolicy,
         boot_id_reader: Callable[[], str] = read_boot_id,
         monotonic_ns: Callable[[], int] = time.monotonic_ns,
+        monotonic: Callable[[], float] = time.monotonic,
         capacity_reader: Callable[[], Any] = host_capacity_snapshot,
+        process_identity_reader: Callable[[int], int | None] = process_start_time_ticks,
     ):
         self.boards = dict(boards)
         self.state_path = state_path
@@ -188,19 +201,23 @@ class VerifierExecutor:
         self.policy = policy
         self.boot_id_reader = boot_id_reader
         self.monotonic_ns = monotonic_ns
+        self.monotonic = monotonic
         self.capacity_reader = capacity_reader
+        self.process_identity_reader = process_identity_reader
         self._boot_id: str | None = None
         self._acknowledged_oom_kills: int | None = None
         self._acknowledged_oom_events: int | None = None
         self._oom_attribution: dict[str, Any] | None = None
+        self._admission_stop: dict[str, Any] | None = None
         self._last_recovery: str | None = None
 
     def _write_state(self, holder: Mapping[str, Any] | None) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        value = {"schema_version": "p42-verifier-executor-state/v2", "boot_id": self._boot_id,
+        value = {"schema_version": "p42-verifier-executor-state/v3", "boot_id": self._boot_id,
                  "acknowledged_oom_kills": self._acknowledged_oom_kills,
                  "acknowledged_oom_events": self._acknowledged_oom_events,
                  "oom_attribution": self._oom_attribution,
+                 "admission_stop": self._admission_stop,
                  "last_recovery": self._last_recovery, "holder": holder}
         temporary = self.state_path.with_name(f".{self.state_path.name}.{os.getpid()}.tmp")
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -230,6 +247,7 @@ class VerifierExecutor:
         if self.state_path.exists():
             previous = json.loads(self.state_path.read_text(encoding="utf-8"))
         self._boot_id = capacity.boot_id
+        recovered_unreaped_child = False
         if previous and previous.get("boot_id") == capacity.boot_id:
             acknowledged = previous.get("acknowledged_oom_kills")
             if not isinstance(acknowledged, int) or acknowledged < 0:
@@ -245,13 +263,31 @@ class VerifierExecutor:
             if attribution is not None and not isinstance(attribution, dict):
                 raise VerifierExecutorError("invalid persisted OOM attribution")
             self._oom_attribution = attribution
+            admission_stop = previous.get("admission_stop")
+            if admission_stop is not None:
+                if not isinstance(admission_stop, dict):
+                    raise VerifierExecutorError("invalid persisted executor admission stop")
+                pid = admission_stop.get("child_pid")
+                start_time = admission_stop.get("child_start_time_ticks")
+                if not isinstance(pid, int) or pid < 1 or not isinstance(start_time, int) or start_time < 0:
+                    self._admission_stop = admission_stop
+                    raise VerifierExecutorError(
+                        "unreaped-child admission stop lacks a recoverable process identity"
+                    )
+                if self.process_identity_reader(pid) == start_time:
+                    self._admission_stop = admission_stop
+                    raise VerifierExecutorError("unreaped child remains present after recovery reconciliation")
+                self._last_recovery = "same_boot_unreaped_child_proven_absent"
+                recovered_unreaped_child = True
+            self._admission_stop = None
             holder = previous.get("holder")
             if holder is not None:
                 expired = holder_expired(holder, boot_id=capacity.boot_id, monotonic_ns=self.monotonic_ns())
                 self._last_recovery = "same_boot_expired_holder" if expired else "same_boot_live_holder_forced_cleanup"
                 self._record_oom_attribution(holder, capacity, "executor_restart_recovery")
             else:
-                self._last_recovery = "same_boot_clean_restart"
+                if not recovered_unreaped_child:
+                    self._last_recovery = "same_boot_clean_restart"
         else:
             # OOM counters are boot-local. A reboot establishes a fresh baseline
             # only after Docker reconciliation proves restored work is absent.
@@ -261,6 +297,7 @@ class VerifierExecutor:
             holder = previous.get("holder") if isinstance(previous, dict) else None
             prior_attribution = previous.get("oom_attribution") if isinstance(previous, dict) else None
             self._oom_attribution = prior_attribution if isinstance(prior_attribution, dict) else None
+            self._admission_stop = None
             if isinstance(holder, dict):
                 self._oom_attribution = {
                     "schema_version": "p42-verifier-oom-attribution/v1",
@@ -326,7 +363,7 @@ class VerifierExecutor:
                 os.killpg(process.pid, signal_number)
             except ProcessLookupError:
                 return True
-            remaining = absolute_deadline - time.monotonic()
+            remaining = absolute_deadline - self.monotonic()
             if remaining <= 0:
                 return process.poll() is not None
             try:
@@ -350,6 +387,9 @@ class VerifierExecutor:
             raise VerifierExecutorError("invalid executor request id")
         if not isinstance(chain_timestamp, str) or not chain_timestamp.isascii() or not chain_timestamp.isdecimal():
             raise VerifierExecutorError("invalid canonical chain timestamp")
+
+        if self._admission_stop is not None:
+            return {"reason": "unreaped_child_admission_stop", "selected_job_id": None}
 
         self.docker.reconcile()
         capacity = self.capacity_reader()
@@ -400,13 +440,18 @@ class VerifierExecutor:
         env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(self.bridge_path.parents[1] / "src"),
                "P42_RUNNER_CHAIN_TIMESTAMP": chain_timestamp}
         process = None
+        child_start_time_ticks = None
         terminal_outcome = "executor_error"
-        absolute_deadline = time.monotonic() + board.deadline_seconds
+        absolute_deadline = self.monotonic() + board.deadline_seconds
         try:
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                        env=env, start_new_session=True)
-            # Reserve a bounded reap window inside the one spawn-to-reap deadline.
-            stdout, stderr = process.communicate(timeout=max(0.001, board.deadline_seconds - 1.0))
+            child_start_time_ticks = self.process_identity_reader(process.pid)
+            cleanup_reserve = min(1.0, max(0.001, board.deadline_seconds / 4))
+            communicate_timeout = absolute_deadline - cleanup_reserve - self.monotonic()
+            if communicate_timeout <= 0:
+                raise subprocess.TimeoutExpired(command, max(0.0, communicate_timeout))
+            stdout, stderr = process.communicate(timeout=communicate_timeout)
             if process.returncode != 0:
                 terminal_outcome = "worker_failed"
                 raise VerifierExecutorError((stderr or stdout or "worker failed")[:512].strip())
@@ -424,6 +469,15 @@ class VerifierExecutor:
             reaped = self._terminate_and_reap_bounded(process, absolute_deadline=absolute_deadline)
             terminal_outcome = "deadline_exceeded" if reaped else "deadline_exceeded_child_unreaped"
             if not reaped:
+                self._admission_stop = {
+                    "schema_version": "p42-unreaped-child-admission-stop/v1",
+                    "request_id": request_id,
+                    "board_id": board.board_id,
+                    "boot_id": holder["boot_id"],
+                    "child_pid": process.pid,
+                    "child_start_time_ticks": child_start_time_ticks,
+                    "recorded_monotonic_ns": self.monotonic_ns(),
+                }
                 self._durable_alert(
                     board, request_id,
                     "worker remained uninterruptible after TERM/KILL within the absolute spawn-to-reap deadline",

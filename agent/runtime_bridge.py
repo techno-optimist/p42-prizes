@@ -244,6 +244,7 @@ def main() -> int:
             lease_seconds=args.lease_seconds,
             sandbox_staging_root=args.sandbox_staging_root,
             docker_host=args.docker_host,
+            require_board_identity=True,
         )
     print(canonical_json(result))
     return 0

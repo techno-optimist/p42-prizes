@@ -743,6 +743,40 @@ def test_manifest_load_failure_gets_source_bound_local_disposition(tmp_path: Pat
     assert "transcript_path" not in terminal
 
 
+def test_production_worker_terminalizes_legacy_job_without_board_identity(tmp_path: Path) -> None:
+    problem, solution = _write_problem(
+        tmp_path, verifier_name="ok.py", verifier_body="print('{}')\n", wall_seconds=10,
+    )
+    queue_path = tmp_path / "queue.json"
+    job = {
+        "job_id": "legacy-without-board-identity",
+        "status": "queued",
+        "required_memory_mb": 64,
+        "source_event_hash": "sha256:" + "4" * 64,
+        "problem": str(problem),
+        "solution": str(solution),
+    }
+    enqueue_runner_job(queue_path, job)
+
+    result = run_next_job_once(
+        queue_path,
+        tmp_path / "transcripts",
+        memory=MemorySnapshot(total_mb=1024, available_mb=1024, swap_used_mb=0),
+        policy=RunnerPolicy(reserve_memory_mb=128, memory_safety_factor=1.0),
+        require_board_identity=True,
+    )
+
+    assert result["reason"].startswith(
+        "job_run_error: production job lacks the executor-forced closed board identity"
+    )
+    terminal = read_runner_queue(queue_path)["jobs"][0]
+    assert terminal["status"] == "failed"
+    assert terminal["terminal_disposition"]["reason_code"] == "job_run_error"
+    assert terminal["terminal_disposition"]["fence_hash"] == job["source_event_hash"]
+    assert "transcript_path" not in terminal
+    assert not (tmp_path / "transcripts").exists()
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="process-group kill is POSIX-only")
 def test_lost_lease_cancels_the_running_process_group(tmp_path: Path) -> None:
     import threading

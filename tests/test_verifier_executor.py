@@ -105,7 +105,14 @@ class UninterruptibleProcess(FakeProcess):
         raise subprocess.TimeoutExpired("worker", timeout)
 
 
-def executor(tmp_path: Path, docker, monotonic=lambda: 100):
+def executor(
+    tmp_path: Path,
+    docker,
+    monotonic=lambda: 100,
+    *,
+    monotonic_seconds=lambda: 100.0,
+    process_identity_reader=lambda _pid: None,
+):
     board = BoardExecution("board-1", tmp_path / "queue.json", tmp_path / "tx", tmp_path / "stage",
                            tmp_path / "alerts.log", 100, 7)
     capacity = HostCapacity(MemorySnapshot(10_000, 9_000, 0), 0, "boot-a")
@@ -113,7 +120,8 @@ def executor(tmp_path: Path, docker, monotonic=lambda: 100):
         boards={board.board_id: board}, state_path=tmp_path / "private" / "state.json", docker=docker,
         bridge_path=Path("/opt/p42/agent/runtime_bridge.py"), python="/usr/bin/python3",
         policy=ExecutorPolicy(reserve_memory_mb=100, max_swap_used_mb=0, memory_safety_factor=2),
-        boot_id_reader=lambda: "boot-a", monotonic_ns=monotonic, capacity_reader=lambda: capacity,
+        boot_id_reader=lambda: "boot-a", monotonic_ns=monotonic, monotonic=monotonic_seconds,
+        capacity_reader=lambda: capacity, process_identity_reader=process_identity_reader,
     )
 
 
@@ -127,7 +135,8 @@ def test_executor_reconciles_before_lease_and_after_intrinsic_deadline_scope(tmp
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess(events))
     result = executor(tmp_path, FakeDocker(events)).execute(request())
     assert result == {"reason": "queue_empty"}
-    assert events == ["reconcile", "worker:6.0", "reconcile"]
+    assert events[0] == "reconcile" and events[-1] == "reconcile"
+    assert events[1] == "worker:6.0"
     assert json.loads((tmp_path / "private/state.json").read_text())["holder"] is None
 
 
@@ -149,7 +158,7 @@ def test_uninterruptible_worker_never_blocks_service_and_is_durably_alerted(
     process = UninterruptibleProcess(events)
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
     monkeypatch.setattr(os, "killpg", lambda pid, sig: events.append(f"signal:{sig}"))
-    service = executor(tmp_path, FakeDocker(events))
+    service = executor(tmp_path, FakeDocker(events), process_identity_reader=lambda _pid: 777)
     with pytest.raises(VerifierExecutorError, match="durably alerted"):
         service.execute(request())
     alert = (tmp_path / "alerts.log").read_text()
@@ -157,7 +166,51 @@ def test_uninterruptible_worker_never_blocks_service_and_is_durably_alerted(
     state = json.loads(service.state_path.read_text())
     assert state["holder"] is None
     assert state["oom_attribution"]["terminal_outcome"] == "deadline_exceeded_child_unreaped"
+    assert state["admission_stop"]["child_pid"] == process.pid
+    assert state["admission_stop"]["child_start_time_ticks"] == 777
     assert process.poll() is None
+    before = list(events)
+    assert service.execute(request()) == {
+        "reason": "unreaped_child_admission_stop", "selected_job_id": None,
+    }
+    assert events == before
+
+
+def test_recovery_clears_unreaped_child_stop_only_after_identity_is_absent(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    events = []
+    process = UninterruptibleProcess(events)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: events.append(f"signal:{sig}"))
+    service = executor(tmp_path, FakeDocker(events), process_identity_reader=lambda _pid: 777)
+    with pytest.raises(VerifierExecutorError, match="durably alerted"):
+        service.execute(request())
+
+    still_live = executor(tmp_path, FakeDocker(events), process_identity_reader=lambda _pid: 777)
+    with pytest.raises(VerifierExecutorError, match="remains present"):
+        still_live.recover()
+    assert json.loads(still_live.state_path.read_text())["admission_stop"] is not None
+
+    gone = executor(tmp_path, FakeDocker(events), process_identity_reader=lambda _pid: None)
+    gone.recover()
+    recovered = json.loads(gone.state_path.read_text())
+    assert recovered["admission_stop"] is None
+    assert recovered["last_recovery"] == "same_boot_unreaped_child_proven_absent"
+
+
+def test_communicate_and_reap_timeouts_share_one_spawn_deadline(tmp_path: Path, monkeypatch) -> None:
+    events = []
+    clock = iter([100.0, 100.25])
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess(events))
+    service = executor(
+        tmp_path,
+        FakeDocker(events),
+        monotonic_seconds=lambda: next(clock),
+    )
+
+    assert service.execute(request()) == {"reason": "queue_empty"}
+    assert events[1] == "worker:5.75"
 
 
 def test_orphan_reconcile_failure_prevents_any_new_lease(tmp_path: Path, monkeypatch) -> None:

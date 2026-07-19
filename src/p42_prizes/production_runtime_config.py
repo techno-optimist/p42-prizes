@@ -9,6 +9,7 @@ import re
 import subprocess
 from typing import Any, Callable, Mapping
 
+from .problem import load_manifest
 from .verdict import canonical_json, sha256_bytes
 
 
@@ -150,6 +151,18 @@ def load_runtime_release(
             raise ProductionRuntimeConfigError(f"runtime release board {index} has an invalid closed identity")
         if board["problem_id"] != slug or board["registry_problem_id"] != projection.get("id"):
             raise ProductionRuntimeConfigError(f"{slug} registry/problem identity mismatch")
+        try:
+            manifest = load_manifest(root / "problems" / slug)
+            verifier = manifest["verifier"]
+            limits = verifier["max_compute"]
+            manifest_resource = {
+                "memory_mb": limits["memory_mb"],
+                "wall_seconds": limits["wall_seconds"],
+            }
+        except (OSError, KeyError, TypeError, ValueError) as exc:
+            raise ProductionRuntimeConfigError(f"{slug} canonical problem manifest is invalid") from exc
+        if manifest.get("problem_id") != slug:
+            raise ProductionRuntimeConfigError(f"{slug} canonical problem manifest identity mismatch")
         if board["verifier_source_commit"] != image_release["verifier_source_commit"]:
             raise ProductionRuntimeConfigError(f"{slug} verifier source commit S mismatch")
         if board["release_config_commit"] != image_release["release_config_commit"]:
@@ -170,6 +183,8 @@ def load_runtime_release(
             raise ProductionRuntimeConfigError(f"{slug} command/resource identity is invalid")
         if any(not isinstance(resource[key], int) or isinstance(resource[key], bool) or resource[key] < 1 for key in resource):
             raise ProductionRuntimeConfigError(f"{slug} resource identity is invalid")
+        if command != verifier.get("command") or resource != manifest_resource:
+            raise ProductionRuntimeConfigError(f"{slug} command/resources differ from canonical problem manifest")
         if board.get("resource_identity") != _resource_identity(resource):
             raise ProductionRuntimeConfigError(f"{slug} resource identity digest mismatch")
         admission = board.get("admission")
@@ -253,14 +268,19 @@ def generate_production_executor_config(
         board_number = item["registry_problem_id"]
         slug = item["slug"]
         base = f"/var/lib/p42/verifier-executor/boards/{board_number}"
-        resource = item["resource"]
+        manifest = load_manifest(root / "problems" / slug)
+        verifier = manifest["verifier"]
+        resource = {
+            "memory_mb": verifier["max_compute"]["memory_mb"],
+            "wall_seconds": verifier["max_compute"]["wall_seconds"],
+        }
         identity = {
             "problem_slug": slug,
             "problem_path": str(root / "problems" / slug),
-            "verifier_command": item["verifier_command"],
+            "verifier_command": verifier["command"],
             "verifier_image": item["verifier_image"],
             "verifier_source_sha256": item["verifier_source_sha256"],
-            "resource_identity": item["resource_identity"],
+            "resource_identity": _resource_identity(resource),
             "memory_mb": resource["memory_mb"],
             "wall_seconds": resource["wall_seconds"],
         }

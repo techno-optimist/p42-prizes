@@ -146,7 +146,7 @@ def test_production_config_requires_external_release_ready_exact_ten(tmp_path: P
         (lambda value: value["boards"][0].update(verifier_source_commit="3" * 40), "commit S mismatch"),
         (lambda value: value["boards"][0].update(release_config_commit="3" * 40), "commit R mismatch"),
         (lambda value: value["boards"][0].update(verifier_source_sha256=DIGEST_A), "source identity differs"),
-        (lambda value: value["boards"][0]["resource"].update(memory_mb=999), "resource identity digest"),
+        (lambda value: value["boards"][0]["resource"].update(memory_mb=999), "canonical problem manifest"),
         (lambda value: value["boards"][0]["admission"].update(release_ready=False), "host evidence"),
         (lambda value: value["boards"][0]["admission"].update(host_sets=[]), "host evidence"),
         (lambda value: value["boards"][0]["admission"].update(schema_version="p42-admission-matrix/v3"), "host evidence"),
@@ -172,6 +172,24 @@ def test_runtime_release_rejects_unpullable_image(tmp_path: Path) -> None:
 
     with pytest.raises(ProductionRuntimeConfigError, match="not pullable"):
         load_runtime_release(ROOT, path, expected_sha256=pin, image_probe=reject)
+
+
+@pytest.mark.parametrize("field", ["verifier_command", "resource"])
+def test_runtime_release_binds_command_and_resources_to_canonical_manifest(
+    tmp_path: Path, field: str,
+) -> None:
+    value = _artifact(tmp_path)
+    board = value["boards"][0]
+    if field == "verifier_command":
+        board[field] = "python3 substituted.py --solution {solution}"
+    else:
+        board[field] = {**board[field], "wall_seconds": board[field]["wall_seconds"] + 1}
+        board["resource_identity"] = sha256_bytes(canonical_json(board[field]).encode())
+    path = tmp_path / "runtime-release.json"
+    pin = _write(path, value)
+
+    with pytest.raises(ProductionRuntimeConfigError, match="canonical problem manifest"):
+        load_runtime_release(ROOT, path, expected_sha256=pin, image_probe=lambda *_: None)
 
 
 def test_repository_local_artifact_is_test_only_and_never_production_input(tmp_path: Path) -> None:
