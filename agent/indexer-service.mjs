@@ -230,33 +230,44 @@ function readCurrentGeneration(root, validator) {
   const pointer = join(root, "current.json");
   if (!existsSync(pointer)) return null;
   const current = readStrictJsonFileSync(pointer, CHECKPOINT_LIMITS);
-  if (stableStringify(Object.keys(current).sort()) !== stableStringify([
-    "archive_path", "checkpoint_path", "generation_id", "schema_version",
-  ])
-      || current.schema_version !== "p42-indexer-generation-pointer/v1"
+  const legacy = current.schema_version === "p42-indexer-generation-pointer/v1";
+  const expectedKeys = legacy
+    ? ["archive_path", "checkpoint_path", "generation_id", "schema_version"]
+    : ["archive_path", "checkpoint_path", "generation_id", "schema_version", "storage_id"];
+  const storageId = legacy ? current.generation_id : current.storage_id;
+  if (stableStringify(Object.keys(current).sort()) !== stableStringify(expectedKeys)
+      || (!legacy && current.schema_version !== "p42-indexer-generation-pointer/v2")
       || basename(current.generation_id) !== current.generation_id
-      || current.checkpoint_path !== `generations/${current.generation_id}/checkpoint.json`
-      || current.archive_path !== `generations/${current.generation_id}/archive`) {
+      || typeof storageId !== "string" || basename(storageId) !== storageId
+      || current.checkpoint_path !== `generations/${storageId}/checkpoint.json`
+      || current.archive_path !== `generations/${storageId}/archive`) {
     throw new Error("invalid accepted indexer generation pointer");
   }
-  const path = join(root, "generations", current.generation_id);
-  const checkpoint = validatePublicationCheckpoint(
-    readStrictJsonFileSync(join(path, "checkpoint.json"), CHECKPOINT_LIMITS), validator,
-  );
-  if (!/^\d{16}-[0-9a-f]{64}$/.test(current.generation_id)
-      || !current.generation_id.startsWith(`${String(checkpoint.range.toBlock).padStart(16, "0")}-`)) {
+  if (!/^\d{16}-[0-9a-f]{64}$/.test(current.generation_id)) {
     throw new Error("accepted indexer generation id does not bind its checkpoint height");
   }
+  const path = join(root, "generations", storageId);
   try {
-    const validated = validateGenerationDirectory(path, current.generation_id, validator);
-    return { pointer: current, checkpoint, metadata: validated.metadata, integrityError: null };
+    const validated = validateGenerationDirectory(path, current.generation_id, validator, storageId);
+    if (!current.generation_id.startsWith(
+      `${String(validated.checkpoint.range.toBlock).padStart(16, "0")}-`,
+    )) throw new Error("accepted indexer generation id does not bind its checkpoint height");
+    return { pointer: { ...current, storage_id: storageId }, checkpoint: validated.checkpoint,
+      metadata: validated.metadata, integrityError: null };
   } catch (error) {
-    return { pointer: current, checkpoint, metadata: null, integrityError: error };
+    let checkpoint = null;
+    try {
+      checkpoint = validatePublicationCheckpoint(
+        readStrictJsonFileSync(join(path, "checkpoint.json"), CHECKPOINT_LIMITS), validator,
+      );
+    } catch {}
+    return { pointer: { ...current, storage_id: storageId }, checkpoint, metadata: null,
+      acceptedHeight: Number(current.generation_id.slice(0, 16)), integrityError: error };
   }
 }
 
 
-function validateGenerationDirectory(path, id, validator) {
+function validateGenerationDirectory(path, id, validator, storageId = id) {
   const metadata = readStrictJsonFileSync(join(path, "generation.json"), CHECKPOINT_LIMITS);
   const checkpointPath = join(path, "checkpoint.json");
   const checkpointBytes = readFileSync(checkpointPath);
@@ -278,6 +289,21 @@ function validateGenerationDirectory(path, id, validator) {
       || !lstatSync(join(path, "archive")).isDirectory()
       || lstatSync(join(path, "archive")).isSymbolicLink()) {
     throw new Error("indexer generation metadata or archive binding is invalid");
+  }
+  if (storageId !== id) {
+    const recovery = readStrictJsonFileSync(join(path, "recovery.json"), CHECKPOINT_LIMITS);
+    const recoveryDigest = createHash("sha256").update(stableStringify(recovery)).digest("hex");
+    if (stableStringify(Object.keys(recovery).sort()) !== stableStringify([
+      "accepted_generation_id", "condition", "replaced_storage_id", "schema_version",
+    ])
+        || recovery.schema_version !== "p42-indexer-generation-recovery/v1"
+        || recovery.accepted_generation_id !== id
+        || !["corrupt", "missing"].includes(recovery.condition)
+        || typeof recovery.replaced_storage_id !== "string"
+        || basename(recovery.replaced_storage_id) !== recovery.replaced_storage_id
+        || storageId !== `${id}-recovery-${recoveryDigest}`) {
+      throw new Error("indexer generation recovery evidence is invalid");
+    }
   }
   return { checkpoint, metadata };
 }
@@ -311,6 +337,7 @@ function assertMatchingGenerationTrees(left, right, relative = "") {
 
 export function publishGenerationSync({
   publicationRoot, stagingPath, validator = validateMultiBoardCheckpoint, ownership = null,
+  crashInjector = () => {}, pointerWriter = writeFileAtomicSync,
 } = {}) {
   ownership?.assertOwned?.();
   const root = resolve(publicationRoot);
@@ -319,13 +346,7 @@ export function publishGenerationSync({
   mkdirSync(join(root, "generations"), { recursive: true, mode: 0o700 });
   mkdirSync(join(root, "quarantine"), { recursive: true, mode: 0o700 });
   const current = readCurrentGeneration(root, validator);
-  let candidate;
-  let decision;
-  try {
-    candidate = validatePublicationCheckpoint(readStrictJsonFileSync(candidatePath, CHECKPOINT_LIMITS), validator);
-    if (!statSync(join(stage, "archive")).isDirectory()) throw new Error("indexer generation archive is absent");
-    decision = monotonicCheckpointDecision(candidate, current?.checkpoint ?? null);
-  } catch (error) {
+  const quarantineStage = (error) => {
     const rejected = join(root, "quarantine", `${Date.now()}-${randomBytes(8).toString("hex")}`);
     writeFileSync(join(stage, "quarantine.json"), `${stableStringify({
       schema_version: "p42-indexer-quarantine/v1", reason: sanitizedError(error),
@@ -333,12 +354,60 @@ export function publishGenerationSync({
     })}\n`, { mode: 0o600 });
     renameSync(stage, rejected);
     syncDirectory(join(root, "quarantine"));
+  };
+  const quarantineReplacedGeneration = (acceptedStorageId) => {
+    if (!acceptedStorageId.includes("-recovery-")) return;
+    const recovery = readStrictJsonFileSync(
+      join(root, "generations", acceptedStorageId, "recovery.json"), CHECKPOINT_LIMITS,
+    );
+    const replaced = join(root, "generations", recovery.replaced_storage_id);
+    const quarantined = join(root, "quarantine",
+      `${recovery.replaced_storage_id}-replaced-by-${acceptedStorageId}`);
+    if (!existsSync(replaced) || existsSync(quarantined)) return;
+    crashInjector("before_quarantine_rename");
+    renameSync(replaced, quarantined);
+    crashInjector("after_quarantine_rename");
+    syncDirectory(join(root, "quarantine"));
+    syncDirectory(join(root, "generations"));
+  };
+  let candidate;
+  let decision;
+  let archiveSha256;
+  let id;
+  try {
+    candidate = validatePublicationCheckpoint(readStrictJsonFileSync(candidatePath, CHECKPOINT_LIMITS), validator);
+    if (!statSync(join(stage, "archive")).isDirectory()) throw new Error("indexer generation archive is absent");
+    archiveSha256 = archiveTreeDigest(join(stage, "archive"));
+    id = generationId(candidate, archiveSha256);
+    if (current?.integrityError) {
+      if (candidate.range.toBlock !== current.acceptedHeight || id !== current.pointer.generation_id) {
+        throw new Error("indexer same-height recovery bytes do not match the accepted generation identity");
+      }
+      decision = { decision: "unchanged", priorBlock: current.acceptedHeight,
+        nextBlock: candidate.range.toBlock };
+    } else {
+      decision = monotonicCheckpointDecision(candidate, current?.checkpoint ?? null);
+      if (decision.decision === "unchanged" && id !== current.pointer.generation_id) {
+        throw new Error("indexer same-height archive bytes do not match the accepted generation identity");
+      }
+    }
+  } catch (error) {
+    quarantineStage(error);
     throw error;
   }
-  const archiveSha256 = archiveTreeDigest(join(stage, "archive"));
-  const id = generationId(candidate, archiveSha256);
-  const destination = join(root, "generations", id);
-  const exactRetry = decision.decision === "unchanged" && current.pointer.generation_id === id;
+  const exactRetry = decision.decision === "unchanged";
+  let storageId = id;
+  if (exactRetry && current.integrityError) {
+    const recovery = { schema_version: "p42-indexer-generation-recovery/v1",
+      accepted_generation_id: id, replaced_storage_id: current.pointer.storage_id,
+      condition: existsSync(join(root, "generations", current.pointer.storage_id)) ? "corrupt" : "missing" };
+    const recoveryDigest = createHash("sha256").update(stableStringify(recovery)).digest("hex");
+    storageId = `${id}-recovery-${recoveryDigest}`;
+    writeFileSync(join(stage, "recovery.json"), `${stableStringify(recovery)}\n`, { mode: 0o600 });
+  } else if (exactRetry) {
+    storageId = current.pointer.storage_id;
+  }
+  const destination = join(root, "generations", storageId);
   writeFileSync(join(stage, "generation.json"), `${stableStringify({
     schema_version: "p42-indexer-generation/v2", generation_id: id,
     archive_sha256: archiveSha256,
@@ -346,46 +415,42 @@ export function publishGenerationSync({
     previous_generation_id: exactRetry
       ? current.metadata?.previous_generation_id ?? null : current?.pointer.generation_id ?? null,
   })}\n`, { mode: 0o600 });
-  validateGenerationDirectory(stage, id, validator);
+  validateGenerationDirectory(stage, id, validator,
+    exactRetry && current.integrityError === null ? id : storageId);
   if (exactRetry && current.integrityError === null) {
-    assertMatchingGenerationTrees(destination, stage);
+    const recovered = validateGenerationDirectory(destination, id, validator, storageId);
+    if (stableStringify(recovered.checkpoint) !== stableStringify(candidate)) {
+      throw new Error("accepted indexer generation checkpoint changed during exact retry");
+    }
+    assertMatchingGenerationTrees(join(destination, "archive"), join(stage, "archive"));
     rmSync(stage, { recursive: true, force: true });
-    return { ...decision, checkpoint: candidate, generationId: id };
+    quarantineReplacedGeneration(storageId);
+    return { ...decision, checkpoint: candidate, generationId: id, storageId };
   }
   if (existsSync(destination)) {
-    if (exactRetry) {
-      const rejected = join(root, "quarantine", `${Date.now()}-${randomBytes(8).toString("hex")}`);
-      renameSync(destination, rejected);
-      try {
-        renameSync(stage, destination);
-      } catch (error) {
-        renameSync(rejected, destination);
-        throw error;
-      }
-      rmSync(rejected, { recursive: true, force: true });
-      syncDirectory(join(root, "generations"));
-      syncDirectory(join(root, "quarantine"));
-    } else {
-      const recovered = validateGenerationDirectory(destination, id, validator);
-      if (stableStringify(recovered.checkpoint) !== stableStringify(candidate)) {
-        throw new Error("recovered indexer generation checkpoint does not match regenerated candidate");
-      }
-      assertMatchingGenerationTrees(destination, stage);
-      rmSync(stage, { recursive: true, force: true });
+    const recovered = validateGenerationDirectory(destination, id, validator, storageId);
+    if (stableStringify(recovered.checkpoint) !== stableStringify(candidate)) {
+      throw new Error("recovered indexer generation checkpoint does not match regenerated candidate");
     }
+    assertMatchingGenerationTrees(join(destination, "archive"), join(stage, "archive"));
+    rmSync(stage, { recursive: true, force: true });
   } else {
+    crashInjector("before_generation_rename");
     renameSync(stage, destination);
     syncDirectory(join(root, "generations"));
+    crashInjector("after_generation_rename");
   }
-  const pointer = { schema_version: "p42-indexer-generation-pointer/v1", generation_id: id,
-    checkpoint_path: `generations/${id}/checkpoint.json`, archive_path: `generations/${id}/archive` };
+  const pointer = { schema_version: "p42-indexer-generation-pointer/v2", generation_id: id,
+    storage_id: storageId, checkpoint_path: `generations/${storageId}/checkpoint.json`,
+    archive_path: `generations/${storageId}/archive` };
   ownership?.assertOwned?.();
-  writeFileAtomicSync(join(root, "current.json"), `${stableStringify(pointer)}\n`);
-  if (decision.decision === "unchanged" && current.pointer.generation_id !== id) {
-    rmSync(join(root, "generations", current.pointer.generation_id), { recursive: true, force: true });
-    syncDirectory(join(root, "generations"));
+  crashInjector("before_pointer_publish");
+  pointerWriter(join(root, "current.json"), `${stableStringify(pointer)}\n`);
+  crashInjector("after_pointer_publish");
+  if (exactRetry && current.integrityError && current.pointer.storage_id !== storageId) {
+    quarantineReplacedGeneration(storageId);
   }
-  return { ...decision, checkpoint: candidate, generationId: id };
+  return { ...decision, checkpoint: candidate, generationId: id, storageId };
 }
 
 
@@ -403,6 +468,7 @@ export function buildIndexerServiceHealth({
   publicationLastSuccessAtMs = lastSuccessAtMs,
   rpcLastSuccessAtMs = lastSuccessAtMs,
   rpcCurrentFailure = false,
+  publicationCurrentFailure = false,
   maxHeadStallSeconds = maxStaleSeconds,
 }) {
   requirePositiveInteger(maxStaleSeconds, "maxStaleSeconds");
@@ -438,7 +504,9 @@ export function buildIndexerServiceHealth({
       rpc: { status: rpcLastSuccessAtMs === null || rpcCurrentFailure || frozen ? "degraded" : "healthy", frozen: frozen,
         current_failure: rpcCurrentFailure,
         last_success_at_utc: rpcLastSuccessAtMs === null ? null : iso(rpcLastSuccessAtMs) },
-      publication: { status: publicationLastSuccessAtMs === null ? "starting" : "healthy",
+      publication: { status: publicationCurrentFailure ? "degraded"
+        : publicationLastSuccessAtMs === null ? "starting" : "healthy",
+        current_failure: publicationCurrentFailure,
         last_success_at_utc: publicationLastSuccessAtMs === null ? null : iso(publicationLastSuccessAtMs) },
       finalized_head: { status: frozen ? "degraded" : "healthy", advancement_lag_seconds: headLagSeconds },
       checkpoint: { status: checkpointAgeSeconds !== null && checkpointAgeSeconds > maxStaleSeconds ? "stale" : "healthy",
@@ -491,6 +559,7 @@ export async function runIndexerService(options, dependencies = {}) {
   let rpcLastSuccessAtMs = null;
   let publicationLastSuccessAtMs = null;
   let rpcCurrentFailure = false;
+  let publicationCurrentFailure = false;
 
   const publishHealth = () => writeHealthImpl(buildIndexerServiceHealth({
     serviceId,
@@ -505,6 +574,7 @@ export async function runIndexerService(options, dependencies = {}) {
     headLastAdvancedAtMs,
     rpcLastSuccessAtMs,
     rpcCurrentFailure,
+    publicationCurrentFailure,
     publicationLastSuccessAtMs,
   }));
   publishHealth();
@@ -535,6 +605,7 @@ export async function runIndexerService(options, dependencies = {}) {
         rpcCurrentFailure = false;
         if (lastHead === null || generated.range.toBlock > lastHead) headLastAdvancedAtMs = rpcLastSuccessAtMs;
         lastHead = generated.range.toBlock;
+        publicationCurrentFailure = true;
         const publication = resolvedRoot
           ? (dependencies.publishGenerationImpl ?? publishGenerationSync)({
             publicationRoot: resolvedRoot, stagingPath: stage, ownership: releaseLock,
@@ -543,6 +614,7 @@ export async function runIndexerService(options, dependencies = {}) {
         checkpoint = publication.checkpoint;
         lastSuccessAtMs = nowImpl();
         publicationLastSuccessAtMs = lastSuccessAtMs;
+        publicationCurrentFailure = false;
         consecutiveFailures = 0;
         latestError = null;
         publishHealth();

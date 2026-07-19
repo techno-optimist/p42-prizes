@@ -138,6 +138,26 @@ describe("durable indexer publication", () => {
     assert.equal(readFileSync(join(root, "current.json"), "utf8"), before);
   });
 
+  it("quarantines same-height archive drift without changing accepted bytes or pointer", () => {
+    const root = mkdtempSync(join(tmpdir(), "p42-indexer-archive-drift-"));
+    const makeStage = (name, archive) => {
+      const path = join(root, "staging", name); mkdirSync(join(path, "archive"), { recursive: true });
+      writePrivateJson(join(path, "checkpoint.json"), checkpoint(120));
+      writeFileSync(join(path, "archive", "board.json"), archive, { mode: 0o600 });
+      return path;
+    };
+    const first = publishGenerationSync({ publicationRoot: root,
+      stagingPath: makeStage("first", "accepted"), validator: (v) => v });
+    const pointerBefore = readFileSync(join(root, "current.json"), "utf8");
+    assert.throws(() => publishGenerationSync({ publicationRoot: root,
+      stagingPath: makeStage("different", "regenerated-drift"), validator: (v) => v }),
+    /archive bytes do not match the accepted generation identity/);
+    assert.equal(readFileSync(join(root, "current.json"), "utf8"), pointerBefore);
+    assert.equal(readFileSync(join(root, "generations", first.storageId, "archive", "board.json"), "utf8"), "accepted");
+    assert.equal(readdirSync(join(root, "generations")).length, 1);
+    assert.equal(readdirSync(join(root, "quarantine")).length, 1);
+  });
+
   it("atomically recovers a verified generation left after rename and before pointer publication", () => {
     const root = mkdtempSync(join(tmpdir(), "p42-indexer-crash-recovery-"));
     const makeStage = (name, toBlock, archive = "same") => {
@@ -173,8 +193,8 @@ describe("durable indexer publication", () => {
     assert.equal(generations.filter((id) => id !== recovered.generationId).length, 1);
   });
 
-  it("repairs corrupt accepted archive bytes and metadata on a verified same-height retry", () => {
-    for (const corruption of ["archive", "metadata"]) {
+  it("repairs corrupt or missing accepted storage through a new durable storage identity", () => {
+    for (const corruption of ["archive", "metadata", "missing"]) {
       const root = mkdtempSync(join(tmpdir(), `p42-indexer-same-height-${corruption}-`));
       const makeStage = (name) => {
         const path = join(root, "staging", name); mkdirSync(join(path, "archive"), { recursive: true });
@@ -183,20 +203,57 @@ describe("durable indexer publication", () => {
         return path;
       };
       const first = publishGenerationSync({ publicationRoot: root, stagingPath: makeStage("first"), validator: (v) => v });
-      const generation = join(root, "generations", first.generationId);
+      const generation = join(root, "generations", first.storageId);
       if (corruption === "archive") writeFileSync(join(generation, "archive", "board.json"), "stale", { mode: 0o600 });
-      else {
+      else if (corruption === "metadata") {
         const metadata = JSON.parse(readFileSync(join(generation, "generation.json"), "utf8"));
         metadata.archive_sha256 = "0".repeat(64);
         writePrivateJson(join(generation, "generation.json"), metadata);
-      }
+      } else rmSync(generation, { recursive: true });
       const repaired = publishGenerationSync({ publicationRoot: root, stagingPath: makeStage("retry"), validator: (v) => v });
       const accepted = JSON.parse(readFileSync(join(root, "current.json"), "utf8"));
       assert.equal(repaired.decision, "unchanged");
       assert.equal(accepted.generation_id, repaired.generationId);
-      assert.equal(readFileSync(join(root, "generations", repaired.generationId, "archive", "board.json"), "utf8"), "verified");
+      assert.notEqual(repaired.storageId, first.storageId);
+      assert.equal(accepted.storage_id, repaired.storageId);
+      assert.equal(readFileSync(join(root, "generations", repaired.storageId, "archive", "board.json"), "utf8"), "verified");
+      assert.equal(JSON.parse(readFileSync(join(root, "generations", repaired.storageId, "recovery.json"), "utf8")).condition,
+        corruption === "missing" ? "missing" : "corrupt");
       assert.equal(readdirSync(join(root, "generations")).length, 1);
-      assert.equal(readdirSync(join(root, "quarantine")).length, 0);
+      assert.equal(readdirSync(join(root, "quarantine")).length, corruption === "missing" ? 0 : 1);
+    }
+  });
+
+  it("recovers deterministically from every repair rename and pointer crash boundary", () => {
+    for (const fault of [
+      "before_generation_rename", "after_generation_rename", "before_pointer_publish",
+      "after_pointer_publish", "before_quarantine_rename", "after_quarantine_rename",
+    ]) {
+      const root = mkdtempSync(join(tmpdir(), `p42-indexer-repair-crash-${fault}-`));
+      const makeStage = (name) => {
+        const path = join(root, "staging", name); mkdirSync(join(path, "archive"), { recursive: true });
+        writePrivateJson(join(path, "checkpoint.json"), checkpoint(120));
+        writeFileSync(join(path, "archive", "board.json"), "verified", { mode: 0o600 });
+        return path;
+      };
+      const first = publishGenerationSync({ publicationRoot: root,
+        stagingPath: makeStage("first"), validator: (v) => v });
+      writeFileSync(join(root, "generations", first.storageId, "archive", "board.json"), "corrupt", { mode: 0o600 });
+      assert.throws(() => publishGenerationSync({ publicationRoot: root,
+        stagingPath: makeStage("crash"), validator: (v) => v,
+        crashInjector: (boundary) => { if (boundary === fault) throw new Error(`crash at ${fault}`); },
+      }), new RegExp(`crash at ${fault}`));
+
+      const recovered = publishGenerationSync({ publicationRoot: root,
+        stagingPath: makeStage("restart"), validator: (v) => v });
+      const pointer = JSON.parse(readFileSync(join(root, "current.json"), "utf8"));
+      assert.equal(pointer.generation_id, first.generationId);
+      assert.equal(pointer.storage_id, recovered.storageId);
+      assert.equal(existsSync(join(root, pointer.checkpoint_path)), true);
+      assert.equal(existsSync(join(root, pointer.archive_path)), true);
+      assert.equal(readFileSync(join(root, pointer.archive_path, "board.json"), "utf8"), "verified");
+      assert.equal(readdirSync(join(root, "generations")).length, 1);
+      assert.equal(readdirSync(join(root, "quarantine")).length, 1);
     }
   });
 
@@ -307,6 +364,32 @@ describe("indexer service health", () => {
     assert.equal(health.at(-1).components.rpc.status, "degraded");
     assert.equal(health.at(-1).components.rpc.current_failure, true);
     assert.notEqual(health.at(-1).components.rpc.last_success_at_utc, null);
+  });
+
+  it("degrades publication immediately after a current publish failure while RPC stays healthy", async () => {
+    const health = [];
+    let publications = 0;
+    const generated = checkpoint(120);
+    await assert.rejects(() => runIndexerService({
+      candidatePath: "/tmp/p42-publication-candidate.json", outputPath: "/tmp/p42-publication-output.json",
+      healthPath: "/tmp/p42-publication-health.json", maxConsecutiveFailures: 1,
+      indexerOptions: { manifestPath: "fixture", rpcUrl: "fixture" },
+    }, {
+      nowImpl: () => 5_000,
+      sleepImpl: async () => {},
+      runIndexerImpl: async () => generated,
+      publishImpl: () => {
+        publications += 1;
+        if (publications === 2) throw new Error("current publication failed");
+        return { decision: "advance", checkpoint: generated };
+      },
+      writeHealthImpl: (value) => { health.push(value); },
+    }), /current publication failed/);
+    assert.equal(health.at(-1).components.rpc.status, "healthy");
+    assert.equal(health.at(-1).components.rpc.current_failure, false);
+    assert.equal(health.at(-1).components.publication.status, "degraded");
+    assert.equal(health.at(-1).components.publication.current_failure, true);
+    assert.notEqual(health.at(-1).components.publication.last_success_at_utc, null);
   });
 
   it("fences the exact ownership-loss race at synchronous publication entry", async () => {
