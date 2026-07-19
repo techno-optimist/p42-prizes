@@ -754,16 +754,33 @@ class AttestationFixture:
         return path
 
     def write_governance_rpc_policy(
-        self, rpc_urls: list[str], *, network: str = "base-sepolia", chain_id: int = 84532
+        self,
+        rpc_urls: list[str],
+        *,
+        network: str = "base-sepolia",
+        chain_id: int = 84532,
+        quorum: int = 2,
+        ownership_groups: list[str] | None = None,
+        max_head_lag_blocks: int = 8,
+        max_finalized_lag_blocks: int = 64,
     ) -> tuple[Path, Path]:
+        groups = ownership_groups or [
+            f"test-operator-{index + 1}" for index in range(len(rpc_urls))
+        ]
         policy = {
-            "schema_version": "p42-governance-rpc-policy/v1",
+            "schema_version": "p42-governance-rpc-policy/v2",
             "environment": "test",
             "network": network,
             "chain_id": chain_id,
-            "rpc_quorum": 2,
+            "rpc_quorum": quorum,
+            "max_head_lag_blocks": max_head_lag_blocks,
+            "max_finalized_lag_blocks": max_finalized_lag_blocks,
             "rpc_endpoints": [
-                {"provider_id": f"test-provider-{index + 1}", "url": url}
+                {
+                    "provider_id": f"test-provider-{index + 1}",
+                    "ownership_group": groups[index],
+                    "url": url,
+                }
                 for index, url in enumerate(rpc_urls)
             ],
         }

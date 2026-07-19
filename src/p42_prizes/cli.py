@@ -12,7 +12,7 @@ import signal
 import stat
 import subprocess
 import sys
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib import request as urllib_request
 from urllib.parse import urlsplit
 
@@ -218,12 +218,13 @@ def _validate_governance_rpc_policy(
     value: Mapping[str, Any], *, expected_environment: str
 ) -> dict[str, Any]:
     expected_keys = {
-        "schema_version", "environment", "network", "chain_id", "rpc_quorum", "rpc_endpoints"
+        "schema_version", "environment", "network", "chain_id", "rpc_quorum",
+        "max_head_lag_blocks", "max_finalized_lag_blocks", "rpc_endpoints",
     }
     if not isinstance(value, Mapping) or set(value) != expected_keys:
         raise AdmissionError("governance RPC policy must contain the closed authority fields")
     policy = dict(value)
-    if policy.get("schema_version") != "p42-governance-rpc-policy/v1":
+    if policy.get("schema_version") != "p42-governance-rpc-policy/v2":
         raise AdmissionError("governance RPC policy schema_version is invalid")
     if policy.get("environment") != expected_environment:
         raise AdmissionError("governance RPC policy environment does not match its authority path")
@@ -235,6 +236,8 @@ def _validate_governance_rpc_policy(
         raise AdmissionError("governance RPC policy chain_id does not match its network")
     endpoints = policy.get("rpc_endpoints")
     quorum = policy.get("rpc_quorum")
+    max_head_lag = policy.get("max_head_lag_blocks")
+    max_finalized_lag = policy.get("max_finalized_lag_blocks")
     if (
         not isinstance(endpoints, list)
         or len(endpoints) < 2
@@ -243,18 +246,42 @@ def _validate_governance_rpc_policy(
         or isinstance(quorum, bool)
         or quorum < 2
         or quorum > len(endpoints)
+        or not isinstance(max_head_lag, int)
+        or isinstance(max_head_lag, bool)
+        or max_head_lag < 0
+        or max_head_lag > 256
+        or not isinstance(max_finalized_lag, int)
+        or isinstance(max_finalized_lag, bool)
+        or max_finalized_lag < 0
+        or max_finalized_lag > 256
     ):
-        raise AdmissionError("governance RPC policy requires at least two quorum providers")
+        raise AdmissionError(
+            "governance RPC policy requires at least two quorum providers with bounded freshness"
+        )
     provider_ids: set[str] = set()
     urls: set[str] = set()
     authorities: set[str] = set()
+    ownership_groups: set[str] = set()
     for endpoint in endpoints:
-        if not isinstance(endpoint, Mapping) or set(endpoint) != {"provider_id", "url"}:
-            raise AdmissionError("governance RPC endpoint must contain provider_id and url")
+        if not isinstance(endpoint, Mapping) or set(endpoint) != {
+            "provider_id", "ownership_group", "url"
+        }:
+            raise AdmissionError(
+                "governance RPC endpoint must contain provider_id, ownership_group, and url"
+            )
         provider_id = endpoint.get("provider_id")
+        ownership_group = endpoint.get("ownership_group")
         url = endpoint.get("url")
         if not isinstance(provider_id, str) or not provider_id or provider_id in provider_ids:
             raise AdmissionError("governance RPC provider identities must be nonempty and distinct")
+        if (
+            not isinstance(ownership_group, str)
+            or not ownership_group
+            or ownership_group in ownership_groups
+        ):
+            raise AdmissionError(
+                "governance RPC providers must have distinct certified ownership groups"
+            )
         if not isinstance(url, str):
             raise AdmissionError("governance RPC endpoint URL is invalid")
         parsed = urlsplit(url)
@@ -280,6 +307,7 @@ def _validate_governance_rpc_policy(
         provider_ids.add(provider_id)
         urls.add(url.casefold())
         authorities.add(authority)
+        ownership_groups.add(ownership_group)
     return policy
 
 
@@ -457,8 +485,14 @@ class _GovernanceQuorumChainReader:
         self._network = str(policy["network"])
         self._chain_id = int(policy["chain_id"])
         self._required = int(policy["rpc_quorum"])
+        self._max_head_lag = int(policy["max_head_lag_blocks"])
+        self._max_finalized_lag = int(policy["max_finalized_lag_blocks"])
         self._providers = [
-            (str(endpoint["provider_id"]), _build_http_chain_reader(str(endpoint["url"])))
+            (
+                str(endpoint["provider_id"]),
+                str(endpoint["ownership_group"]),
+                _build_http_chain_reader(str(endpoint["url"])),
+            )
             for endpoint in policy["rpc_endpoints"]
         ]
 
@@ -466,43 +500,102 @@ class _GovernanceQuorumChainReader:
         if network != self._network or chain_id != self._chain_id:
             raise ValueError("governance RPC policy does not authorize the requested release chain")
 
-    def _agreed(self, observations: list[tuple[str, Mapping[str, Any]]]) -> tuple[Mapping[str, Any], list[str]]:
-        groups: dict[str, list[tuple[str, Mapping[str, Any]]]] = {}
-        for provider_id, observation in observations:
-            groups.setdefault(canonical_json(observation), []).append((provider_id, observation))
+    def _agreed(
+        self,
+        observations: list[tuple[str, str, Mapping[str, Any]]],
+        *,
+        state_key: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+    ) -> tuple[Mapping[str, Any], list[tuple[str, str]]]:
+        groups: dict[str, list[tuple[str, str, Mapping[str, Any]]]] = {}
+        for provider_id, ownership_group, observation in observations:
+            agreed_state = state_key(observation) if state_key is not None else observation
+            groups.setdefault(canonical_json(agreed_state), []).append(
+                (provider_id, ownership_group, observation)
+            )
         agreed = [items for items in groups.values() if len(items) >= self._required]
         if len(agreed) != 1:
             raise ValueError("pinned governance RPC providers did not reach one state quorum")
-        providers = [provider_id for provider_id, _ in agreed[0]]
-        return agreed[0][0][1], providers
+        providers = [(provider_id, ownership_group) for provider_id, ownership_group, _ in agreed[0]]
+        return agreed[0][0][2], providers
+
+    def _collect(
+        self, operation: Callable[[Any], Mapping[str, Any]]
+    ) -> list[tuple[str, str, Mapping[str, Any]]]:
+        observations: list[tuple[str, str, Mapping[str, Any]]] = []
+        for provider_id, ownership_group, reader in self._providers:
+            try:
+                observations.append((provider_id, ownership_group, operation(reader)))
+            except Exception:
+                continue
+        if len(observations) < self._required:
+            raise ValueError("pinned governance RPC providers did not return a transport quorum")
+        return observations
 
     def __call__(
         self, network: str, chain_id: int, address: str, block_number: int
     ) -> Mapping[str, Any]:
         self._check_scope(network, chain_id)
-        return self._agreed(
-            [
-                (provider_id, reader(network, chain_id, address, block_number))
-                for provider_id, reader in self._providers
-            ]
-        )[0]
+        observations = self._collect(
+            lambda reader: reader(network, chain_id, address, block_number)
+        )
+        return self._agreed(observations)[0]
 
     def read_governance_state(
         self, network: str, chain_id: int, address: str, block_number: int
     ) -> Mapping[str, Any]:
         self._check_scope(network, chain_id)
-        observations = []
-        for provider_id, reader in self._providers:
+        def read(reader: Any) -> Mapping[str, Any]:
             method = getattr(reader, "read_governance_state", None)
             if not callable(method):
                 raise ValueError("governance RPC provider cannot query timelock ABI state")
-            observations.append((provider_id, method(network, chain_id, address, block_number)))
-        observation, provider_ids = self._agreed(observations)
+            return method(network, chain_id, address, block_number)
+
+        observations = self._collect(read)
+        bounded: list[tuple[str, str, Mapping[str, Any], int, int]] = []
+        for item in observations:
+            observation = item[2]
+            try:
+                head_number = observation["live_head"]["block_number"]
+                finalized_number = observation["live_finalized"]["block_number"]
+            except (KeyError, TypeError):
+                continue
+            if (
+                not isinstance(head_number, int)
+                or isinstance(head_number, bool)
+                or not isinstance(finalized_number, int)
+                or isinstance(finalized_number, bool)
+                or finalized_number < 0
+                or head_number < finalized_number
+            ):
+                continue
+            if head_number - finalized_number > self._max_finalized_lag:
+                continue
+            bounded.append((*item, head_number, finalized_number))
+        if len(bounded) < self._required:
+            raise ValueError("pinned governance RPC providers did not reach the bounded freshness quorum")
+
+        quorum_head = sorted((item[3] for item in bounded), reverse=True)[self._required - 1]
+        fresh = [
+            item[:3] for item in bounded
+            if abs(quorum_head - item[3]) <= self._max_head_lag
+        ]
+        if len(fresh) < self._required:
+            raise ValueError("pinned governance RPC providers did not reach the bounded freshness quorum")
+
+        def canonical_governance_state(value: Mapping[str, Any]) -> Mapping[str, Any]:
+            return {
+                "completion_block_hash": value.get("block_hash"),
+                "completion_state": value.get("governance_state"),
+                "finalized_state": value.get("live_governance_state"),
+            }
+
+        observation, providers = self._agreed(fresh, state_key=canonical_governance_state)
         return {
             **observation,
             "rpc_quorum": {
                 "required": self._required,
-                "provider_ids": provider_ids,
+                "provider_ids": [provider_id for provider_id, _ in providers],
+                "ownership_groups": [ownership_group for _, ownership_group in providers],
             },
         }
 
@@ -1302,11 +1395,27 @@ def _cmd_security_audit_validate(args: argparse.Namespace) -> int:
 
 def _cmd_production_launch_authorization_validate(args: argparse.Namespace) -> int:
     try:
-        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        trust_registry = _load_pinned_trust_registry(
+            args.trust_registry,
+            allow_test=args.allow_test_trust_registry,
+        )
+        artifact_root = Path(args.artifact_root).resolve()
+        if not artifact_root.is_dir():
+            raise AdmissionError("--artifact-root must be an existing directory")
         if trust_registry.get("environment") != "production":
             raise LaunchAuthorizationError(
                 "production launch authorization never accepts a test trust registry"
             )
+        if args.chain_rpc_url is not None:
+            raise AdmissionError(
+                "production launch authorization rejects caller-selected --chain-rpc-url"
+            )
+        policy = _load_governance_rpc_policy(
+            trust_environment="production",
+            test_policy_path=args.governance_rpc_policy,
+            test_digest_path=args.governance_rpc_policy_digest,
+        )
+        chain_reader = _GovernanceQuorumChainReader(policy)
         now_utc = (
             datetime.fromisoformat(args.now_utc.replace("Z", "+00:00"))
             if args.now_utc
@@ -1755,7 +1864,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="compose every production gate into one release-bound funding authorization",
     )
     launch_authorization.add_argument("--authorization", required=True)
-    _add_attestation_validation_args(launch_authorization)
+    _add_governance_validation_args(launch_authorization)
     launch_authorization.add_argument("--now-utc")
     launch_authorization.add_argument("--output")
     launch_authorization.set_defaults(

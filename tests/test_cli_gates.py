@@ -5,6 +5,7 @@ import os
 import subprocess
 from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from p42_prizes import cli
@@ -92,10 +93,12 @@ def run_governance_cli_with_providers(tmp_path: Path, provider_options: list[dic
     report_path.write_text(json.dumps(report), encoding="utf-8")
     registry_path = fixture.write_registry(registry)
     with ExitStack() as stack:
-        rpc_urls = [
-            stack.enter_context(fixture.chain_rpc_server(**options))
-            for options in provider_options
-        ]
+        rpc_urls = []
+        for options in provider_options:
+            if options.get("transport_outage"):
+                rpc_urls.append("http://127.0.0.1:1")
+            else:
+                rpc_urls.append(stack.enter_context(fixture.chain_rpc_server(**options)))
         policy_path, digest_path = fixture.write_governance_rpc_policy(rpc_urls)
         return run_cli(
             "governance-signoff-validate",
@@ -230,6 +233,115 @@ def test_governance_cli_rejects_provider_state_disagreement(tmp_path: Path) -> N
 
     assert completed.returncode == 1
     assert "did not reach one state quorum" in completed.stderr
+
+
+def test_governance_cli_accepts_head_skew_and_minority_transport_outage(
+    tmp_path: Path,
+) -> None:
+    completed = run_governance_cli_with_providers(
+        tmp_path,
+        [
+            {"finalized_block_number": 6000, "head_block_number": 6001},
+            {"finalized_block_number": 6001, "head_block_number": 6003},
+            {"transport_outage": True},
+        ],
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_governance_cli_accepts_quorum_despite_hostile_minority_state(tmp_path: Path) -> None:
+    completed = run_governance_cli_with_providers(
+        tmp_path,
+        [{}, {}, {"governance_state_overrides": {"threshold": 4}}],
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_governance_cli_rejects_unbounded_provider_freshness(tmp_path: Path) -> None:
+    stale = {"finalized_block_number": 6000, "head_block_number": 6100}
+    completed = run_governance_cli_with_providers(tmp_path, [stale, stale])
+
+    assert completed.returncode == 1
+    assert "bounded freshness quorum" in completed.stderr
+
+
+def test_governance_policy_rejects_same_upstream_ownership_aliases(tmp_path: Path) -> None:
+    _, fixture, _ = valid_governance_report(tmp_path)
+    with ExitStack() as stack:
+        rpc_urls = [stack.enter_context(fixture.chain_rpc_server()) for _ in range(2)]
+        policy_path, _ = fixture.write_governance_rpc_policy(
+            rpc_urls,
+            ownership_groups=["shared-upstream", "shared-upstream"],
+        )
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+
+    with pytest.raises(cli.AdmissionError, match="distinct certified ownership groups"):
+        cli._validate_governance_rpc_policy(policy, expected_environment="test")
+
+
+def test_launch_authorization_composite_uses_governance_quorum_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sentinel_reader = object()
+    captured: dict[str, object] = {}
+    policy = {"schema_version": "p42-governance-rpc-policy/v2"}
+    args = SimpleNamespace(
+        trust_registry=str(tmp_path / "registry.json"),
+        artifact_root=str(tmp_path),
+        allow_test_trust_registry=False,
+        chain_rpc_url=None,
+        governance_rpc_policy=None,
+        governance_rpc_policy_digest=None,
+        authorization=str(tmp_path / "authorization.json"),
+        now_utc="2026-07-19T12:00:00Z",
+        output=None,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_load_pinned_trust_registry",
+        lambda *args, **kwargs: {"environment": "production"},
+    )
+    monkeypatch.setattr(cli, "_load_governance_rpc_policy", lambda **kwargs: policy)
+    monkeypatch.setattr(cli, "_GovernanceQuorumChainReader", lambda value: sentinel_reader)
+    monkeypatch.setattr(cli, "load_evidence_file", lambda path: {"governance": "v2"})
+
+    def normalize(value, **kwargs):
+        captured.update(value=value, **kwargs)
+        return {"schema_version": "p42-production-launch-authorization/v1"}
+
+    monkeypatch.setattr(cli, "normalize_launch_authorization", normalize)
+    monkeypatch.setattr(cli, "_enforce_gate_schema", lambda report, schema: None)
+    monkeypatch.setattr(cli, "_write_or_print_json", lambda report, output: None)
+
+    assert cli._cmd_production_launch_authorization_validate(args) == 0
+    assert captured["chain_reader"] is sentinel_reader
+    assert captured["value"] == {"governance": "v2"}
+
+
+def test_launch_authorization_rejects_legacy_single_rpc_before_composition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = SimpleNamespace(
+        trust_registry=str(tmp_path / "registry.json"),
+        artifact_root=str(tmp_path),
+        allow_test_trust_registry=False,
+        chain_rpc_url="https://caller-selected.invalid",
+        governance_rpc_policy=None,
+        governance_rpc_policy_digest=None,
+        authorization=str(tmp_path / "authorization.json"),
+        now_utc=None,
+        output=None,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_load_pinned_trust_registry",
+        lambda *args, **kwargs: {"environment": "production"},
+    )
+
+    assert cli._cmd_production_launch_authorization_validate(args) == 1
+    assert "rejects caller-selected --chain-rpc-url" in capsys.readouterr().err
 
 
 def test_governance_cli_rejects_non_finalized_completion(tmp_path: Path) -> None:

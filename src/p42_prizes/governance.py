@@ -775,6 +775,7 @@ def _validate_live_governance_quorum(
         raise error_type("production governance requires pinned independent RPC quorum evidence")
     required = quorum.get("required")
     provider_ids = quorum.get("provider_ids")
+    ownership_groups = quorum.get("ownership_groups")
     if (
         not isinstance(required, int)
         or isinstance(required, bool)
@@ -783,8 +784,17 @@ def _validate_live_governance_quorum(
         or len(provider_ids) < required
         or any(not isinstance(provider_id, str) or not provider_id for provider_id in provider_ids)
         or len(set(provider_ids)) != len(provider_ids)
+        or not isinstance(ownership_groups, list)
+        or len(ownership_groups) != len(provider_ids)
+        or any(
+            not isinstance(ownership_group, str) or not ownership_group
+            for ownership_group in ownership_groups
+        )
+        or len(set(ownership_groups)) != len(ownership_groups)
     ):
-        raise error_type("production governance RPC quorum must contain at least two distinct providers")
+        raise error_type(
+            "production governance RPC quorum must contain independently owned providers"
+        )
 
     finalized = queried.get("live_finalized")
     head = queried.get("live_head")

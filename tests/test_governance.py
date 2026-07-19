@@ -295,6 +295,7 @@ def governance_chain_reader(
             "rpc_quorum": {
                 "required": 2,
                 "provider_ids": ["test-provider-1", "test-provider-2"],
+                "ownership_groups": ["test-operator-1", "test-operator-2"],
             },
         }
 
@@ -426,6 +427,32 @@ def test_production_governance_queries_roster_at_completion_block(tmp_path: Path
     normalize(report, fixture, registry, chain_reader=reader)
 
     assert queried_blocks == [GOVERNANCE_COMPLETION_BLOCK]
+
+
+@pytest.mark.parametrize(
+    "ownership_groups",
+    [None, ["shared-operator", "shared-operator"]],
+    ids=["missing-binding", "same-upstream-alias"],
+)
+def test_production_governance_rejects_uncertified_provider_independence(
+    tmp_path: Path, ownership_groups: list[str] | None
+) -> None:
+    report, fixture, registry = valid_governance_report(tmp_path)
+    reader = governance_chain_reader(report, fixture)
+    read_governance_state = reader.read_governance_state
+
+    def uncertified_read(network: str, chain_id: int, contract: str, block_number: int):
+        result = read_governance_state(network, chain_id, contract, block_number)
+        quorum = dict(result["rpc_quorum"])
+        if ownership_groups is None:
+            quorum.pop("ownership_groups")
+        else:
+            quorum["ownership_groups"] = ownership_groups
+        return {**result, "rpc_quorum": quorum}
+
+    reader.read_governance_state = uncertified_read
+    with pytest.raises(GovernanceSignoffError, match="independently owned providers"):
+        normalize(report, fixture, registry, chain_reader=reader)
 
 
 def test_production_governance_rejects_completion_block_hash_mismatch_from_reader(
