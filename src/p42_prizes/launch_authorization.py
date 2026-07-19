@@ -155,7 +155,7 @@ def normalize_launch_authorization(
         "production_release_verification", "production_release_slate", "production_board_bindings",
         "verifier_image_release", "verifier_image_publication_journal", "release_capsule",
         "deployment_manifest", "reconciliation_report", "explorer_dossier",
-        "explorer_operator_policy", "activation_rpc_operator_registry",
+        "explorer_operator_policy", "activation_rpc_operator_registry", "production_timestamp_dossier",
     }
     if not isinstance(artifacts, Mapping) or set(artifacts) != expected_artifacts:
         raise LaunchAuthorizationError("artifacts must contain the exact launch evidence set")
@@ -243,7 +243,16 @@ def normalize_launch_authorization(
         context,
     )
     _validate_activation_rpc_operator_registry(rpc_operator_registry)
-    _validate_explorer_dossier(dossier, manifest, expires)
+    timestamp_dossier = _read_json_artifact(
+        artifacts["production_timestamp_dossier"],
+        "authorization.artifacts.production_timestamp_dossier",
+        context,
+    )
+    completion_timestamp = _validated_production_completion_timestamp(
+        timestamp_dossier, manifest, rpc_operator_registry,
+    )
+    explorer_validation_time = datetime.fromtimestamp(completion_timestamp, timezone.utc)
+    _validate_explorer_dossier(dossier, manifest, explorer_validation_time)
     _validate_explorer_with_node(
         artifact_root=Path(artifact_root),
         context=context,
@@ -251,7 +260,7 @@ def normalize_launch_authorization(
         capsule_ref=artifacts["release_capsule"],
         dossier_ref=artifacts["explorer_dossier"],
         operator_policy=operator_policy,
-        validation_time=issued,
+        validation_time=explorer_validation_time,
     )
     _validate_problem_reviews(
         authorization.get("problem_reviews"),
@@ -420,6 +429,60 @@ def _validate_activation_rpc_operator_registry(registry: Mapping[str, Any]) -> N
         origins.add(origin)
 
 
+def _validated_production_completion_timestamp(
+    dossier: Mapping[str, Any], manifest: Mapping[str, Any], rpc_registry: Mapping[str, Any],
+) -> int:
+    expected_keys = {
+        "schema", "manifestDigest", "deploymentConfigHash", "deploymentCommit",
+        "slateDigest", "capsuleDigest", "blocks",
+    }
+    if set(dossier) != expected_keys or dossier.get("schema") != "p42-prizes/production-timestamp-dossier/v1":
+        raise LaunchAuthorizationError("production timestamp dossier shape is invalid")
+    release_evidence = manifest.get("releaseEvidence", {})
+    if (
+        dossier.get("manifestDigest") != sha256_bytes(canonical_json(manifest).encode("utf-8"))
+        or dossier.get("deploymentConfigHash") != manifest.get("deploymentConfigHash")
+        or dossier.get("deploymentCommit") != manifest.get("deploymentCommit")
+        or dossier.get("slateDigest") != release_evidence.get("slateDigest")
+        or dossier.get("capsuleDigest") != release_evidence.get("capsuleDigest")
+    ):
+        raise LaunchAuthorizationError("production timestamp dossier release binding mismatch")
+    allowed_operators = {profile.get("operatorId") for profile in rpc_registry.get("profiles", [])}
+    rows = dossier.get("blocks")
+    if not isinstance(rows, list) or not rows:
+        raise LaunchAuthorizationError("production timestamp dossier has no block evidence")
+    by_block: dict[int, Mapping[str, Any]] = {}
+    row_keys = {"blockNumber", "blockHash", "timestamp", "primaryOperatorId", "secondaryOperatorId"}
+    for row in rows:
+        if (
+            not isinstance(row, Mapping) or set(row) != row_keys
+            or type(row.get("blockNumber")) is not int or row["blockNumber"] < 0
+            or type(row.get("timestamp")) is not int or row["timestamp"] <= 0
+            or not isinstance(row.get("blockHash"), str)
+            or re.fullmatch(r"0x[0-9a-fA-F]{64}", row["blockHash"]) is None
+            or row.get("primaryOperatorId") == row.get("secondaryOperatorId")
+            or row.get("primaryOperatorId") not in allowed_operators
+            or row.get("secondaryOperatorId") not in allowed_operators
+            or row["blockNumber"] in by_block
+        ):
+            raise LaunchAuthorizationError("production timestamp dossier block evidence is invalid")
+        by_block[row["blockNumber"]] = row
+    governance = manifest.get("governanceSetup", {})
+    completion = governance.get("completionBlockEvidence", {})
+    row = by_block.get(governance.get("completionBlock"))
+    if (
+        row is None
+        or row.get("timestamp") != governance.get("completionBlockTimestamp")
+        or row.get("timestamp") != completion.get("timestamp")
+        or str(row.get("blockHash", "")).casefold() != str(governance.get("completionBlockHash", "")).casefold()
+        or str(row.get("blockHash", "")).casefold() != str(completion.get("blockHash", "")).casefold()
+        or row.get("primaryOperatorId") != completion.get("primaryOperatorId")
+        or row.get("secondaryOperatorId") != completion.get("secondaryOperatorId")
+    ):
+        raise LaunchAuthorizationError("production timestamp dossier does not independently bind governance completion")
+    return row["timestamp"]
+
+
 def _canonical_activation_rpc_origin(value: Any) -> str:
     if not isinstance(value, str) or not value or value != value.strip() or "%" in value:
         raise LaunchAuthorizationError("activation RPC origin must be exact ASCII without percent escapes")
@@ -506,7 +569,49 @@ def _validate_deployment_manifest(manifest: Mapping[str, Any], release_report: M
             raise LaunchAuthorizationError(f"deployment {manifest_key} does not match verified release")
     if release_evidence.get("contractCount") != 47 or release_evidence.get("boardCount") != 10:
         raise LaunchAuthorizationError("deployment release evidence must bind canonical 47-contract topology")
-    _canonical_contract_entries(manifest)
+    entries = _canonical_contract_entries(manifest)
+    governance = manifest.get("governanceSetup")
+    if not isinstance(governance, Mapping) or governance.get("status") != "complete":
+        raise LaunchAuthorizationError("deployment manifest lacks completed governance setup evidence")
+    completion_block = governance.get("completionBlock")
+    completion_timestamp = governance.get("completionBlockTimestamp")
+    completion_hash = governance.get("completionBlockHash")
+    completion_evidence = governance.get("completionBlockEvidence")
+    anchor = governance.get("finalityAnchor")
+    if (
+        type(completion_block) is not int or completion_block < 0
+        or type(completion_timestamp) is not int or completion_timestamp <= 0
+        or not isinstance(completion_hash, str) or re.fullmatch(r"0x[0-9a-fA-F]{64}", completion_hash) is None
+        or not isinstance(completion_evidence, Mapping)
+        or not isinstance(anchor, Mapping)
+    ):
+        raise LaunchAuthorizationError("deployment governance completion evidence is incomplete")
+    evidence_hash = str(completion_evidence.get("blockHash", ""))
+    primary_hash = str(completion_evidence.get("primaryBlockHash", ""))
+    secondary_hash = str(completion_evidence.get("secondaryBlockHash", ""))
+    finalized = anchor.get("l2", {}).get("finalized", {}) if isinstance(anchor.get("l2"), Mapping) else {}
+    primary_operator = completion_evidence.get("primaryOperatorId")
+    secondary_operator = completion_evidence.get("secondaryOperatorId")
+    rpc_evidence = anchor.get("rpcEvidence", {}) if isinstance(anchor.get("rpcEvidence"), Mapping) else {}
+    if (
+        type(completion_evidence.get("blockNumber")) is not int
+        or type(completion_evidence.get("timestamp")) is not int
+        or completion_evidence.get("blockNumber") != completion_block
+        or completion_evidence.get("timestamp") != completion_timestamp
+        or evidence_hash.casefold() != completion_hash.casefold()
+        or primary_hash.casefold() != completion_hash.casefold()
+        or secondary_hash.casefold() != completion_hash.casefold()
+        or not isinstance(primary_operator, str) or not isinstance(secondary_operator, str)
+        or primary_operator == secondary_operator
+        or anchor.get("schema") != "p42-prizes/base-sepolia-finality-anchor/v1"
+        or anchor.get("operators") != [primary_operator, secondary_operator]
+        or rpc_evidence.get("primaryOperatorId") != primary_operator
+        or rpc_evidence.get("secondaryOperatorId") != secondary_operator
+        or finalized.get("number") != completion_block
+        or str(finalized.get("hash", "")).casefold() != completion_hash.casefold()
+        or any(type(entry.get("blockNumber")) is not int or entry["blockNumber"] > completion_block for _path, entry, _factory in entries)
+    ):
+        raise LaunchAuthorizationError("deployment governance completion timestamp is not bound to canonical finalized evidence")
 
 
 def _flatten_contract_addresses(value: Any) -> set[str]:
@@ -718,29 +823,45 @@ def _validate_contract_entry(value: Any, expected_name: str, factory_created: bo
     return value
 
 
-def _validate_explorer_dossier(dossier: Mapping[str, Any], manifest: Mapping[str, Any], expires: datetime) -> None:
-    expected_keys = {"schema", "chainId", "releaseBindingDigest", "capsuleDigest", "deploymentCommit", "finalizedAt", "expiresAt", "contracts", "evidenceDigest", "operatorRoster", "attestations", "dossierDigest"}
+def _validate_explorer_dossier(dossier: Mapping[str, Any], manifest: Mapping[str, Any], validation_time: datetime) -> None:
+    expected_keys = {"schema", "request", "attestations", "dossierDigest"}
     if set(dossier) != expected_keys:
         raise LaunchAuthorizationError("explorer dossier has unexpected or missing fields")
-    if dossier.get("schema") != "p42-prizes/explorer-verification-dossier/v2":
-        raise LaunchAuthorizationError("explorer dossier must be v2")
+    if dossier.get("schema") != "p42-prizes/explorer-verification-dossier/v3":
+        raise LaunchAuthorizationError("explorer dossier must be v3")
     signed_body = {key: value for key, value in dossier.items() if key != "dossierDigest"}
     if dossier.get("dossierDigest") != sha256_bytes(canonical_json(signed_body).encode("utf-8")):
         raise LaunchAuthorizationError("explorer dossier digest is not canonical")
-    core = {key: value for key, value in signed_body.items() if key not in {"evidenceDigest", "operatorRoster", "attestations"}}
-    if dossier.get("evidenceDigest") != sha256_bytes(canonical_json(core).encode("utf-8")):
+    request = dossier.get("request")
+    request_keys = {"schema", "evidence", "operatorRoster", "operatorNonces", "createdAt", "expiresAt", "requestDigest"}
+    if not isinstance(request, Mapping) or set(request) != request_keys or request.get("schema") != "p42-prizes/explorer-verification-request/v1":
+        raise LaunchAuthorizationError("explorer dossier request shape is invalid")
+    request_body = {key: value for key, value in request.items() if key != "requestDigest"}
+    if request.get("requestDigest") != sha256_bytes(canonical_json(request_body).encode("utf-8")):
+        raise LaunchAuthorizationError("explorer request digest is not canonical")
+    evidence = request.get("evidence")
+    evidence_keys = {"schema", "chainId", "releaseBindingDigest", "capsuleDigest", "deploymentCommit", "collectedAt", "finalityAnchor", "blockEvidence", "contracts", "evidenceDigest"}
+    if not isinstance(evidence, Mapping) or set(evidence) != evidence_keys or evidence.get("schema") != "p42-prizes/explorer-verification-evidence/v1":
+        raise LaunchAuthorizationError("explorer evidence shape is invalid")
+    evidence_body = {key: value for key, value in evidence.items() if key != "evidenceDigest"}
+    if evidence.get("evidenceDigest") != sha256_bytes(canonical_json(evidence_body).encode("utf-8")):
         raise LaunchAuthorizationError("explorer dossier evidence digest is not canonical")
-    if dossier.get("chainId") != manifest.get("network", {}).get("chainId"):
+    if evidence.get("chainId") != manifest.get("network", {}).get("chainId"):
         raise LaunchAuthorizationError("explorer dossier chain does not match deployment")
-    if dossier.get("deploymentCommit") != manifest.get("deploymentCommit"):
+    if evidence.get("deploymentCommit") != manifest.get("deploymentCommit"):
         raise LaunchAuthorizationError("explorer dossier commit does not match deployment")
     if dossier.get("dossierDigest") != manifest.get("sourceVerification", {}).get("dossierDigest"):
         raise LaunchAuthorizationError("explorer dossier digest does not match deployment manifest")
     release_evidence = manifest.get("releaseEvidence", {})
-    if dossier.get("releaseBindingDigest") != release_evidence.get("releaseBindingDigest") or dossier.get("capsuleDigest") != release_evidence.get("capsuleDigest"):
+    if evidence.get("releaseBindingDigest") != release_evidence.get("releaseBindingDigest") or evidence.get("capsuleDigest") != release_evidence.get("capsuleDigest"):
         raise LaunchAuthorizationError("explorer dossier does not match deployment release evidence")
+    roster = request.get("operatorRoster")
+    nonces = request.get("operatorNonces")
+    attestations = dossier.get("attestations")
+    if not isinstance(roster, list) or len(roster) != 2 or len({str(item).casefold() for item in roster}) != 2 or not isinstance(nonces, list) or len(nonces) != 2 or not isinstance(attestations, list) or len(attestations) != 2:
+        raise LaunchAuthorizationError("explorer dossier must bind exactly two operators, nonces, and attestations")
     deployed = _canonical_contract_entries(manifest)
-    dossier_contracts = dossier.get("contracts")
+    dossier_contracts = evidence.get("contracts")
     if not isinstance(dossier_contracts, list) or len(dossier_contracts) != 47:
         raise LaunchAuthorizationError("explorer dossier must cover canonical ordered 47 contracts")
     for index, ((path, contract, _factory_key), row) in enumerate(zip(deployed, dossier_contracts, strict=True)):
@@ -774,14 +895,29 @@ def _validate_explorer_dossier(dossier: Mapping[str, Any], manifest: Mapping[str
                 or str(receipt.get("logAddress", "")).casefold() != str(provenance["factoryAddress"]).casefold()
                 or [str(topic).casefold() for topic in receipt.get("topics", [])] != [topic.casefold() for topic in expected_topics]
                 or receipt.get("data") != "0x"
-                or str(receipt.get("configurationResult", "")).casefold() != str(provenance["configurationHash"]).casefold()
             ):
-                raise LaunchAuthorizationError(f"explorer dossier contract {index} receipt/event/configuration mismatch")
+                raise LaunchAuthorizationError(f"explorer dossier contract {index} receipt/event mismatch")
+            snapshot = deployment.get("snapshotConfiguration")
+            block_evidence = evidence.get("blockEvidence")
+            if (
+                not isinstance(snapshot, Mapping)
+                or not isinstance(block_evidence, Mapping)
+                or snapshot.get("blockNumber") != block_evidence.get("blockNumber")
+                or str(snapshot.get("blockHash", "")).casefold() != str(block_evidence.get("blockHash", "")).casefold()
+                or str(snapshot.get("primaryResult", "")).casefold() != str(provenance["configurationHash"]).casefold()
+                or str(snapshot.get("secondaryResult", "")).casefold() != str(provenance["configurationHash"]).casefold()
+            ):
+                raise LaunchAuthorizationError(f"explorer dossier contract {index} finalized configuration mismatch")
         elif set(deployment) != {"kind"}:
             raise LaunchAuthorizationError(f"explorer dossier direct contract {index} has unexpected provenance")
-    dossier_expiry = datetime.fromtimestamp(dossier.get("expiresAt", 0), timezone.utc)
-    if dossier_expiry < expires:
-        raise LaunchAuthorizationError("authorization cannot outlive explorer verification evidence")
+    try:
+        created = datetime.fromisoformat(str(request.get("createdAt", "")).replace("Z", "+00:00"))
+        collected = datetime.fromisoformat(str(evidence.get("collectedAt", "")).replace("Z", "+00:00"))
+        dossier_expiry = datetime.fromtimestamp(request.get("expiresAt", 0), timezone.utc)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise LaunchAuthorizationError("explorer verification timestamps are invalid") from exc
+    if created.tzinfo is None or collected.tzinfo is None or created > validation_time or collected > validation_time or dossier_expiry < validation_time:
+        raise LaunchAuthorizationError("explorer verification was not valid at governance completion")
 
 
 def _validate_explorer_with_node(

@@ -59,7 +59,7 @@ import {
   verifySP1RuntimeAttestation,
   validateReleaseCapsule,
 } from "./release-capsule-helper.js";
-import { liveRequeryExplorerVerification, readExplorerDossierExact, validateExplorerVerificationDossier } from "./explorer-verification-helper.js";
+import { readExplorerDossierExact, validateExplorerVerificationAnchor, validateExplorerVerificationDossier } from "./explorer-verification-helper.js";
 import { assertObjectiveVerifierCapsuleBinding } from "./production-release-verifier.js";
 import {
   readContractsArtifactJson,
@@ -1763,9 +1763,10 @@ async function continueMultiBoardCeremony(ethers, path, manifest) {
     const capsule = await readContractsArtifactJson(requiredEnv("P42_RELEASE_CAPSULE"));
     const trustedOperators = requiredEnv("P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES").split(",");
     const explorerBoundManifest = { ...manifest, sourceVerification: { ...manifest.sourceVerification, status: "verified", dossierDigest: explorerDossier.dossierDigest } };
-    if (explorerDossier.finalizedAt !== completionBlockEvidence.timestamp) throw new Error("explorer dossier validation instant must equal the finalized governance completion block timestamp");
     validateExplorerVerificationDossier(explorerDossier, { manifest: explorerBoundManifest, capsule, trustedOperators, now: completionBlockEvidence.timestamp * 1000 });
-    await liveRequeryExplorerVerification({ dossier: explorerDossier, manifest: explorerBoundManifest, capsule, provider: ethers.provider, apiKey: requiredEnv("ETHERSCAN_API_KEY"), trustedOperators, now: completionBlockEvidence.timestamp * 1000 });
+    const explorerBlock = explorerDossier.request.evidence.blockEvidence.blockNumber;
+    if (explorerBlock < manifest.indexer.startBlock || explorerBlock > checkedBlock) throw new Error("explorer dossier finalized block is outside the deployment-to-completion interval");
+    await validateExplorerVerificationAnchor({ dossier: explorerDossier, endpoints, currentAnchor: anchor });
     const roleAcceptancePath = requiredEnv("P42_ROLE_ACCEPTANCE_PACKET");
     const roleAcceptancePacket = await readContractsArtifactJson(roleAcceptancePath);
     const completed = completeSetupManifest(explorerBoundManifest, snapshot, { ethers, roleAcceptancePacket });

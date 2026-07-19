@@ -93,6 +93,79 @@ def test_launch_authorization_requires_factory_provenance() -> None:
         launch_module._canonical_contract_entries(manifest)
 
 
+def test_deployment_manifest_binds_governance_time_to_finalized_evidence() -> None:
+    manifest = canonical_topology_manifest()
+    block_hash = "0x" + "a" * 64
+    for _path, entry, _factory in launch_module._canonical_contract_entries(manifest):
+        entry["blockNumber"] = 100
+    manifest.update({
+        "schema": "p42-prizes/deployment-manifest/v2",
+        "status": "governance-setup-complete",
+        "releaseMode": "production",
+        "deploymentCommit": "1" * 40,
+        "network": {"name": "baseSepolia", "chainId": 84532},
+        "releaseEvidence": {
+            "capsuleDigest": "sha256:" + "2" * 64,
+            "slateDigest": "sha256:" + "3" * 64,
+            "configDigest": "sha256:" + "4" * 64,
+            "contractCount": 47,
+            "boardCount": 10,
+        },
+        "governanceSetup": {
+            "status": "complete",
+            "completionBlock": 200,
+            "completionBlockTimestamp": 1_800_000_000,
+            "completionBlockHash": block_hash,
+            "completionBlockEvidence": {
+                "blockNumber": 200, "blockHash": block_hash, "timestamp": 1_800_000_000,
+                "primaryOperatorId": "operator-a", "secondaryOperatorId": "operator-b",
+                "primaryBlockHash": block_hash, "secondaryBlockHash": block_hash,
+            },
+            "finalityAnchor": {
+                "schema": "p42-prizes/base-sepolia-finality-anchor/v1",
+                "operators": ["operator-a", "operator-b"],
+                "rpcEvidence": {"primaryOperatorId": "operator-a", "secondaryOperatorId": "operator-b"},
+                "l2": {"finalized": {"number": 200, "hash": block_hash}},
+            },
+        },
+    })
+    report = {
+        "sourceCommit": manifest["deploymentCommit"],
+        "capsuleDigest": manifest["releaseEvidence"]["capsuleDigest"],
+        "slateDigest": manifest["releaseEvidence"]["slateDigest"],
+        "ceremonyConfigDigest": manifest["releaseEvidence"]["configDigest"],
+    }
+    launch_module._validate_deployment_manifest(manifest, report, "base-sepolia")
+    for field, value in (("completionBlockTimestamp", 1_799_999_999), ("completionBlockTimestamp", True), ("completionBlockHash", "0x" + "b" * 64)):
+        changed = json.loads(json.dumps(manifest))
+        changed["governanceSetup"][field] = value
+        with pytest.raises(LaunchAuthorizationError, match="completion evidence|canonical finalized evidence"):
+            launch_module._validate_deployment_manifest(changed, report, "base-sepolia")
+    future = json.loads(json.dumps(manifest))
+    future["contracts"][launch_module.CANONICAL_SHARED_CONTRACTS[0][0]]["blockNumber"] = 201
+    with pytest.raises(LaunchAuthorizationError, match="canonical finalized evidence"):
+        launch_module._validate_deployment_manifest(future, report, "base-sepolia")
+    registry = {"profiles": [{"operatorId": "operator-a"}, {"operatorId": "operator-b"}]}
+    timestamp_dossier = {
+        "schema": "p42-prizes/production-timestamp-dossier/v1",
+        "manifestDigest": sha256_bytes(canonical_json(manifest).encode("utf-8")),
+        "deploymentConfigHash": manifest.get("deploymentConfigHash"),
+        "deploymentCommit": manifest["deploymentCommit"],
+        "slateDigest": manifest["releaseEvidence"]["slateDigest"],
+        "capsuleDigest": manifest["releaseEvidence"]["capsuleDigest"],
+        "blocks": [{
+            "blockNumber": 200, "blockHash": block_hash, "timestamp": 1_800_000_000,
+            "primaryOperatorId": "operator-a", "secondaryOperatorId": "operator-b",
+        }],
+    }
+    assert launch_module._validated_production_completion_timestamp(timestamp_dossier, manifest, registry) == 1_800_000_000
+    coherent_backdate = json.loads(json.dumps(manifest))
+    coherent_backdate["governanceSetup"]["completionBlockTimestamp"] -= 3600
+    coherent_backdate["governanceSetup"]["completionBlockEvidence"]["timestamp"] -= 3600
+    with pytest.raises(LaunchAuthorizationError, match="release binding|independently bind"):
+        launch_module._validated_production_completion_timestamp(timestamp_dossier, coherent_backdate, registry)
+
+
 def test_launch_authorization_schema_is_valid_draft_2020_12() -> None:
     schema = json.loads(
         (ROOT / "schemas" / "production-launch-authorization.schema.json").read_text()
@@ -116,7 +189,7 @@ def test_launch_authorization_schema_resolves_canonical_binding_and_validates_in
         "production_release_slate", "production_board_bindings", "release_capsule",
         "verifier_image_release", "verifier_image_publication_journal",
         "deployment_manifest", "reconciliation_report", "explorer_dossier",
-        "explorer_operator_policy", "activation_rpc_operator_registry",
+        "explorer_operator_policy", "activation_rpc_operator_registry", "production_timestamp_dossier",
     )
     authorization = {
         "schema_version": "p42-production-launch-authorization/v1",
@@ -1468,7 +1541,7 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
     next_address = iter("0x" + f"{index:040x}" for index in range(1, 48))
 
     def direct_contract(name: str) -> dict:
-        return {"name": name, "address": next(next_address)}
+        return {"name": name, "address": next(next_address), "blockNumber": 100}
 
     shared_contracts = {
         key: direct_contract(name)
@@ -1512,15 +1585,38 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
             "boardCount": 10,
         },
         "sourceVerification": {"dossierDigest": "sha256:" + "b" * 64},
+        "governanceSetup": {
+            "status": "complete",
+            "completionBlock": 200,
+            "completionBlockTimestamp": 1783530000,
+            "completionBlockHash": "0x" + "a" * 64,
+            "completionBlockEvidence": {
+                "blockNumber": 200,
+                "blockHash": "0x" + "a" * 64,
+                "timestamp": 1783530000,
+                "primaryOperatorId": "rpc-operator-a",
+                "secondaryOperatorId": "rpc-operator-b",
+                "primaryBlockHash": "0x" + "a" * 64,
+                "secondaryBlockHash": "0x" + "a" * 64,
+            },
+            "finalityAnchor": {
+                "schema": "p42-prizes/base-sepolia-finality-anchor/v1",
+                "operators": ["rpc-operator-a", "rpc-operator-b"],
+                "rpcEvidence": {"primaryOperatorId": "rpc-operator-a", "secondaryOperatorId": "rpc-operator-b"},
+                "l2": {"finalized": {"number": 200, "hash": "0x" + "a" * 64}},
+            },
+        },
     }
-    dossier_core = {
-        "schema": "p42-prizes/explorer-verification-dossier/v2",
+    block_hash = "0x" + "a" * 64
+    evidence_core = {
+        "schema": "p42-prizes/explorer-verification-evidence/v1",
         "chainId": 84532,
         "releaseBindingDigest": manifest["releaseEvidence"]["releaseBindingDigest"],
         "capsuleDigest": manifest["releaseEvidence"]["capsuleDigest"],
         "deploymentCommit": release_binding["git_commit"],
-        "finalizedAt": 1783500000,
-        "expiresAt": 1784000000,
+        "collectedAt": "2026-07-08T16:00:00Z",
+        "finalityAnchor": {"schema": "p42-prizes/base-sepolia-finality-anchor/v1"},
+        "blockEvidence": {"blockNumber": 200, "blockHash": block_hash},
         "contracts": [
             {
                 "path": path,
@@ -1542,7 +1638,7 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
                         "receipt": {
                             "status": 1,
                             "blockNumber": contract["blockNumber"],
-                            "blockHash": "0x" + "a" * 64,
+                            "blockHash": block_hash,
                             "transactionIndex": 0,
                             "logIndex": 0,
                             "logAddress": contract["factoryCreation"]["factoryAddress"],
@@ -1552,7 +1648,18 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
                                 contract["factoryCreation"]["salt"],
                             ],
                             "data": "0x",
-                            "configurationResult": contract["factoryCreation"]["configurationHash"],
+                            "primaryOperatorId": "rpc-operator-a",
+                            "secondaryOperatorId": "rpc-operator-b",
+                            "primaryBlockHash": block_hash,
+                            "secondaryBlockHash": block_hash,
+                        },
+                        "snapshotConfiguration": {
+                            "blockNumber": 200,
+                            "blockHash": block_hash,
+                            "primaryOperatorId": "rpc-operator-a",
+                            "secondaryOperatorId": "rpc-operator-b",
+                            "primaryResult": contract["factoryCreation"]["configurationHash"],
+                            "secondaryResult": contract["factoryCreation"]["configurationHash"],
                         },
                     }
                 ),
@@ -1560,14 +1667,41 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
             for path, contract, _factory_key in launch_module._canonical_contract_entries(manifest)
         ],
     }
-    dossier = {
-        **dossier_core,
-        "evidenceDigest": sha256_bytes(canonical_json(dossier_core).encode()),
-        "operatorRoster": ["0x" + "a" * 40, "0x" + "b" * 40],
+    evidence = {
+        **evidence_core,
+        "evidenceDigest": sha256_bytes(canonical_json(evidence_core).encode()),
+    }
+    operator_roster = ["0x" + "a" * 40, "0x" + "b" * 40]
+    request_core = {
+        "schema": "p42-prizes/explorer-verification-request/v1",
+        "evidence": evidence,
+        "operatorRoster": operator_roster,
+        "operatorNonces": [
+            {"operator": operator_roster[0], "nonce": "0x" + "1" * 64},
+            {"operator": operator_roster[1], "nonce": "0x" + "2" * 64},
+        ],
+        "createdAt": "2026-07-08T16:30:00Z",
+        "expiresAt": 1783614600,
+    }
+    request = {
+        **request_core,
+        "requestDigest": sha256_bytes(canonical_json(request_core).encode()),
+    }
+    dossier_core = {
+        "schema": "p42-prizes/explorer-verification-dossier/v3",
+        "request": request,
         "attestations": [{}, {}],
     }
-    dossier["dossierDigest"] = sha256_bytes(canonical_json(dossier).encode())
+    dossier = {
+        **dossier_core,
+        "dossierDigest": sha256_bytes(canonical_json(dossier_core).encode()),
+    }
     manifest["sourceVerification"]["dossierDigest"] = dossier["dossierDigest"]
+    launch_module._validate_explorer_dossier(
+        dossier,
+        manifest,
+        datetime.fromtimestamp(manifest["governanceSetup"]["completionBlockTimestamp"], timezone.utc),
+    )
     artifacts["deployment_manifest"] = fixture.artifact("manifest", content=manifest)
     reconciliation = {
         "schema": "p42-prizes/reconciliation-report/v3",
@@ -1596,8 +1730,8 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
         },
     )
     rpc_profiles = [
-        {"operatorId": "operator-primary", "endpointOrigin": "https://primary.example"},
-        {"operatorId": "operator-secondary", "endpointOrigin": "https://secondary.example"},
+        {"operatorId": "rpc-operator-a", "endpointOrigin": "https://primary.example"},
+        {"operatorId": "rpc-operator-b", "endpointOrigin": "https://secondary.example"},
     ]
     rpc_registry = {
         "schema": "p42-activation-rpc-operator-registry/v1",
@@ -1611,6 +1745,24 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
         content=(canonical_json(rpc_registry) + "\n").encode("ascii"),
     )
     (tmp_path / artifacts["activation_rpc_operator_registry"]["local_path"]).chmod(0o444)
+    artifacts["production_timestamp_dossier"] = fixture.artifact(
+        "production-timestamp-dossier",
+        content={
+            "schema": "p42-prizes/production-timestamp-dossier/v1",
+            "manifestDigest": sha256_bytes(canonical_json(manifest).encode("utf-8")),
+            "deploymentConfigHash": manifest["deploymentConfigHash"],
+            "deploymentCommit": manifest["deploymentCommit"],
+            "slateDigest": manifest["releaseEvidence"]["slateDigest"],
+            "capsuleDigest": manifest["releaseEvidence"]["capsuleDigest"],
+            "blocks": [{
+                "blockNumber": 200,
+                "blockHash": block_hash,
+                "timestamp": manifest["governanceSetup"]["completionBlockTimestamp"],
+                "primaryOperatorId": "rpc-operator-a",
+                "secondaryOperatorId": "rpc-operator-b",
+            }],
+        },
+    )
     monkeypatch.setattr(launch_module, "_validate_problem_reviews", lambda *args, **kwargs: None)
     monkeypatch.setattr(launch_module, "_validate_explorer_with_node", lambda **kwargs: None)
     unsigned = {

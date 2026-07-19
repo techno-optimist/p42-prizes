@@ -530,7 +530,6 @@ env -u BASE_SEPOLIA_PRIVATE_KEY \
   P42_RELEASE_CAPSULE=... \
   P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES=0x...,0x... \
   P42_ROLE_ACCEPTANCE_PACKET=... \
-  ETHERSCAN_API_KEY=... \
   npm run continue:base-sepolia
 ```
 
@@ -598,7 +597,7 @@ Before pushing an Observatory change:
 # Explorer verification gate
 
 Before production governance can be marked complete, generate and validate a
-content-addressed `p42-prizes/explorer-verification-dossier/v2` artifact. The
+content-addressed `p42-prizes/explorer-verification-dossier/v3` artifact. The
 gate requires exact one-to-one coverage of all 47 addresses, current BaseScan
 official API evidence, independent Sourcify evidence, and on-chain runtime code
 matching the attested release capsule. Set `P42_EXPLORER_DOSSIER_PATH` and the
@@ -614,7 +613,8 @@ receipt, indexed deployment event, recomputed CREATE2 address, and historical
 configuration getter at the receipt block. This is source evidence only until
 the ceremony is run against Base Sepolia and independently reviewed.
 
-The current schema is `p42-prizes/explorer-verification-dossier/v2`. It embeds
+The current schema is `p42-prizes/explorer-verification-dossier/v3`. Its nested
+evidence artifact embeds
 the bounded exact raw response bytes and URL, host, HTTP status, fetch time, and
 SHA-256 for Etherscan V2 at `https://api.etherscan.io/v2/api?chainid=84532` and
 Sourcify V2 at `/server/v2/contract/84532/<address>?fields=all`. Derived metadata
@@ -623,10 +623,44 @@ sources/settings, compiler identity, and constructor arguments are reparsed
 from those bytes during every validation. The finalized `eth_getCode` frame is
 stored separately and compared byte-for-byte with Sourcify and the capsule.
 
-Set `P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES` to exactly two distinct
-trusted operator addresses. Both must EIP-712 sign the evidence digest and
-release binding with unique nonces, a finalized validation instant, and expiry.
-Governance completion and reconciliation re-query both services live and fail
-closed before publication. Tests always inject mocked HTTP responses. An
-optional operator-only smoke run may use `ETHERSCAN_API_KEY=<key> npm run
-reconcile:base-sepolia`; it performs live reads and must not be used in CI.
+Run the four-phase ceremony with separate environments: `explorer:collect`
+uses the Etherscan key and two operator-distinct RPC endpoints but has no signing
+keys; `explorer:prepare-request` runs offline and creates CSPRNG nonces for the
+exact two-address operator roster; each signer signs the emitted EIP-712 typed
+data outside the collector and `explorer:record-attestation` verifies that
+detached signature; `explorer:assemble` runs offline and emits the final dossier.
+Every phase reads exact bytes against an out-of-band SHA-256 pin and writes a new
+regular file exclusively. The request binds the complete evidence digest,
+roster, release, capsule, and one immutable finalized block number/hash.
+
+Start collection from a credential-minimal environment that contains the
+explorer credential and RPC observations, but no wallet, signer, mnemonic, JWK,
+or other secret-bearing variable:
+
+```bash
+env -i PATH="$PATH" HOME="$HOME" \
+  ETHERSCAN_API_KEY=... \
+  BASE_SEPOLIA_RPC_URL=... \
+  P42_SECONDARY_BASE_SEPOLIA_RPC_URL=... \
+  P42_PRIMARY_RPC_OPERATOR_ID=... \
+  P42_SECONDARY_RPC_OPERATOR_ID=... \
+  P42_EXPLORER_INPUT_ROOT=/secure/p42/input \
+  P42_DEPLOYMENT_MANIFEST=... \
+  P42_DEPLOYMENT_MANIFEST_SHA256=sha256:... \
+  P42_RELEASE_CAPSULE=... \
+  P42_RELEASE_CAPSULE_SHA256=sha256:... \
+  P42_EXPLORER_OUTPUT_ROOT=/secure/p42/explorer \
+  P42_EXPLORER_EVIDENCE_OUTPUT=/secure/p42/explorer/evidence.json \
+  npm run explorer:collect
+```
+
+Governance completion and reconciliation validate the complete retained dossier
+at the durable completion timestamp, then recheck its finality anchor across the
+two configured RPC authorities. They do not re-query either explorer, so an
+expired API response or API-key host has no authority during deployment. Tests
+always inject mocked HTTP and RPC responses; networked tests are prohibited.
+The request expiry is the deadline for assembling and accepting the dossier at
+governance completion. Once the completed manifest immutably binds that dossier,
+later reconciliation and launch authorization replay its historical validity at
+the finalized completion instant; they do not reinterpret it against wall-clock
+time or require the launch authorization itself to expire at the same instant.

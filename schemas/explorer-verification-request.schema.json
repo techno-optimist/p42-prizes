@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.ai/prizes/schemas/explorer-verification-request.schema.json",
+  "title": "P42 offline explorer verification signing request",
+  "$ref": "https://projectforty2.ai/prizes/schemas/explorer-verification-dossier.schema.json#/$defs/request"
+}

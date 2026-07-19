@@ -65,6 +65,22 @@ describe("Base Sepolia finalized anchor", () => {
     await assert.rejects(() => collectFinalityAnchor({ endpoints: endpoints(provider(), provider(), { secondary: { url: "https://RPC-A.EXAMPLE:443/other" } }), policy: BASE_SEPOLIA_FINALITY_POLICY }), /distinct endpoint/);
     await assert.rejects(() => collectFinalityAnchor({ endpoints: endpoints(provider(), provider(), { secondary: { operatorId: "operator-a" } }), policy: BASE_SEPOLIA_FINALITY_POLICY }), /distinct endpoint/);
   });
+  it("rejects unauthenticated RPC authority rotation during recheck", async () => {
+    const previous = await collectFinalityAnchor({ endpoints: endpoints(), policy: BASE_SEPOLIA_FINALITY_POLICY });
+    await assert.rejects(() => recheckFinalityAnchor({
+      endpoints: endpoints(provider(), provider(), { secondary: { url: "https://rpc-c.example/v1", operatorId: "operator-c" } }),
+      policy: BASE_SEPOLIA_FINALITY_POLICY,
+      previous,
+    }), /authority changed without an authenticated rotation/);
+    const forged = structuredClone(previous);
+    forged.rpcEvidence.primaryEndpointDigest = `sha256:${"0".repeat(64)}`;
+    await assert.rejects(() => recheckFinalityAnchor({ endpoints: endpoints(), policy: BASE_SEPOLIA_FINALITY_POLICY, previous: forged }), /authority changed|configured endpoints/);
+  });
+  it("compares persisted RPC authority canonically across JSON key order", async () => {
+    const previous = await collectFinalityAnchor({ endpoints: endpoints(), policy: BASE_SEPOLIA_FINALITY_POLICY });
+    previous.rpcEvidence = Object.fromEntries(Object.entries(previous.rpcEvidence).reverse());
+    await assert.doesNotReject(() => recheckFinalityAnchor({ endpoints: endpoints(), policy: BASE_SEPOLIA_FINALITY_POLICY, previous }));
+  });
   it("rejects regression or same-height hash mutation in every dimension", async () => {
     const previous = await collectFinalityAnchor({ endpoints: endpoints(), policy: BASE_SEPOLIA_FINALITY_POLICY });
     const cases = [

@@ -20,7 +20,7 @@ import { readContractsArtifactJson } from "./strict-json-helper.js";
 import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
 import { collectFinalityAnchor, recheckFinalityAnchor, validateMonotonicFinalityAnchor } from "./finality-anchor.js";
 import { validateDeploymentRoleAcceptances, validateDurableRoleAcceptanceTimestamp } from "./role-acceptance-helper.js";
-import { liveRequeryExplorerVerification, readExplorerDossierExact, validateExplorerVerificationDossier } from "./explorer-verification-helper.js";
+import { readExplorerDossierExact, validateExplorerVerificationAnchor, validateExplorerVerificationDossier } from "./explorer-verification-helper.js";
 import { readReleaseBuildJson } from "./release-capsule-helper.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532;
@@ -162,8 +162,7 @@ export async function reconcileWithProvider({ ethers, manifest, outputPath = nul
   const explorerDossier = readExplorerDossierExact(process.env.P42_EXPLORER_DOSSIER_PATH, process.env.P42_EXPLORER_DOSSIER_SHA256);
   const capsule = await readReleaseBuildJson(process.env.P42_RELEASE_CAPSULE);
   const trustedOperators = String(process.env.P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES ?? "").split(",");
-  validateExplorerVerificationDossier(explorerDossier, { manifest: manifest.data, capsule, trustedOperators });
-  await liveRequeryExplorerVerification({ dossier: explorerDossier, manifest: manifest.data, capsule, provider: ethers.provider, apiKey: process.env.ETHERSCAN_API_KEY, trustedOperators });
+  validateExplorerVerificationDossier(explorerDossier, { manifest: manifest.data, capsule, trustedOperators, now: manifest.data.governanceSetup.completionBlockTimestamp * 1000 });
   const policy = manifest.data.indexer.finalityPolicy;
   const chain = await ethers.provider.getNetwork();
   if (Number(chain.chainId) !== BASE_SEPOLIA_CHAIN_ID) {
@@ -178,6 +177,7 @@ export async function reconcileWithProvider({ ethers, manifest, outputPath = nul
   if (manifest.data.releaseMode !== "production") throw new Error("production reconciliation publication requires explicit production release evidence");
   const finalityAnchor = await collectFinalityAnchor({ endpoints: finalityEndpoints, policy: manifest.data.releaseEvidence?.finalityPolicy });
   await validateMonotonicFinalityAnchor({ previous: manifest.data.governanceSetup.finalityAnchor, current: finalityAnchor, endpoints: finalityEndpoints });
+  await validateExplorerVerificationAnchor({ dossier: explorerDossier, endpoints: finalityEndpoints, currentAnchor: finalityAnchor });
   const fromBlock = manifest.data.indexer.startBlock;
   const toBlock = finalityAnchor.l2.finalized.number;
   if (toBlock < fromBlock) {

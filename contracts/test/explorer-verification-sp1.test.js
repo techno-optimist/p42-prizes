@@ -72,9 +72,16 @@ test("explorer dossier schema requires exactly 47 P42 contracts", () => {
   addFormats(ajv);
 
   assert.doesNotThrow(() => ajv.compile(schema));
-  assert.equal(schema.properties.contracts.minItems, 47);
-  assert.equal(schema.properties.contracts.maxItems, 47);
+  assert.equal(schema.properties.schema.const, "p42-prizes/explorer-verification-dossier/v3");
+  assert.equal(schema.$defs.evidence.properties.contracts.minItems, 47);
+  assert.equal(schema.$defs.evidence.properties.contracts.maxItems, 47);
   assert.equal(schema.$defs.contract.properties.name.pattern, "^P42");
+  for (const name of ["evidence", "request", "attestation"]) {
+    const intermediate = JSON.parse(readFileSync(new URL(`../../schemas/explorer-verification-${name}.schema.json`, import.meta.url), "utf8"));
+    const validator = ajv.compile(intermediate);
+    assert.equal(intermediate.$ref, `https://projectforty2.ai/prizes/schemas/explorer-verification-dossier.schema.json#/$defs/${name}`);
+    assert.equal(validator({}), false);
+  }
 });
 
 test("explorer evidence never persists or rethrows the Etherscan API key", async () => {

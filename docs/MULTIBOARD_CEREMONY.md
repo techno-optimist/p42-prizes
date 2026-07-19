@@ -296,11 +296,17 @@ read using `P42_EXPLORER_DOSSIER_PATH`; offline consumers must independently pin
 the exact file bytes with `P42_EXPLORER_DOSSIER_SHA256`. A URL, screenshot, or
 caller-authored `verified` value is not evidence.
 
-The v2 dossier stores each provider's exact bounded raw bytes and is attested by
-two configured verification operators using EIP-712. Completion uses the
-finalized block timestamp as the validation instant, rejects any future fetch
-time or expiry anomaly, and live re-queries Etherscan V2 plus Sourcify V2 before
-the manifest may transition to `governance-setup-complete`.
+The v3 ceremony separates the credentialed network collector from both signing
+operators. Collection stores each provider's exact bounded raw bytes and one
+immutable finalized block observed by two operator-distinct RPC authorities.
+An offline preparer creates the complete request and per-operator CSPRNG nonces;
+the operators EIP-712 sign detached artifacts; an offline assembler verifies the
+exact two-signer roster and emits the dossier. Completion uses the finalized
+completion-block timestamp as the validation instant, rejects any future fetch
+time or expiry anomaly, and rechecks the retained finality anchor across both
+RPC authorities before the manifest may transition to
+`governance-setup-complete`. It never gives the Etherscan credential host
+signing authority and never depends on a later explorer re-query.
 The admission preflight is a source-level prevention control, not a substitute
 for independently attested hosts, immutable image publication, external math
 review, audit, legal approval, or a real testnet rehearsal.

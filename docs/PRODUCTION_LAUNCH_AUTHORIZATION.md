@@ -28,6 +28,9 @@ The authorization references exact bytes beneath an immutable artifact root for:
 - current canonical 47-contract explorer verification dossier (target); and
 - a protected `p42-activation-rpc-operator-registry/v1` artifact whose exact
   bytes digest is signed through the authorization;
+- the exact `p42-prizes/production-timestamp-dossier/v1` that binds the
+  manifest and governance-completion block, hash, timestamp, and two registered
+  RPC operator identities;
 - ten strict `p42-math-review/v4` packets in canonical board order. Each packet
   binds the complete board-dossier digest, that board's ordered record hash,
   the deployed verifier image and admission matrix, and the exact verified
@@ -43,7 +46,8 @@ The authorization references exact bytes beneath an immutable artifact root for:
 Every existing gate normalizer is re-run. Declared report hashes are not trusted.
 Every gate must carry the identical release binding, and every problem review
 must agree with both the frozen release and deployed verifier pins. The
-authorization cannot outlive its explorer evidence. V1 rejects both the current
+authorization replays explorer validity at the timestamp dossier's independently
+bound governance-completion instant. V1 rejects both the current
 `objectiveProofsActive=false` release and any fabricated v1 report that flips the
 flag to true. The current inactive gateway therefore cannot authorize funding.
 

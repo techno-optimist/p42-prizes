@@ -186,7 +186,8 @@ describe("Base Sepolia reconciliation evidence gate", () => {
 
   it("rejects fresh reconciliation anchors behind persisted safe or L1 dimensions", async () => {
     const hash = (digit) => `0x${digit.repeat(64)}`;
-    const persisted = { l2: { finalized: { number: 100, hash: hash("1") }, safe: { number: 105, hash: hash("2") } }, l1: { origin: { number: 80, hash: hash("3") }, finalized: { number: 90, hash: hash("4") } } };
+    const rpcEvidence = { primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b" };
+    const persisted = { l2: { finalized: { number: 100, hash: hash("1") }, safe: { number: 105, hash: hash("2") } }, l1: { origin: { number: 80, hash: hash("3") }, finalized: { number: 90, hash: hash("4") } }, operators: ["operator-a", "operator-b"], rpcEvidence };
     for (const [name, mutate, pattern] of [
       ["safe regression", (a) => { a.l2.safe.number = 104; }, /l2\.safe anchor downgraded/],
       ["L1 origin regression", (a) => { a.l1.origin.number = 79; }, /l1\.origin anchor downgraded/],
