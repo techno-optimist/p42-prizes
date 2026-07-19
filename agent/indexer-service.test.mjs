@@ -11,6 +11,7 @@ import {
   publishGenerationSync,
   publishMonotonicCheckpointSync,
   runIndexerService,
+  cli,
 } from "./indexer-service.mjs";
 import { stableStringify, writeFileAtomicSync } from "./indexer.mjs";
 
@@ -39,6 +40,43 @@ function writePrivateJson(path, value) {
 
 
 describe("durable indexer publication", () => {
+  it("forwards the SP1 security report with the complete activation bundle", async () => {
+    const root = mkdtempSync(join(tmpdir(), "p42-indexer-service-cli-"));
+    const rpc = join(root, "rpc-url");
+    writeFileSync(rpc, "https://rpc.example\n", { mode: 0o600 });
+    chmodSync(rpc, 0o600);
+    let captured = null;
+    const activation = [
+      ["activation-plan", "/release/activation-plan.json"],
+      ["activation-completion", "/release/activation-completion.json"],
+      ["activation-authorization", "/release/activation-authorization.json"],
+      ["activation-trust-registry", "/release/activation-trust-registry.json"],
+      ["activation-artifact-root", "/release"],
+      ["activation-python", "/usr/bin/python3"],
+      ["activation-repo-root", "/srv/p42-prizes"],
+      ["sp1-security-report", "/release/sp1-dependency-security.json"],
+      ["activation-rpc-registry", "/release/rpc-registry.json"],
+      ["activation-rpc-registry-trusted-root", "/release"],
+    ];
+    const argv = ["node", "indexer-service.mjs",
+      "--manifest", "/release/manifest.json",
+      "--publication-root", join(root, "publication"),
+      "--health", join(root, "health.json"),
+      "--rpc-url-file", rpc,
+      "--transcript-endpoint", "https://transcripts-one.example",
+      "--transcript-endpoint", "https://transcripts-two.test",
+      ...activation.flatMap(([name, value]) => [`--${name}`, value]),
+    ];
+
+    await cli(argv, {}, {
+      runIndexerServiceImpl: async (options) => { captured = options; return "captured"; },
+    });
+
+    assert.equal(captured.indexerOptions.sp1SecurityReportPath,
+      "/release/sp1-dependency-security.json");
+    assert.equal(captured.indexerOptions.activationPlanPath, "/release/activation-plan.json");
+  });
+
   it("publishes only monotonic same-binding finalized checkpoints", () => {
     const root = mkdtempSync(join(tmpdir(), "p42-indexer-service-"));
     const candidate = join(root, "candidate.json");

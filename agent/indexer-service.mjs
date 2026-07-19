@@ -723,7 +723,7 @@ function option(argv, name, fallback = null, { required = false } = {}) {
 }
 
 
-export async function cli(argv = process.argv, env = process.env) {
+export async function cli(argv = process.argv, env = process.env, dependencies = {}) {
   const manifestPath = option(argv, "manifest", null, { required: true });
   const publicationRoot = option(argv, "publication-root", null, { required: true });
   const healthPath = option(argv, "health", null, { required: true });
@@ -733,7 +733,7 @@ export async function cli(argv = process.argv, env = process.env) {
   const activationNames = [
     "activation-plan", "activation-completion", "activation-authorization", "activation-trust-registry",
     "activation-artifact-root", "activation-python", "activation-repo-root", "activation-rpc-registry",
-    "activation-rpc-registry-trusted-root",
+    "activation-rpc-registry-trusted-root", "sp1-security-report",
   ];
   const activation = Object.fromEntries(activationNames.map((name) => [name, option(argv, name)]));
   const indexerOptions = {
@@ -748,13 +748,15 @@ export async function cli(argv = process.argv, env = process.env) {
     activationArtifactRoot: activation["activation-artifact-root"],
     activationPython: activation["activation-python"],
     activationRepoRoot: activation["activation-repo-root"],
+    sp1SecurityReportPath: activation["sp1-security-report"],
     activationRpcRegistryPath: activation["activation-rpc-registry"],
     activationRpcRegistryTrustedRoot: activation["activation-rpc-registry-trusted-root"],
     secondaryRpcUrl: secondaryRpcUrlFile
       ? readCredentialUrl(secondaryRpcUrlFile, "indexer secondary RPC URL credential")
       : null,
   };
-  return runIndexerService({
+  const runIndexerServiceImpl = dependencies.runIndexerServiceImpl ?? runIndexerService;
+  return runIndexerServiceImpl({
     serviceId: option(argv, "service-id", "p42-indexer"),
     publicationRoot,
     healthPath,
@@ -763,7 +765,7 @@ export async function cli(argv = process.argv, env = process.env) {
     maxConsecutiveFailures: Number(option(argv, "max-consecutive-failures", "5")),
     once: argv.includes("--once"),
     indexerOptions,
-  });
+  }, dependencies.serviceDependencies ?? {});
 }
 
 
