@@ -73,6 +73,7 @@ const PREPARED_UPLOAD_JSON_LIMITS = Object.freeze({ maxBytes: 32 * 1024 * 1024, 
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SHA256_RE = /^sha256:[a-f0-9]{64}$/;
+const IMMUTABLE_IMAGE_RE = /^[^@]+@(sha256:[a-f0-9]{64})$/;
 const RATIONAL_RE = /^-?[0-9]+\/[1-9][0-9]*$/;
 const DECIMAL_RE = /^(0|[1-9][0-9]*)$/;
 const INTEGER_RE = /^-?(0|[1-9][0-9]*)$/;
@@ -286,6 +287,59 @@ function validateCandidate(value, claim) {
   return candidate;
 }
 
+function validateBoardIdentity(value, transcript, claim, registryBinding, limits) {
+  const identity = requireExactKeys(value, [
+    "problem_slug",
+    "problem_path",
+    "verifier_command",
+    "verifier_image",
+    "verifier_source_sha256",
+    "resource_identity",
+    "memory_mb",
+    "wall_seconds",
+  ], "runner transcript board_identity");
+  for (const key of ["problem_slug", "problem_path", "verifier_command"]) {
+    requireString(identity[key], `runner transcript board_identity.${key}`);
+  }
+  if (identity.problem_slug !== claim.problem_id || identity.problem_slug !== registryBinding.problem_slug) {
+    throw new Error("runner transcript board_identity.problem_slug does not match the canonical claim binding");
+  }
+  if (identity.problem_path !== transcript.problem) {
+    throw new Error("runner transcript board_identity.problem_path does not match the transcript problem");
+  }
+  const imageMatch = IMMUTABLE_IMAGE_RE.exec(String(identity.verifier_image));
+  if (!imageMatch) {
+    throw new Error("runner transcript board_identity.verifier_image must be an immutable repository@sha256 reference");
+  }
+  if (imageMatch[1] !== registryBinding.verifier_image) {
+    throw new Error("runner transcript board_identity.verifier_image does not match the canonical registry binding");
+  }
+  if (!SHA256_RE.test(String(identity.verifier_source_sha256))
+      || identity.verifier_source_sha256 !== registryBinding.verifier_source_digest) {
+    throw new Error("runner transcript board_identity.verifier_source_sha256 does not match the canonical registry binding");
+  }
+  for (const key of ["memory_mb", "wall_seconds"]) {
+    if (!Number.isSafeInteger(identity[key]) || identity[key] < 1) {
+      throw new Error(`runner transcript board_identity.${key} must be a positive integer`);
+    }
+  }
+  if (identity.memory_mb !== limits.required_memory_mb) {
+    throw new Error("runner transcript board_identity.memory_mb does not match the enforced resource limits");
+  }
+  const expectedAddressSpaceMb = Math.ceil(identity.memory_mb * limits.memory_safety_factor);
+  if (limits.child_address_space_limit_mb !== expectedAddressSpaceMb) {
+    throw new Error("runner transcript child address-space limit does not match the board resource identity");
+  }
+  const resourceIdentity = sha256Canonical({
+    memory_mb: identity.memory_mb,
+    wall_seconds: identity.wall_seconds,
+  });
+  if (!SHA256_RE.test(String(identity.resource_identity)) || identity.resource_identity !== resourceIdentity) {
+    throw new Error("runner transcript board_identity.resource_identity does not match its canonical resources");
+  }
+  return identity;
+}
+
 function validateDecisionEvidence(transcript, candidate, registryBinding) {
   const verifier = requireObject(transcript.verifier, "transcript.verifier");
   if (typeof verifier.ok !== "boolean" || typeof verifier.valid !== "boolean") {
@@ -364,6 +418,7 @@ export function verifyResolverTranscript(transcriptValue, expected) {
     "generated_at_utc",
     "started_at_utc",
     "problem",
+    "board_identity",
     "solution",
     "da",
     "resource_limits",
@@ -408,12 +463,16 @@ export function verifyResolverTranscript(transcriptValue, expected) {
     problem_id: expected?.registry_problem_id,
     problem_slug: expected?.registry_problem_slug,
   });
+  const boardIdentity = validateBoardIdentity(
+    transcript.board_identity, transcript, claim, registryBinding, limits,
+  );
   const candidate = validateCandidate(transcript.verifier?.challenge_candidate, claim);
   const evidence = validateDecisionEvidence(transcript, candidate, registryBinding);
   return {
     transcript,
     claim,
     registryBinding,
+    boardIdentity,
     candidate,
     challengerWins: evidence.challengerWins,
     report: evidence.report,

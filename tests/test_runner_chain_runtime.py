@@ -25,6 +25,7 @@ from p42_prizes.runner_worker import (
     _run_job,
     run_next_job_once,
 )
+from p42_prizes.admission import compute_source_hash
 from p42_prizes.verdict import canonical_json, sha256_bytes, sha256_file
 
 
@@ -540,6 +541,113 @@ def test_exact_score_underclaim_becomes_challenge_candidate(
     alerts = build_runner_alerts([transcript["transcript_path"]], now_utc="2026-07-09T12:00:00Z")
     assert alerts["alert_count"] == 1
     assert alerts["alerts"][0]["recommended_action"] == "challenge_submission"
+
+
+def test_python_runner_transcript_is_accepted_by_node_resolver(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_digest = compute_source_hash(PROBLEM)
+    digest_hashes = subprocess.run(
+        [
+            "node", "--input-type=module", "-e",
+            (
+                "import { verifierImageHashForDigest, verifierSourceHashForDigest } from './lib.mjs';"
+                "const d=process.argv[1];"
+                "console.log(JSON.stringify({image:verifierImageHashForDigest(d),source:verifierSourceHashForDigest(d)}));"
+            ),
+            source_digest,
+        ],
+        cwd=ROOT / "agent", text=True, capture_output=True, check=False,
+    )
+    assert digest_hashes.returncode == 0, digest_hashes.stderr
+    hashes = json.loads(digest_hashes.stdout)
+    claim = _claim(claimed="333333333333333333")
+    claim["registry_binding"] = {
+        "schema_version": "p42-registry-binding/v2",
+        "image_hash_algorithm": "keccak256-utf8/v1",
+        "source_digest_algorithm": "p42-source-tree-sha256/v2",
+        "source_hash_algorithm": "keccak256-utf8/v1",
+        "chain_id": claim["chain_id"],
+        "registry_address": "0x" + "4" * 40,
+        "problem_id": "1",
+        "problem_slug": claim["problem_id"],
+        "verifier_version": "1.0.0",
+        "observation_block_number": 100,
+        "observation_block_hash": "0x" + "5" * 64,
+        "verifier_image": source_digest,
+        "verifier_image_hash": hashes["image"],
+        "verifier_source_digest": source_digest,
+        "verifier_source_hash": hashes["source"],
+        "spec_hash": "0x" + "6" * 64,
+        "admission_hash": "0x" + "7" * 64,
+        "metadata_uri": "ipfs://p42-runner-resolver-integration",
+        "pool": "0x" + "8" * 40,
+        "ledger": "0x" + "9" * 40,
+        "submission_manager": claim["submission_contract"],
+        "challenge_manager": claim["challenge_contract"],
+        "challenge_window_seconds": "259200",
+        "min_improvement_atoms": "1",
+        "frozen": True,
+        "explicitly_frozen": True,
+    }
+
+    def integration_verifier(*args, **kwargs):
+        report = {
+            "problem_id": claim["problem_id"],
+            "verifier_version": "1.0.0",
+            "verifier_image": source_digest,
+            "solution_hash": sha256_file(SOLUTION),
+            "valid": True,
+            "improvement": "1/1",
+            "score": "1/3",
+            "reason": "verified",
+            "recomputed_at_commit": "integration-fixture",
+            "details": {},
+        }
+        return {
+            "ok": True, "valid": True, "elapsed_ms": 5, "sandbox": "docker",
+            "returncode": 0, "report": report,
+            "report_hash": sha256_bytes(canonical_json(report).encode("utf-8")),
+        }
+
+    monkeypatch.setattr("p42_prizes.runner_worker._run_verifier_for_transcript", integration_verifier)
+    emitted = _run_job(
+        _job(chain_claim=claim),
+        tmp_path,
+        policy=RunnerPolicy(sandbox="docker", memory_safety_factor=2),
+        allow_test_identity_derivation=True,
+    )
+    expected = {
+        "chain_id": claim["chain_id"],
+        "problem_id": claim["problem_id"],
+        "submission_contract": claim["submission_contract"],
+        "challenge_contract": claim["challenge_contract"],
+        "submission_id": claim["submission_id"],
+        "reveal_instance_hash": claim["reveal_instance_hash"],
+        "registry_address": claim["registry_binding"]["registry_address"],
+        "registry_problem_id": claim["registry_binding"]["problem_id"],
+        "registry_problem_slug": claim["registry_binding"]["problem_slug"],
+    }
+    consumed = subprocess.run(
+        [
+            "node", "--input-type=module", "-e",
+            (
+                "import { readFileSync } from 'node:fs';"
+                "import { verifyResolverTranscript } from './resolver.mjs';"
+                "const t=JSON.parse(readFileSync(process.argv[1],'utf8'));"
+                "const checked=verifyResolverTranscript(t,JSON.parse(process.argv[2]));"
+                "console.log(JSON.stringify({hash:checked.transcript.transcript_hash,slug:checked.boardIdentity.problem_slug}));"
+            ),
+            emitted["transcript_path"], canonical_json(expected),
+        ],
+        cwd=ROOT / "agent", text=True, capture_output=True, check=False,
+    )
+    assert consumed.returncode == 0, consumed.stderr
+    checked = json.loads(consumed.stdout)
+    assert checked == {
+        "hash": emitted["transcript_hash"],
+        "slug": claim["problem_id"],
+    }
 
 
 def test_chain_job_refuses_host_policy(tmp_path: Path) -> None:

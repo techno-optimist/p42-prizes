@@ -45,6 +45,8 @@ const HASH = (digit) => `0x${digit.repeat(64)}`;
 const SHA = (digit) => `sha256:${digit.repeat(64)}`;
 const VERIFIER_IMAGE = SHA("e");
 const VERIFIER_SOURCE = SHA("f");
+const BOARD_MEMORY_MB = 128;
+const BOARD_WALL_SECONDS = 60;
 const expected = {
   chain_id: 84532,
   problem_id: "hadamard-mini",
@@ -123,16 +125,26 @@ function candidate({ action = "challenge", reasonCode = "score_underclaimed" } =
 }
 
 function transcript({ candidateValue = candidate(), reportValue = report() } = {}) {
+  const boardResources = { memory_mb: BOARD_MEMORY_MB, wall_seconds: BOARD_WALL_SECONDS };
   const value = {
     schema_version: "p42-runner-transcript/v1",
     job_id: "84532:submission:block:tx:0",
     generated_at_utc: "2026-07-10T00:00:00Z",
     started_at_utc: "2026-07-10T00:00:00Z",
     problem: "/repo/problems/hadamard-mini",
+    board_identity: {
+      problem_slug: "hadamard-mini",
+      problem_path: "/repo/problems/hadamard-mini",
+      verifier_command: "python3 verifier/verify.py --solution {solution}",
+      verifier_image: `ghcr.io/p42/hadamard-mini@${VERIFIER_IMAGE}`,
+      verifier_source_sha256: VERIFIER_SOURCE,
+      resource_identity: sha256Canonical(boardResources),
+      ...boardResources,
+    },
     solution: "/runtime/inputs/fixture.json",
     da: { ok: true },
     resource_limits: {
-      required_memory_mb: 128,
+      required_memory_mb: BOARD_MEMORY_MB,
       memory_safety_factor: 2,
       child_address_space_limit_mb: 256,
       address_space_limit_supported: true,
@@ -168,6 +180,30 @@ test("resolver accepts a self-hashed Docker transcript bound to its chain claim"
   assert.equal(checked.claim.submission_id, "17");
   assert.equal(checked.transcriptHashBytes32, `0x${checked.transcript.transcript_hash.slice(7)}`);
   assert.equal(checked.candidate.action, "challenge");
+  assert.equal(checked.boardIdentity.problem_slug, expected.problem_id);
+});
+
+test("resolver requires board identity and binds it to the canonical claim, registry, and resources", () => {
+  const missing = transcript();
+  delete missing.board_identity;
+  delete missing.transcript_hash;
+  missing.transcript_hash = sha256Canonical(missing);
+  assert.throws(() => verifyResolverTranscript(missing, expected), /missing: board_identity/);
+
+  for (const [field, value, message] of [
+    ["problem_slug", "other-problem", /problem_slug does not match the canonical claim binding/],
+    ["problem_path", "/repo/problems/other", /problem_path does not match the transcript problem/],
+    ["verifier_image", `ghcr.io/p42/hadamard-mini@${SHA("9")}`, /verifier_image does not match the canonical registry binding/],
+    ["verifier_source_sha256", SHA("9"), /verifier_source_sha256 does not match the canonical registry binding/],
+    ["memory_mb", 129, /memory_mb does not match the enforced resource limits/],
+    ["resource_identity", SHA("9"), /resource_identity does not match its canonical resources/],
+  ]) {
+    const drifted = transcript();
+    drifted.board_identity[field] = value;
+    delete drifted.transcript_hash;
+    drifted.transcript_hash = sha256Canonical(drifted);
+    assert.throws(() => verifyResolverTranscript(drifted, expected), message);
+  }
 });
 
 test("resolver rejects tampered transcript, report, candidate, and mismatched claim evidence", () => {
