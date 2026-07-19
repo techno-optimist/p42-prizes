@@ -25,7 +25,13 @@ PYTHONPATH=src python3 scripts/release_verifier_images.py \
   --verifier-source-commit "$S"
 ```
 
-Publication is deliberately explicit and all-ten. It performs one
+Publication is deliberately explicit and all-ten. It is disabled on candidate
+branches: before any registry mutation, the tool replays a canonical v3
+current-main CI receipt and then uses authenticated GitHub API reads to prove
+that `S` is the current canonical `main`, the receipt names its successful exact
+seven-job push workflow, the source PR merged to that commit, and a distinct
+authorized collaborator approved it. Caller-supplied capture bytes alone are
+not treated as GitHub authentication. It then performs one
 `docker buildx build --platform linux/amd64,linux/arm64 --push` per board with
 implicit provenance descriptors disabled, records Buildx's authoritative
 `containerimage.digest`, cryptographically walks the raw registry index through
@@ -37,7 +43,9 @@ passes. It does not claim a final release configuration:
 PYTHONPATH=src python3 scripts/release_verifier_images.py \
   --registry-base ghcr.io/techno-optimist/p42-prizes-verifiers \
   --verifier-source-commit "$S" \
-  --publish --journal verifier-image-publication.journal.json
+  --publish \
+  --exact-main-ci-receipt /secure/receipts/exact-main-ci-replay-v3.json \
+  --journal verifier-image-publication.journal.json
 ```
 
 After publication, commit only the resulting immutable repository/digest pairs

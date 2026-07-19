@@ -161,6 +161,46 @@ def completed(argv, stdout="", returncode=0):
     return subprocess.CompletedProcess(argv, returncode, stdout, "")
 
 
+def live_publication_authority_runner(*, approved=True, main_sha=COMMIT, jobs=None):
+    expected_jobs = jobs or [
+        {"name": name, "status": "completed", "conclusion": "success"}
+        for name in sorted(release.REQUIRED_CI_JOBS)
+    ]
+
+    def runner(argv, **kwargs):
+        if argv[:4] == ["git", "remote", "get-url", "origin"]:
+            return completed(argv, "https://github.com/techno-optimist/p42-prizes.git\n")
+        endpoint = argv[-1]
+        if endpoint.endswith("git/ref/heads/main"):
+            value = [{"object": {"sha": main_sha}}]
+        elif endpoint.endswith("actions/runs/123"):
+            value = [{
+                "id": 123, "workflow_id": release.CI_WORKFLOW_ID, "event": "push",
+                "head_branch": "main", "head_sha": COMMIT, "status": "completed",
+                "conclusion": "success",
+            }]
+        elif endpoint.endswith("actions/runs/123/jobs?per_page=100"):
+            value = [{"total_count": len(expected_jobs), "jobs": expected_jobs}]
+        elif endpoint.endswith("pulls/178"):
+            value = [{
+                "number": 178, "state": "closed", "merged": True,
+                "merge_commit_sha": COMMIT, "base": {"ref": "main"},
+                "user": {"login": "techno-optimist"},
+            }]
+        elif endpoint.endswith("pulls/178/reviews?per_page=100"):
+            value = [[{
+                "user": {"login": "independent-reviewer"},
+                "state": "APPROVED" if approved else "CHANGES_REQUESTED",
+                "submitted_at": "2026-07-19T12:00:00Z",
+                "author_association": "COLLABORATOR",
+            }]]
+        else:
+            raise AssertionError(f"unexpected authority command: {argv}")
+        return completed(argv, json.dumps(value, separators=(",", ":")))
+
+    return runner
+
+
 def test_launch_set_is_exact_and_ordered():
     assert release.LAUNCH_SLUGS == (
         "q6-intersecting-hypergraph", "erdos-min-overlap", "edges-vs-triangles", "arithmetic-kakeya",
@@ -325,6 +365,84 @@ def test_dirty_tree_and_nonexact_commit_fail_closed():
         release.require_clean_exact_commit(ROOT, "main", runner=runner)
 
 
+def test_publication_authority_binds_offline_receipt_to_live_main_ci_and_approval(monkeypatch, tmp_path):
+    receipt = {
+        "inputs": {
+            "repository": release.CANONICAL_REPOSITORY,
+            "mainSha": COMMIT,
+            "runId": 123,
+            "pullRequestNumber": 178,
+        }
+    }
+    monkeypatch.setattr(release, "_read_exact_main_receipt", lambda _path: receipt)
+    monkeypatch.setattr(
+        release,
+        "_load_current_main_replay_module",
+        lambda _root: type("Replay", (), {"validate_receipt": staticmethod(lambda value: None)}),
+    )
+    result = release.verify_exact_main_publication_authority(
+        ROOT, COMMIT, tmp_path / "receipt.json",
+        runner=live_publication_authority_runner(),
+    )
+    assert result == {
+        "run_id": 123,
+        "pull_request_number": 178,
+        "approvers": ["independent-reviewer"],
+    }
+
+
+@pytest.mark.parametrize(
+    "runner,match",
+    [
+        (live_publication_authority_runner(approved=False), "independent authorized approval"),
+        (live_publication_authority_runner(main_sha="f" * 40), "authenticated current main"),
+        (
+            live_publication_authority_runner(jobs=[
+                {"name": name, "status": "completed", "conclusion": "success"}
+                for name in sorted(release.REQUIRED_CI_JOBS - {"Portal gates"})
+            ]),
+            "exact successful seven-job gate",
+        ),
+    ],
+)
+def test_publication_authority_fails_closed_on_live_authority_gaps(monkeypatch, tmp_path, runner, match):
+    monkeypatch.setattr(release, "_read_exact_main_receipt", lambda _path: {
+        "inputs": {
+            "repository": release.CANONICAL_REPOSITORY,
+            "mainSha": COMMIT,
+            "runId": 123,
+            "pullRequestNumber": 178,
+        }
+    })
+    monkeypatch.setattr(
+        release,
+        "_load_current_main_replay_module",
+        lambda _root: type("Replay", (), {"validate_receipt": staticmethod(lambda value: None)}),
+    )
+    with pytest.raises(release.ReleaseError, match=match):
+        release.verify_exact_main_publication_authority(
+            ROOT, COMMIT, tmp_path / "receipt.json", runner=runner,
+        )
+
+
+def test_publish_requires_exact_main_receipt_before_registry_mutation(monkeypatch, tmp_path):
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        if argv[1:3] == ["rev-parse", "HEAD"]:
+            return completed(argv, COMMIT + "\n")
+        return completed(argv, "")
+
+    monkeypatch.setattr(release, "compute_source_hash", lambda problem: SOURCE)
+    with pytest.raises(release.ReleaseError, match="exact-main-ci-receipt"):
+        release.release(
+            root=ROOT, registry_base="ghcr.io/projectforty2/verifiers", commit=COMMIT,
+            publish=True, output=tmp_path / "journal.json", runner=runner,
+        )
+    assert not any(call[0] == "docker" for call in calls)
+
+
 def test_board_source_is_rechecked_against_clean_exact_commit(monkeypatch):
     calls = []
     def runner(argv, **kwargs):
@@ -400,6 +518,8 @@ def test_release_replays_board_bindings_before_plan_or_publish(monkeypatch, tmp_
             root=ROOT, registry_base="ghcr.io/projectforty2/verifiers", commit=COMMIT,
             publish=True, output=tmp_path / "release.json", runner=runner,
             board_binding_verifier=lambda root: verified.append(root),
+            exact_main_ci_receipt=tmp_path / "receipt.json",
+            publication_authority_verifier=lambda *_args: {},
         )
     assert verified == [ROOT.resolve(), ROOT]
 
@@ -450,7 +570,12 @@ def test_publish_mock_stops_at_complete_source_bound_journal(monkeypatch, tmp_pa
     monkeypatch.setattr(release, "compute_source_hash", lambda problem: SOURCE)
     monkeypatch.setattr(release, "_prepare_frozen_context", lambda **kwargs: (ROOT, ARCHIVE))
     output = tmp_path / "publication.journal.json"
-    journal = release.release(root=ROOT, registry_base="ghcr.io/projectforty2/verifiers", commit=COMMIT, publish=True, output=output, runner=runner, now=lambda: datetime(2026, 7, 11, tzinfo=timezone.utc))
+    journal = release.release(
+        root=ROOT, registry_base="ghcr.io/projectforty2/verifiers", commit=COMMIT,
+        publish=True, output=output, exact_main_ci_receipt=tmp_path / "receipt.json",
+        runner=runner, now=lambda: datetime(2026, 7, 11, tzinfo=timezone.utc),
+        publication_authority_verifier=lambda *_args: {},
+    )
     raw = output.read_text()
     assert raw == release.canonical_json(journal) + "\n"
     assert output.stat().st_mode & 0o777 == 0o600
@@ -711,7 +836,11 @@ def test_restart_refuses_to_repush_a_building_board_without_durable_metadata(mon
             raise AssertionError("restart attempted to repush an ambiguous tag")
         return completed(argv, COMMIT + "\n" if argv[1:3] == ["rev-parse", "HEAD"] else "")
     with pytest.raises(release.ReleaseError, match="ambiguous"):
-        release.release(root=ROOT, registry_base=base, commit=COMMIT, publish=True, output=output, runner=runner)
+        release.release(
+            root=ROOT, registry_base=base, commit=COMMIT, publish=True, output=output,
+            exact_main_ci_receipt=tmp_path / "receipt.json", runner=runner,
+            publication_authority_verifier=lambda *_args: {},
+        )
     assert all(call[0] == "git" for call in calls)
 
 

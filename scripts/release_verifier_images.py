@@ -113,6 +113,22 @@ REPOSITORY_RE = re.compile(
     r"[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$"
 )
 MAX_INSPECT_BYTES = 4 * 1024 * 1024
+MAX_AUTHORITY_RECEIPT_BYTES = 32 * 1024 * 1024
+CANONICAL_REPOSITORY = "techno-optimist/p42-prizes"
+CANONICAL_REMOTE_URLS = frozenset({
+    f"https://github.com/{CANONICAL_REPOSITORY}.git",
+    f"git@github.com:{CANONICAL_REPOSITORY}.git",
+})
+CI_WORKFLOW_ID = 310385148
+REQUIRED_CI_JOBS = frozenset({
+    "Python verifier gates",
+    "Autonomous agent gates",
+    "Portal gates",
+    "Contract gates",
+    "SP1 objective-program gates (ubuntu-22.04)",
+    "SP1 objective-program gates (ubuntu-24.04)",
+    "SP1 objective-program reproducibility",
+})
 
 
 class ReleaseError(RuntimeError):
@@ -210,6 +226,206 @@ def require_clean_exact_commit(
     if dirty:
         raise ReleaseError("refusing release from a dirty git tree")
     return head
+
+
+def _load_current_main_replay_module(root: Path):
+    script = root / "scripts" / "replay_current_main_ci_artifacts.py"
+    spec = importlib.util.spec_from_file_location(
+        f"p42_current_main_replay_{uuid4().hex}", script
+    )
+    if spec is None or spec.loader is None:
+        raise ReleaseError("current-main CI replay verifier is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        raise ReleaseError("current-main CI replay verifier could not be loaded") from exc
+    return module
+
+
+def _read_exact_main_receipt(path: Path) -> dict[str, Any]:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as exc:
+        raise ReleaseError("exact-main CI receipt is unavailable or unsafe") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ReleaseError("exact-main CI receipt must be a regular file")
+        if metadata.st_size < 2 or metadata.st_size > MAX_AUTHORITY_RECEIPT_BYTES:
+            raise ReleaseError("exact-main CI receipt size is invalid")
+        raw_buffer = bytearray()
+        while len(raw_buffer) < metadata.st_size:
+            chunk = os.read(descriptor, min(1024 * 1024, metadata.st_size - len(raw_buffer)))
+            if not chunk:
+                raise ReleaseError("exact-main CI receipt was truncated during read")
+            raw_buffer.extend(chunk)
+        after = os.fstat(descriptor)
+        if (
+            after.st_dev, after.st_ino, after.st_mode, after.st_uid,
+            after.st_size, after.st_mtime_ns,
+        ) != (
+            metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_uid,
+            metadata.st_size, metadata.st_mtime_ns,
+        ):
+            raise ReleaseError("exact-main CI receipt changed during read")
+    finally:
+        os.close(descriptor)
+    raw = bytes(raw_buffer)
+    try:
+        text = raw.decode("utf-8")
+        receipt = strict_json_loads(text)
+    except (UnicodeError, TypeError, ValueError) as exc:
+        raise ReleaseError("exact-main CI receipt is not strict UTF-8 JSON") from exc
+    if not isinstance(receipt, dict):
+        raise ReleaseError("exact-main CI receipt must be a JSON object")
+    if raw != (canonical_json(receipt) + "\n").encode("utf-8"):
+        raise ReleaseError("exact-main CI receipt bytes are not canonical")
+    return receipt
+
+
+def _gh_api_pages(
+    endpoint: str,
+    *,
+    root: Path,
+    runner: Callable[..., subprocess.CompletedProcess[str]],
+) -> list[Any]:
+    raw = _run(
+        ["gh", "api", "--hostname", "github.com", "--paginate", "--slurp", endpoint],
+        cwd=root,
+        runner=runner,
+    )
+    value = _strict_object(raw, "authenticated GitHub response") if raw.lstrip().startswith("{") else None
+    if value is not None:
+        return [value]
+    try:
+        pages = strict_json_loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise ReleaseError("authenticated GitHub response is not strict JSON") from exc
+    if not isinstance(pages, list) or not pages:
+        raise ReleaseError("authenticated GitHub response has no pages")
+    return pages
+
+
+def verify_exact_main_publication_authority(
+    root: Path,
+    commit: str,
+    receipt_path: Path,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> dict[str, Any]:
+    """Bind irreversible publication to retained replay plus live GitHub authority."""
+
+    receipt = _read_exact_main_receipt(receipt_path)
+    replay = _load_current_main_replay_module(root)
+    try:
+        replay.validate_receipt(receipt)
+    except Exception as exc:
+        raise ReleaseError("exact-main CI receipt failed offline replay validation") from exc
+    inputs = receipt.get("inputs", {})
+    if inputs.get("repository") != CANONICAL_REPOSITORY or inputs.get("mainSha") != commit:
+        raise ReleaseError("exact-main CI receipt does not bind the publication commit")
+    run_id = inputs.get("runId")
+    pr_number = inputs.get("pullRequestNumber")
+    if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id < 1:
+        raise ReleaseError("exact-main CI receipt run identity is invalid")
+    if isinstance(pr_number, bool) or not isinstance(pr_number, int) or pr_number < 1:
+        raise ReleaseError("exact-main CI receipt pull-request identity is invalid")
+
+    remote = _run(["git", "remote", "get-url", "origin"], cwd=root, runner=runner).strip()
+    if remote not in CANONICAL_REMOTE_URLS:
+        raise ReleaseError("origin is not the canonical P42 repository")
+
+    main = _gh_api_pages(
+        f"repos/{CANONICAL_REPOSITORY}/git/ref/heads/main", root=root, runner=runner
+    )
+    if len(main) != 1 or not isinstance(main[0], dict) or main[0].get("object", {}).get("sha") != commit:
+        raise ReleaseError("publication commit is not authenticated current main")
+
+    run_pages = _gh_api_pages(
+        f"repos/{CANONICAL_REPOSITORY}/actions/runs/{run_id}", root=root, runner=runner
+    )
+    if len(run_pages) != 1 or not isinstance(run_pages[0], dict):
+        raise ReleaseError("authenticated GitHub workflow run is malformed")
+    run = run_pages[0]
+    if (
+        run.get("id") != run_id
+        or run.get("workflow_id") != CI_WORKFLOW_ID
+        or run.get("event") != "push"
+        or run.get("head_branch") != "main"
+        or run.get("head_sha") != commit
+        or run.get("status") != "completed"
+        or run.get("conclusion") != "success"
+    ):
+        raise ReleaseError("authenticated GitHub workflow run is not exact successful main CI")
+
+    job_pages = _gh_api_pages(
+        f"repos/{CANONICAL_REPOSITORY}/actions/runs/{run_id}/jobs?per_page=100",
+        root=root,
+        runner=runner,
+    )
+    jobs: list[Any] = []
+    reported_total = 0
+    for page in job_pages:
+        if not isinstance(page, dict) or not isinstance(page.get("jobs"), list):
+            raise ReleaseError("authenticated GitHub jobs response is malformed")
+        jobs.extend(page["jobs"])
+        reported_total = max(reported_total, page.get("total_count", 0))
+    names = [job.get("name") for job in jobs if isinstance(job, dict)]
+    if (
+        reported_total != len(REQUIRED_CI_JOBS)
+        or len(jobs) != len(REQUIRED_CI_JOBS)
+        or len(set(names)) != len(names)
+        or set(names) != REQUIRED_CI_JOBS
+        or any(job.get("status") != "completed" or job.get("conclusion") != "success" for job in jobs)
+    ):
+        raise ReleaseError("authenticated GitHub jobs are not the exact successful seven-job gate")
+
+    pr_pages = _gh_api_pages(
+        f"repos/{CANONICAL_REPOSITORY}/pulls/{pr_number}", root=root, runner=runner
+    )
+    if len(pr_pages) != 1 or not isinstance(pr_pages[0], dict):
+        raise ReleaseError("authenticated GitHub pull request is malformed")
+    pull = pr_pages[0]
+    author = pull.get("user", {}).get("login")
+    if (
+        pull.get("number") != pr_number
+        or pull.get("state") != "closed"
+        or pull.get("merged") is not True
+        or pull.get("merge_commit_sha") != commit
+        or pull.get("base", {}).get("ref") != "main"
+        or not isinstance(author, str)
+        or not author
+    ):
+        raise ReleaseError("authenticated GitHub pull request does not bind merged main")
+
+    review_pages = _gh_api_pages(
+        f"repos/{CANONICAL_REPOSITORY}/pulls/{pr_number}/reviews?per_page=100",
+        root=root,
+        runner=runner,
+    )
+    reviews = [review for page in review_pages for review in (page if isinstance(page, list) else [])]
+    decisive: dict[str, tuple[str, str]] = {}
+    for review in reviews:
+        if not isinstance(review, dict):
+            raise ReleaseError("authenticated GitHub review response is malformed")
+        login = review.get("user", {}).get("login")
+        state = review.get("state")
+        submitted = review.get("submitted_at")
+        association = review.get("author_association")
+        if (
+            isinstance(login, str)
+            and login != author
+            and state in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+            and isinstance(submitted, str)
+            and association in {"MEMBER", "COLLABORATOR"}
+        ):
+            if login not in decisive or submitted > decisive[login][0]:
+                decisive[login] = (submitted, state)
+    approvers = sorted(login for login, (_submitted, state) in decisive.items() if state == "APPROVED")
+    if not approvers:
+        raise ReleaseError("merged publication commit lacks an independent authorized approval")
+    return {"run_id": run_id, "pull_request_number": pr_number, "approvers": approvers}
 
 
 def _strict_object(raw: str, label: str) -> dict[str, Any]:
@@ -975,9 +1191,11 @@ def _inspect_release_record(
 
 def release(
     *, root: Path, registry_base: str, commit: str, publish: bool,
-    output: Path | None, runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    output: Path | None, exact_main_ci_receipt: Path | None = None,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     board_binding_verifier: Callable[[Path], None] | None = None,
+    publication_authority_verifier: Callable[[Path, str, Path], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     root = root.resolve()
     board_binding_verifier = board_binding_verifier or verify_production_board_bindings
@@ -993,6 +1211,14 @@ def release(
         }
     if output is None:
         raise ReleaseError("--journal is required in publish mode")
+    if exact_main_ci_receipt is None:
+        raise ReleaseError("--exact-main-ci-receipt is required in publish mode")
+    authority_verifier = publication_authority_verifier or (
+        lambda authority_root, authority_commit, authority_receipt: verify_exact_main_publication_authority(
+            authority_root, authority_commit, authority_receipt, runner=runner
+        )
+    )
+    authority_verifier(root, commit, exact_main_ci_receipt)
     output_parent = output.absolute().parent
     output_parent.mkdir(parents=True, exist_ok=True)
     output = output_parent.resolve(strict=True) / output.name
@@ -1178,6 +1404,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verifier-source-commit", "--commit", dest="verifier_source_commit")
     parser.add_argument("--publish", action="store_true", help="push and inspect all ten source-bound images")
     parser.add_argument("--journal", type=Path, help="private resumable publication journal path")
+    parser.add_argument(
+        "--exact-main-ci-receipt", type=Path,
+        help="canonical v3 current-main CI replay receipt; required for publication",
+    )
     parser.add_argument("--finalize-journal", type=Path, help="completed v2 publication journal to adopt")
     parser.add_argument("--release-config-commit", help="clean commit containing all ten immutable image digests")
     parser.add_argument("--output", type=Path, help="non-overwriting finalized v2 dossier path")
@@ -1189,7 +1419,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         root = Path(__file__).resolve().parents[1]
         if args.finalize_journal is not None:
-            if args.publish or args.journal is not None or args.registry_base is not None or args.verifier_source_commit is not None:
+            if args.publish or args.journal is not None or args.exact_main_ci_receipt is not None or args.registry_base is not None or args.verifier_source_commit is not None:
                 raise ReleaseError("finalize mode cannot be combined with plan or publish inputs")
             if args.release_config_commit is None or args.output is None:
                 raise ReleaseError("finalize mode requires --release-config-commit and --output")
@@ -1204,10 +1434,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise ReleaseError("--release-config-commit and --output are finalize-only")
             if args.publish != (args.journal is not None):
                 raise ReleaseError("publish mode requires --publish and --journal together")
+            if args.publish != (args.exact_main_ci_receipt is not None):
+                raise ReleaseError("publish mode requires --publish and --exact-main-ci-receipt together")
             result = release(
                 root=root, registry_base=args.registry_base,
                 commit=args.verifier_source_commit, publish=args.publish,
-                output=args.journal,
+                output=args.journal, exact_main_ci_receipt=args.exact_main_ci_receipt,
             )
     except (ReleaseError, ValueError, OSError) as exc:
         print(f"release error: {exc}", file=sys.stderr)
