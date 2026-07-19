@@ -396,6 +396,7 @@ def test_worker_refuses_to_lease_before_rootless_docker_authority_is_ready(
             memory=MemorySnapshot(total_mb=16384, available_mb=16384, swap_used_mb=0),
             policy=RunnerPolicy(sandbox="docker"),
             docker_host="unix:///run/p42-docker-fixture/docker.sock",
+            allow_test_identity_derivation=True,
         )
     assert json.loads(queue.read_text(encoding="utf-8"))["jobs"][0]["status"] == "queued"
 
@@ -421,7 +422,12 @@ def test_colliding_job_ids_write_distinct_transcripts(tmp_path: Path) -> None:
             "solution": str(solution),
             "required_memory_mb": 64,
         }
-        transcript = _run_job(job, transcript_dir, policy=RunnerPolicy())
+        transcript = _run_job(
+            job,
+            transcript_dir,
+            policy=RunnerPolicy(),
+            allow_test_identity_derivation=True,
+        )
         # The human-readable id survives inside the transcript itself.
         assert transcript["job_id"] == job_id
         paths.append(transcript["transcript_path"])
@@ -480,6 +486,7 @@ def test_worker_reaps_expired_lease_and_runs_the_job(tmp_path: Path) -> None:
         queue_path,
         tmp_path / "transcripts",
         memory=MemorySnapshot(total_mb=131072, available_mb=64000, swap_used_mb=0),
+        allow_test_identity_derivation=True,
     )
 
     assert result["schema_version"] == "p42-runner-transcript/v1", result
@@ -521,6 +528,7 @@ def test_worker_refuses_lease_shorter_than_enforced_runtime(tmp_path: Path) -> N
             tmp_path / "transcripts",
             memory=MemorySnapshot(total_mb=131072, available_mb=64000, swap_used_mb=0),
             lease_seconds=60,
+            allow_test_identity_derivation=True,
         )
     queued = json.loads(queue_path.read_text(encoding="utf-8"))["jobs"][0]
     assert queued["status"] == "queued"
@@ -574,6 +582,7 @@ def test_worker_pins_one_manifest_snapshot_for_lease_and_execution(
         tmp_path / "transcripts",
         memory=MemorySnapshot(total_mb=131072, available_mb=64000, swap_used_mb=0),
         lease_seconds=60,
+        allow_test_identity_derivation=True,
     )
 
     assert result["schema_version"] == "p42-runner-transcript/v1"
@@ -617,6 +626,7 @@ def test_transcript_storage_failure_clears_the_live_lease(
         queue_path,
         tmp_path / "transcripts",
         memory=MemorySnapshot(total_mb=131072, available_mb=64000, swap_used_mb=0),
+        allow_test_identity_derivation=True,
     )
 
     assert result["reason"] == "transcript_storage_retry_queued"
@@ -678,6 +688,7 @@ def test_host_capacity_head_is_quarantined_before_later_job_runs(
         tmp_path / "transcripts",
         memory=memory,
         policy=policy,
+        allow_test_identity_derivation=True,
     )
     assert completed["schema_version"] == "p42-runner-transcript/v1"
     assert completed["job_id"] == fitting["job_id"]

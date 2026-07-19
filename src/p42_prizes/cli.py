@@ -813,6 +813,7 @@ def _cmd_runner_work_once(args: argparse.Namespace) -> int:
             lease_seconds=args.lease_seconds,
             sandbox_staging_root=args.sandbox_staging_root,
             docker_host=args.docker_host,
+            allow_test_identity_derivation=args.allow_unsafe_local_fixture,
         )
     except (AdmissionError, RunnerQueueError, RunnerWorkerError, OSError) as exc:
         print(str(exc), file=sys.stderr)
@@ -834,6 +835,7 @@ def _cmd_runner_drain(args: argparse.Namespace) -> int:
             max_jobs=args.max_jobs,
             sandbox_staging_root=args.sandbox_staging_root,
             docker_host=args.docker_host,
+            allow_test_identity_derivation=args.allow_unsafe_local_fixture,
         )
     except (AdmissionError, RunnerQueueError, RunnerWorkerError, OSError) as exc:
         print(str(exc), file=sys.stderr)
