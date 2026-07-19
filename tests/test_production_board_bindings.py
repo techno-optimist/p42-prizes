@@ -10,6 +10,7 @@ import pytest
 from scripts.verify_production_board_bindings import (
     BoardBindingError,
     _verify_guest_evidence,
+    canonical_math_review_fixtures,
     verify_board_bindings,
 )
 
@@ -67,6 +68,46 @@ def test_exact_ten_board_bindings_reject_source_drift(tmp_path: Path) -> None:
     mutated = tmp_path / "bindings.json"
     mutated.write_text(json.dumps(value))
     with pytest.raises(BoardBindingError, match="problem_yaml.sha256"):
+        verify_board_bindings(ROOT, mutated)
+
+
+def test_exact_ten_math_review_fixture_corpora_are_deterministic() -> None:
+    dossier = json.loads(DOSSIER.read_text())
+    for record in dossier["records"]:
+        corpus = canonical_math_review_fixtures(ROOT, record)
+        assert record["math_review_fixtures"] == corpus
+        assert [item for item in corpus if item["role"] == "valid-input"] == [
+            {
+                "path": record["seed"]["path"],
+                "sha256": record["seed"]["sha256"],
+                "role": "valid-input",
+            }
+        ]
+        assert any(item["role"] == "invalid-input" for item in corpus)
+
+
+@pytest.mark.parametrize("attack", ["invent", "omit", "role-flip", "hash-substitution"])
+def test_exact_ten_board_bindings_reject_fixture_corpus_substitution(
+    tmp_path: Path, attack: str,
+) -> None:
+    value = deepcopy(json.loads(DOSSIER.read_text()))
+    fixtures = value["records"][0]["math_review_fixtures"]
+    if attack == "invent":
+        fixtures.append({
+            "path": "problems/q6-intersecting-hypergraph/tests/invented.json",
+            "sha256": "sha256:" + "0" * 64,
+            "role": "invalid-input",
+        })
+    elif attack == "omit":
+        fixtures.pop()
+    elif attack == "role-flip":
+        next(item for item in fixtures if item["role"] == "valid-input")["role"] = "invalid-input"
+    else:
+        fixtures[0]["sha256"] = "sha256:" + "0" * 64
+    mutated = tmp_path / "bindings.json"
+    mutated.write_text(json.dumps(value))
+
+    with pytest.raises(BoardBindingError, match="math_review_fixtures"):
         verify_board_bindings(ROOT, mutated)
 
 

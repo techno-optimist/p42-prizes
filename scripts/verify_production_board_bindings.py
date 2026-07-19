@@ -80,6 +80,8 @@ MOCK_EXECUTION_STATUSES = {"single-host-mock-execution", "dual-glibc-x86-mock-ex
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 VKEY = re.compile(r"0x[0-9a-f]{64}")
 VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?")
+MAX_MATH_REVIEW_FIXTURES = 256
+MAX_MATH_REVIEW_FIXTURE_BYTES = 4 * 1024 * 1024
 
 
 def _load_json(path: Path, label: str) -> Any:
@@ -115,6 +117,54 @@ def _verify_ref(root: Path, ref: Mapping[str, Any], label: str) -> Path:
     if _digest(path) != ref.get("sha256"):
         raise BoardBindingError(f"{label}.sha256 does not match repository bytes")
     return path
+
+
+def canonical_math_review_fixtures(root: Path, record: Mapping[str, Any]) -> list[dict[str, str]]:
+    slug = record.get("slug")
+    seed = record.get("seed")
+    if not isinstance(slug, str) or not isinstance(seed, Mapping) or not isinstance(seed.get("path"), str):
+        raise BoardBindingError("math-review fixture generation requires a board slug and seed path")
+    problem = (root / "problems" / slug).resolve()
+    try:
+        problem.relative_to(root.resolve())
+    except ValueError as exc:
+        raise BoardBindingError(f"math-review fixture root escapes the repository: {slug}") from exc
+    candidates: list[Path] = []
+    for directory_name in ("examples", "tests"):
+        directory = problem / directory_name
+        if not directory.exists():
+            continue
+        if not directory.is_dir() or directory.is_symlink():
+            raise BoardBindingError(f"math-review fixture root is unsafe: {directory}")
+        for path in directory.rglob("*.json"):
+            relative = path.relative_to(problem)
+            if "__pycache__" in relative.parts:
+                continue
+            fixture_parents = [
+                problem / parent
+                for parent in relative.parents
+                if parent != Path(".")
+            ]
+            if path.is_symlink() or any(parent.is_symlink() for parent in fixture_parents):
+                raise BoardBindingError(f"math-review fixture path is unsafe: {path}")
+            if not path.is_file() or path.stat().st_size > MAX_MATH_REVIEW_FIXTURE_BYTES:
+                raise BoardBindingError(f"math-review fixture is missing or exceeds the size limit: {path}")
+            candidates.append(path)
+    if not candidates or len(candidates) > MAX_MATH_REVIEW_FIXTURES:
+        raise BoardBindingError(f"math-review fixture corpus for {slug} is empty or exceeds the bounded limit")
+
+    seed_path = root / seed["path"]
+    resolved_seed = seed_path.resolve()
+    if resolved_seed not in candidates:
+        raise BoardBindingError(f"math-review fixture corpus for {slug} does not contain the canonical seed")
+    corpus = []
+    for path in sorted(candidates, key=lambda item: item.relative_to(root).as_posix()):
+        corpus.append({
+            "path": path.relative_to(root).as_posix(),
+            "sha256": _digest(path),
+            "role": "valid-input" if path == resolved_seed else "invalid-input",
+        })
+    return corpus
 
 
 def _require_mapping(value: Any, label: str, keys: set[str] | None = None) -> Mapping[str, Any]:
@@ -287,6 +337,11 @@ def verify_board_bindings(root: Path, dossier_path: Path) -> None:
         _verify_ref(root, record["specification"], f"{prefix}.specification")
         _verify_ref(root, record["solution_schema"], f"{prefix}.solution_schema")
         seed_path = _verify_ref(root, record["seed"], f"{prefix}.seed")
+        expected_math_review_fixtures = canonical_math_review_fixtures(root, record)
+        if record["math_review_fixtures"] != expected_math_review_fixtures:
+            raise BoardBindingError(
+                f"{prefix}.math_review_fixtures does not exactly match the committed fixture corpus"
+            )
         for evidence_index, ref in enumerate(record["provenance"]["local_evidence"]):
             _verify_ref(root, ref, f"{prefix}.provenance.local_evidence[{evidence_index}]")
         guest_evidence: dict[str, Path] = {}
@@ -334,10 +389,10 @@ def verify_board_bindings(root: Path, dossier_path: Path) -> None:
 
 
 def refresh_source_digests(root: Path, dossier_path: Path) -> None:
-    """Refresh only source digests, then require a complete exact replay.
+    """Refresh deterministic source identities, then require a complete exact replay.
 
     This is the sanctioned rebinding path after a reviewed shared-verifier
-    change. All non-source fields remain byte-for-byte semantic inputs to the
+    or fixture-corpus change. All other fields remain semantic inputs to the
     normal verifier; the atomic replacement is committed only after the full
     exact-ten replay succeeds.
     """
@@ -353,6 +408,7 @@ def refresh_source_digests(root: Path, dossier_path: Path) -> None:
         verifier = record.get("verifier")
         if not isinstance(verifier, dict):
             raise BoardBindingError(f"{record['slug']}.verifier is invalid")
+        record["math_review_fixtures"] = canonical_math_review_fixtures(root, record)
         verifier["source_tree_sha256"] = compute_source_hash(root / "problems" / record["slug"])
 
     dossier_path = dossier_path.resolve()
@@ -386,7 +442,7 @@ def main() -> int:
     parser.add_argument(
         "--refresh-source-digests",
         action="store_true",
-        help="refresh only reviewed shared source digests, then replay all ten bindings",
+        help="refresh reviewed source digests and fixture corpora, then replay all ten bindings",
     )
     args = parser.parse_args()
     root = Path(args.repo_root).resolve()
@@ -396,7 +452,7 @@ def main() -> int:
     try:
         if args.refresh_source_digests:
             refresh_source_digests(root, dossier)
-            print("REFRESHED: exact-ten production board source digests")
+            print("REFRESHED: exact-ten production board source identities")
         else:
             verify_board_bindings(root, dossier)
     except (BoardBindingError, KeyError, TypeError, ValueError) as exc:

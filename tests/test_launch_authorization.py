@@ -471,7 +471,7 @@ def _deployed_math_review_binding() -> dict:
 
 
 def _math_review_board_binding() -> dict:
-    return {
+    binding = {
         "slug": "hadamard-mini",
         "problem_yaml": {
             "path": "problems/hadamard-mini/problem.yaml",
@@ -495,6 +495,20 @@ def _math_review_board_binding() -> dict:
             "source_tree_sha256": "sha256:" + "9" * 64,
         },
     }
+    binding["math_review_fixtures"] = [
+        binding["seed"] | {"role": "valid-input"},
+        {
+            "path": "problems/hadamard-mini/tests/invalid.json",
+            "sha256": "sha256:" + "a" * 64,
+            "role": "invalid-input",
+        },
+        {
+            "path": "problems/hadamard-mini/tests/malformed.json",
+            "sha256": "sha256:" + "d" * 64,
+            "role": "invalid-input",
+        },
+    ]
+    return binding
 
 
 def _math_review_packet(tmp_path: Path) -> tuple[dict, dict, object, dict]:
@@ -539,17 +553,17 @@ def _math_review_packet(tmp_path: Path) -> tuple[dict, dict, object, dict]:
         },
         solution_schema=board_binding["solution_schema"] | {"source_identity": source_identity},
         valid_fixtures=[
-            board_binding["seed"] | {
-                "fixture_role": "valid-input",
-                "source_identity": source_identity,
-            }
+            {"path": item["path"], "sha256": item["sha256"], "fixture_role": item["role"],
+             "source_identity": source_identity}
+            for item in board_binding["math_review_fixtures"]
+            if item["role"] == "valid-input"
         ],
-        invalid_fixtures=[{
-            "path": "problems/hadamard-mini/tests/invalid.json",
-            "sha256": "sha256:" + "a" * 64,
-            "fixture_role": "invalid-input",
-            "source_identity": source_identity,
-        }],
+        invalid_fixtures=[
+            {"path": item["path"], "sha256": item["sha256"], "fixture_role": item["role"],
+             "source_identity": source_identity}
+            for item in board_binding["math_review_fixtures"]
+            if item["role"] == "invalid-input"
+        ],
         replay_result=evidence,
     )
     sections["literature_review"]["search_record"] = evidence
@@ -790,7 +804,42 @@ def test_math_review_rejects_same_fixture_reused_for_valid_and_invalid_roles(tmp
     fixture = packet["verifier_schema_and_fixtures"]["valid_fixtures"][0]
     packet["verifier_schema_and_fixtures"]["invalid_fixtures"] = [fixture]
 
-    with pytest.raises(LaunchAuthorizationError, match="invalid-input fixture"):
+    with pytest.raises(LaunchAuthorizationError, match="invalid_fixtures"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+@pytest.mark.parametrize("fixture_group", ["valid_fixtures", "invalid_fixtures"])
+def test_math_review_rejects_invented_fixture_with_correct_source_identity(
+    tmp_path: Path, fixture_group: str,
+) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    fixtures = packet["verifier_schema_and_fixtures"][fixture_group]
+    fixtures.append({
+        "path": "problems/hadamard-mini/tests/invented.json",
+        "sha256": "sha256:" + "c" * 64,
+        "fixture_role": "valid-input" if fixture_group == "valid_fixtures" else "invalid-input",
+        "source_identity": fixtures[0]["source_identity"],
+    })
+
+    with pytest.raises(LaunchAuthorizationError, match=fixture_group):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+def test_math_review_rejects_missing_canonical_fixture(tmp_path: Path) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    packet["verifier_schema_and_fixtures"]["invalid_fixtures"].pop()
+
+    with pytest.raises(LaunchAuthorizationError, match="invalid_fixtures"):
         _validate_math_review(
             packet, row, registry, context,
             datetime(2026, 7, 8, 17, tzinfo=timezone.utc),

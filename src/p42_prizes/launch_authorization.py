@@ -1078,24 +1078,24 @@ def _validate_math_review_evidence_bindings(
 
     valid_fixtures = verifier["valid_fixtures"]
     invalid_fixtures = verifier["invalid_fixtures"]
-    canonical_seed = board_binding.get("seed")
-    if not isinstance(canonical_seed, Mapping):
-        raise LaunchAuthorizationError("math review evidence has no canonical board fixture")
-    expected_seed = {
-        "path": canonical_seed.get("path"),
-        "sha256": canonical_seed.get("sha256"),
-        "fixture_role": "valid-input",
-        "source_identity": source_identity,
-    }
-    if expected_seed not in valid_fixtures:
-        raise LaunchAuthorizationError("math review valid_fixtures must include the canonical board seed")
-
-    for fixture_role, fixtures in (("valid-input", valid_fixtures), ("invalid-input", invalid_fixtures)):
-        for index, fixture in enumerate(fixtures):
-            if fixture.get("fixture_role") != fixture_role or fixture.get("source_identity") != source_identity:
-                raise LaunchAuthorizationError(
-                    f"math review {fixture_role} fixture {index} does not match the exact current source identity"
-                )
-            bound_refs.append((fixture["path"], fixture["sha256"]))
+    canonical_fixtures = board_binding.get("math_review_fixtures")
+    if not isinstance(canonical_fixtures, list):
+        raise LaunchAuthorizationError("math review evidence has no canonical board fixture corpus")
+    expected_fixtures = {"valid-input": [], "invalid-input": []}
+    for fixture in canonical_fixtures:
+        if not isinstance(fixture, Mapping) or fixture.get("role") not in expected_fixtures:
+            raise LaunchAuthorizationError("math review evidence has an invalid canonical board fixture corpus")
+        expected_fixtures[fixture["role"]].append({
+            "path": fixture.get("path"),
+            "sha256": fixture.get("sha256"),
+            "fixture_role": fixture["role"],
+            "source_identity": source_identity,
+        })
+    if valid_fixtures != expected_fixtures["valid-input"]:
+        raise LaunchAuthorizationError("math review valid_fixtures do not exactly match the canonical board corpus")
+    if invalid_fixtures != expected_fixtures["invalid-input"]:
+        raise LaunchAuthorizationError("math review invalid_fixtures do not exactly match the canonical board corpus")
+    for fixture in valid_fixtures + invalid_fixtures:
+        bound_refs.append((fixture["path"], fixture["sha256"]))
     if len(bound_refs) != len(set(bound_refs)):
         raise LaunchAuthorizationError("math review evidence roles must use distinct canonical source references")

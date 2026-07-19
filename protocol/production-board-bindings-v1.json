@@ -18,6 +18,53 @@
         "artifact": null,
         "status": "pending"
       },
+      "math_review_fixtures": [
+        {
+          "path": "problems/q6-intersecting-hypergraph/tests/boundary-tau5.json",
+          "role": "invalid-input",
+          "sha256": "sha256:cfd40065049172e5cfa8b249c1af1ee6b03c39051ceb82cc885b54e2c654dc0f"
+        },
+        {
+          "path": "problems/q6-intersecting-hypergraph/tests/coverable-sunflower.json",
+          "role": "invalid-input",
+          "sha256": "sha256:e00dbaee4fd6e4909055a0609cbb2f69802cbd614cb3b73abc4814edd2d81fc4"
+        },
+        {
+          "path": "problems/q6-intersecting-hypergraph/tests/duplicate-edge.json",
+          "role": "invalid-input",
+          "sha256": "sha256:5c6d52d5330aa6cc93be6a2cceee6ed199f815ef1fbfc4a4f951807c5395bd78"
+        },
+        {
+          "path": "problems/q6-intersecting-hypergraph/tests/edge-size.json",
+          "role": "invalid-input",
+          "sha256": "sha256:e547c4b1e71c542ad87248c61499daab0df87d82e3e5fbc065924b401bb51a74"
+        },
+        {
+          "path": "problems/q6-intersecting-hypergraph/tests/lying-claim.json",
+          "role": "invalid-input",
+          "sha256": "sha256:a1d5a0ee0ab43bedf79c77fefc292db1d51a9b95f1dc3d4e0d7c37cca1f62cf2"
+        },
+        {
+          "path": "problems/q6-intersecting-hypergraph/tests/malformed.json",
+          "role": "invalid-input",
+          "sha256": "sha256:318e9200bcb5c8863a03c339c38795277b9ce26041a11d52e0bab9d2f53abe2c"
+        },
+        {
+          "path": "problems/q6-intersecting-hypergraph/tests/not-intersecting.json",
+          "role": "invalid-input",
+          "sha256": "sha256:e87b3c0d69b3210fedb5d61807fbbddad7d1d2013d7ca98e653f3cee4b85f29b"
+        },
+        {
+          "path": "problems/q6-intersecting-hypergraph/tests/seed-pg25.json",
+          "role": "valid-input",
+          "sha256": "sha256:4c0e38ba9e174fe95c78de0acc2fa216ade92a52ba41b88ee010fbf7a61092ce"
+        },
+        {
+          "path": "problems/q6-intersecting-hypergraph/tests/vertex-range.json",
+          "role": "invalid-input",
+          "sha256": "sha256:a1bda7213c9488fb01793c3a5a473686ef54a0886a55b6f3d972d256ab763c04"
+        }
+      ],
       "objective": {
         "direction": "minimize",
         "gauge": "max(0, seed_best - edge_count)",
@@ -76,7 +123,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:e935846efef4619705af582e35ed7033b2ac3b13763e4a07fe88778e64d36363",
+        "source_tree_sha256": "sha256:21aeb095753bb5a054e02a3f9dd082c807220da84f31d9248ffbea23c6e5bad8",
         "version": "0.1.0"
       }
     },
@@ -94,6 +141,23 @@
         "artifact": null,
         "status": "pending"
       },
+      "math_review_fixtures": [
+        {
+          "path": "problems/erdos-min-overlap/examples/hyra-upper.json",
+          "role": "valid-input",
+          "sha256": "sha256:f37c8f97ae3f3b8a50344d7b9e9ffb3be506457a26a8d55622004b83f5ae64d1"
+        },
+        {
+          "path": "problems/erdos-min-overlap/examples/lying-claim.json",
+          "role": "invalid-input",
+          "sha256": "sha256:0f6f9027d274a7a99a2d96fb28ba8610e1414adbac1d5e3c0bdf4a3eb0b311be"
+        },
+        {
+          "path": "problems/erdos-min-overlap/examples/wrong-length.json",
+          "role": "invalid-input",
+          "sha256": "sha256:2a6e543586b7fa7de6c73ebaede2937f8af62834ce4d5a8137a9fd7f34cb6299"
+        }
+      ],
       "objective": {
         "direction": "minimize",
         "gauge": "max(0, seed_best - exact_overlap_upper_bound)",
@@ -144,7 +208,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:3f8271d10b83729d2cdf0fe9b34672e6f2ee69cd83e07872843ab953d5812f66",
+        "source_tree_sha256": "sha256:68d12586b3c8fb0547718b3a647b73c345a2aee569d9d0bdd168b7e188f5029c",
         "version": "0.1.1"
       }
     },
@@ -162,6 +226,23 @@
         "artifact": null,
         "status": "pending"
       },
+      "math_review_fixtures": [
+        {
+          "path": "problems/edges-vs-triangles/examples/bad-row-sum.json",
+          "role": "invalid-input",
+          "sha256": "sha256:d139aa3f81f72b3045ff1da9fb61c30f58b48ea85a81fff5dc1d3e5d97a9585c"
+        },
+        {
+          "path": "problems/edges-vs-triangles/examples/lying-claim.json",
+          "role": "invalid-input",
+          "sha256": "sha256:cef258dc549e818ddf844f52c5fbaf9300a3752116a1111932726c6f601668f8"
+        },
+        {
+          "path": "problems/edges-vs-triangles/examples/rational-curve-sample.json",
+          "role": "valid-input",
+          "sha256": "sha256:a662d18c930fbb2c351ca5987e78113be30657a04615cbff87e4781745969214"
+        }
+      ],
       "objective": {
         "direction": "maximize",
         "gauge": "max(0, exact_score - seed_best)",
@@ -212,7 +293,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:be6966175f892ad24d34dd9a159ed73f99d08fcce1aa719f203973cbaff2c6e3",
+        "source_tree_sha256": "sha256:16afc1ef15f44f303a9664af9be6ebb485df48a727a770874de00f63e7838c51",
         "version": "0.1.2"
       }
     },
@@ -230,6 +311,23 @@
         "artifact": null,
         "status": "pending"
       },
+      "math_review_fixtures": [
+        {
+          "path": "problems/arithmetic-kakeya/examples/kt-2x2-forcing.json",
+          "role": "valid-input",
+          "sha256": "sha256:031865755a17795bf2a4c65a24986589b6a8d10085d6a062fae5293c38a7f118"
+        },
+        {
+          "path": "problems/arithmetic-kakeya/examples/tampered-seed-claim.json",
+          "role": "invalid-input",
+          "sha256": "sha256:dba39f5f39a67b58c867364a22f37cbacc25b1ee4243af0c6118ee191f813f44"
+        },
+        {
+          "path": "problems/arithmetic-kakeya/examples/wrong-grid.json",
+          "role": "invalid-input",
+          "sha256": "sha256:784cf84a5e1f488ee1010c63da20387e3412c557735691361a2d432a7333d9f6"
+        }
+      ],
       "objective": {
         "direction": "minimize",
         "gauge": "max(0, seed_best - forcing_score)",
@@ -280,7 +378,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:6bf8372130282aad06d8e52710142b604a3ed8d948d4c9685ea9f0b80ffab293",
+        "source_tree_sha256": "sha256:e5fde812dbf3606c54004e72dd3f71bb944e414dd706f9b6f5903426dd861b8b",
         "version": "0.2.0"
       }
     },
@@ -298,6 +396,23 @@
         "artifact": null,
         "status": "pending"
       },
+      "math_review_fixtures": [
+        {
+          "path": "problems/autoconvolution-c1-upper/examples/hyra-upper.json",
+          "role": "valid-input",
+          "sha256": "sha256:0dc121b9404193d8a423400b946645e14ed1403c2d7bcb6c3b23ffc07675ad0e"
+        },
+        {
+          "path": "problems/autoconvolution-c1-upper/examples/lying-claim.json",
+          "role": "invalid-input",
+          "sha256": "sha256:3676cee901f0d71dfd258b3c871f8e623e9b458f0e97bb2555064f84db1373f8"
+        },
+        {
+          "path": "problems/autoconvolution-c1-upper/examples/wrong-length.json",
+          "role": "invalid-input",
+          "sha256": "sha256:e07e358f066f7b32dd05f1e26ed925166c2391ded44dbb5793310b92151d3f7e"
+        }
+      ],
       "objective": {
         "direction": "minimize",
         "gauge": "max(0, seed_best - exact_c1_upper_bound)",
@@ -348,7 +463,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:d633e6d06d0852aa0f0b69752d2e327ba484b1a407d17d8ae3ec54a13eaf0409",
+        "source_tree_sha256": "sha256:7fd161b81b412491c2f68ff21ed8ca75afa6852bdf3e383b6554aec3d4ecad07",
         "version": "0.1.1"
       }
     },
@@ -366,6 +481,23 @@
         "artifact": null,
         "status": "pending"
       },
+      "math_review_fixtures": [
+        {
+          "path": "problems/autoconvolution-c2-lower/examples/hyra-lower.json",
+          "role": "valid-input",
+          "sha256": "sha256:6e785f481b592e0a6d1a77dd367c0379b8a3e55fe3b739c5cd1b352d7a25f064"
+        },
+        {
+          "path": "problems/autoconvolution-c2-lower/examples/lying-claim.json",
+          "role": "invalid-input",
+          "sha256": "sha256:4f2ad63626a4db99ce1e099cc6043279f531cefb0865849b9fdd43b4e70ef4ef"
+        },
+        {
+          "path": "problems/autoconvolution-c2-lower/examples/wrong-length.json",
+          "role": "invalid-input",
+          "sha256": "sha256:9138ffae3a33091fc002956fd5e4d07d9fdc7c274728d20500436f4bb744fa2d"
+        }
+      ],
       "objective": {
         "direction": "maximize",
         "gauge": "max(0, exact_c2_lower_bound - seed_best)",
@@ -416,7 +548,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:e12d6e6f317c7c1a259b97ead707fecd49c131a9afa687ed8d8983bc4645739a",
+        "source_tree_sha256": "sha256:f3aaaa851a52f75417e2507978da2e8fcc969ff0019a0622da55104f70382ef7",
         "version": "0.1.1"
       }
     },
@@ -434,6 +566,53 @@
         "artifact": null,
         "status": "pending"
       },
+      "math_review_fixtures": [
+        {
+          "path": "problems/distinct-subset-sums-a11/tests/conway-guy-594.json",
+          "role": "valid-input",
+          "sha256": "sha256:5081fe54d10220c1ad2862fd872b3cf5dffe14184bb9f52a9e517ad4a5a26768"
+        },
+        {
+          "path": "problems/distinct-subset-sums-a11/tests/duplicate-element.json",
+          "role": "invalid-input",
+          "sha256": "sha256:38afa746c2a28c3b8f54ed46c55ca4b5aa54a2b78ad93a73480c0c69455b5608"
+        },
+        {
+          "path": "problems/distinct-subset-sums-a11/tests/duplicate-sum.json",
+          "role": "invalid-input",
+          "sha256": "sha256:85851603ee48f1f9d0336ab5ca8b72ec672b8366dab465df16f87d65f0872624"
+        },
+        {
+          "path": "problems/distinct-subset-sums-a11/tests/lying-claim.json",
+          "role": "invalid-input",
+          "sha256": "sha256:6f32725e0f8eda77e50e6b284d7e5e0516dede282eb88ab729d54448ef567bb5"
+        },
+        {
+          "path": "problems/distinct-subset-sums-a11/tests/malformed.json",
+          "role": "invalid-input",
+          "sha256": "sha256:0144837354e5ce6c535f0ab114321b715504792b50b95eb1e8e67bcacf4e126b"
+        },
+        {
+          "path": "problems/distinct-subset-sums-a11/tests/negative-element.json",
+          "role": "invalid-input",
+          "sha256": "sha256:50c98585cee20673e229eefccf9869ed21afdd245c27faf5da0452239e919353"
+        },
+        {
+          "path": "problems/distinct-subset-sums-a11/tests/not-increasing.json",
+          "role": "invalid-input",
+          "sha256": "sha256:baa49aa1924376f24fba2112d7c2767e89da37da4aaece642c968cc788d2e88f"
+        },
+        {
+          "path": "problems/distinct-subset-sums-a11/tests/wrong-length-12.json",
+          "role": "invalid-input",
+          "sha256": "sha256:969aaa674a7e22977049356e19a90c6f07db82d93fbcaf0c2af543fcc129e849"
+        },
+        {
+          "path": "problems/distinct-subset-sums-a11/tests/wrong-length.json",
+          "role": "invalid-input",
+          "sha256": "sha256:de2a5b167ba4742528ce94dee5b537392b9b3e5d1d404282d1e880502bdd2f38"
+        }
+      ],
       "objective": {
         "direction": "minimize",
         "gauge": "max(0, seed_best - max_element)",
@@ -492,7 +671,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:632b227df11bc23bc0cea581568a473891881ad444bde491f83a6332c1c9f1f3",
+        "source_tree_sha256": "sha256:25657ab564393dd56a14b8c2805819f66ee40fca9e4a85025cfd074357f5d8b8",
         "version": "0.1.0"
       }
     },
@@ -510,6 +689,18 @@
         "artifact": null,
         "status": "pending"
       },
+      "math_review_fixtures": [
+        {
+          "path": "problems/mertens-lp-ceiling-k12000/examples/bad-decimal.json",
+          "role": "invalid-input",
+          "sha256": "sha256:e2d6cc522fb969a3b5fc9671c8956c038024e0732455512807181fa52280e698"
+        },
+        {
+          "path": "problems/mertens-lp-ceiling-k12000/examples/certificate-k12000.json",
+          "role": "valid-input",
+          "sha256": "sha256:769a2cc98425695b4024d9c6ef549cc668e31882ae7773992967744540cb2795"
+        }
+      ],
       "objective": {
         "direction": "minimize",
         "gauge": "max(0, seed_best - certified_ceiling)",
@@ -560,7 +751,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:22c30853b1615cc3b010984a7815dbf4acd35a9bcfa96ec04034bcb38e8f97f5",
+        "source_tree_sha256": "sha256:c3d86c1cf98655708e2755197d408ef551fe46bd1a3415c54ef1bb00a6147f36",
         "version": "0.1.1"
       }
     },
@@ -578,6 +769,23 @@
         "artifact": null,
         "status": "pending"
       },
+      "math_review_fixtures": [
+        {
+          "path": "problems/pnt-sparse-mertens-construction/examples/bad-decimal.json",
+          "role": "invalid-input",
+          "sha256": "sha256:49d9efa0ee836cb0f9eeab178c2e833834099ccfa49260e8f07cd1d2543fe4fb"
+        },
+        {
+          "path": "problems/pnt-sparse-mertens-construction/examples/chronos-96000.json",
+          "role": "valid-input",
+          "sha256": "sha256:a60e6687ed1731009b3e3383fba1429bfac2bff694ee8e4fe256eef1fa42fb05"
+        },
+        {
+          "path": "problems/pnt-sparse-mertens-construction/examples/constraint-violation.json",
+          "role": "invalid-input",
+          "sha256": "sha256:ec5ff4964b359bbed58a044e063d16974da0369ac4b833f15856d5c76b64614f"
+        }
+      ],
       "objective": {
         "direction": "maximize",
         "gauge": "max(0, certified_lower_bound - seed_best)",
@@ -628,7 +836,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:2ab874932515ab9f3963d70ca89c532a1ba07ca78ed754a3d20bbd9b850ef095",
+        "source_tree_sha256": "sha256:9434dd7ac6cfd617c51bee2a68e58e0398f19e1cce8c464056acbda24fce28f1",
         "version": "0.1.2"
       }
     },
@@ -655,6 +863,23 @@
         "artifact": null,
         "status": "pending"
       },
+      "math_review_fixtures": [
+        {
+          "path": "problems/hadamard-668-defect/examples/lying-claim.json",
+          "role": "invalid-input",
+          "sha256": "sha256:0a5b6b5eabde890da4484cc67b706fff61ba9d0d76cc0fa8d41a8e50b40bbf35"
+        },
+        {
+          "path": "problems/hadamard-668-defect/examples/sylvester-prefix.json",
+          "role": "valid-input",
+          "sha256": "sha256:4021e45669d91b63179c730309eb26613e4584aa63ee7ec928b32cd4b1ed2bc6"
+        },
+        {
+          "path": "problems/hadamard-668-defect/examples/wrong-row-length.json",
+          "role": "invalid-input",
+          "sha256": "sha256:774d5be4548ab3f3ea798d6d51cae17e5ba8ecfa86ae235d243252ffd25419bc"
+        }
+      ],
       "objective": {
         "direction": "minimize",
         "gauge": "max(0, seed_best - defect)",
@@ -705,7 +930,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:9e501891b3d0a3c5f7507e2b482be6f66a48e456510ebcf5ca1cf8c9b1487f6b",
+        "source_tree_sha256": "sha256:69dca8896e21e8fee558e8e44cd1b042f982298fa3d81980c249452184829076",
         "version": "0.1.2"
       }
     }

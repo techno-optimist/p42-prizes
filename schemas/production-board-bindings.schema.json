@@ -92,7 +92,7 @@
     "board": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["slug", "problem_yaml", "specification", "solution_schema", "verifier", "seed", "objective", "claim_scope", "provenance", "guest", "math_review"],
+      "required": ["slug", "problem_yaml", "specification", "solution_schema", "verifier", "seed", "math_review_fixtures", "objective", "claim_scope", "provenance", "guest", "math_review"],
       "properties": {
         "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
         "problem_yaml": {"$ref": "#/$defs/repoArtifact"},
@@ -121,6 +121,13 @@
             "verified_score": {"$ref": "#/$defs/rational"},
             "verified_improvement": {"$ref": "#/$defs/rational"}
           }
+        },
+        "math_review_fixtures": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/mathReviewFixture"}
         },
         "objective": {"$ref": "#/$defs/objective"},
         "claim_scope": {"type": "string", "minLength": 1},
@@ -153,6 +160,16 @@
             "artifact": {"type": "null"}
           }
         }
+      }
+    },
+    "mathReviewFixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "role"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^problems/[a-z0-9][a-z0-9-]*/(?:examples|tests)/[^/].*\\.json$"},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "role": {"enum": ["valid-input", "invalid-input"]}
       }
     },
     "missingBoard": {
