@@ -48,6 +48,56 @@ FUNDING_ADMISSION_BLOCKS = {
 }
 
 
+def _validate_trusted_operator_profiles(
+    admission: Any,
+) -> tuple[set[str], dict[str, dict[str, Any]], list[str]]:
+    trusted_hosts = admission.get("trusted_hosts") if isinstance(admission, dict) else None
+    trusted_fingerprints: set[str] = set()
+    trusted_profiles: dict[str, dict[str, Any]] = {}
+    errors: list[str] = []
+    if not isinstance(trusted_hosts, list) or len(trusted_hosts) < MIN_MATRIX_HOSTS:
+        errors.append(
+            f"problem.yaml:verifier.admission.trusted_hosts must contain at least {MIN_MATRIX_HOSTS} host profiles"
+        )
+        return trusted_fingerprints, trusted_profiles, errors
+
+    labels: set[str] = set()
+    operator_ids: set[str] = set()
+    for index, profile in enumerate(trusted_hosts):
+        prefix = f"problem.yaml:verifier.admission.trusted_hosts[{index}]"
+        if not isinstance(profile, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        public_key = profile.get("public_key")
+        if not isinstance(public_key, str):
+            errors.append(f"{prefix}.public_key must be a string")
+            continue
+        try:
+            fingerprint = ssh_public_key_fingerprint(public_key)
+        except AdmissionError as exc:
+            errors.append(f"{prefix}.public_key: {exc}")
+            continue
+        if fingerprint in trusted_fingerprints:
+            errors.append("problem.yaml:verifier.admission.trusted_hosts public keys must be distinct")
+        trusted_fingerprints.add(fingerprint)
+        trusted_profiles[fingerprint] = profile
+        label = profile.get("label")
+        operator_id = profile.get("operator_id")
+        if not isinstance(label, str) or not label:
+            errors.append(f"{prefix}.label must be non-empty")
+        elif label in labels:
+            errors.append("problem.yaml:verifier.admission.trusted_hosts labels must be distinct")
+        else:
+            labels.add(label)
+        if not isinstance(operator_id, str) or not operator_id:
+            errors.append(f"{prefix}.operator_id must be non-empty")
+        elif operator_id in operator_ids:
+            errors.append("problem.yaml:verifier.admission.trusted_hosts operator_id values must be distinct")
+        else:
+            operator_ids.add(operator_id)
+    return trusted_fingerprints, trusted_profiles, errors
+
+
 def _validate_admission_report_purpose(matrix: Mapping[str, Any]) -> list[str]:
     """Accept a strict winner or an exact, structurally sound frontier baseline."""
 
@@ -199,48 +249,10 @@ def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path
         errors.append(f"problem.yaml:{exc}")
         expected_ref = None
 
-    trusted_hosts = admission.get("trusted_hosts") if isinstance(admission, dict) else None
-    trusted_fingerprints: set[str] = set()
-    trusted_profiles: dict[str, dict[str, Any]] = {}
-    if not isinstance(trusted_hosts, list) or len(trusted_hosts) < MIN_MATRIX_HOSTS:
-        errors.append(
-            f"problem.yaml:verifier.admission.trusted_hosts must contain at least {MIN_MATRIX_HOSTS} host profiles"
-        )
-    else:
-        labels: set[str] = set()
-        operator_ids: set[str] = set()
-        for index, profile in enumerate(trusted_hosts):
-            prefix = f"problem.yaml:verifier.admission.trusted_hosts[{index}]"
-            if not isinstance(profile, dict):
-                errors.append(f"{prefix} must be an object")
-                continue
-            public_key = profile.get("public_key")
-            if not isinstance(public_key, str):
-                errors.append(f"{prefix}.public_key must be a string")
-                continue
-            try:
-                fingerprint = ssh_public_key_fingerprint(public_key)
-            except AdmissionError as exc:
-                errors.append(f"{prefix}.public_key: {exc}")
-                continue
-            if fingerprint in trusted_fingerprints:
-                errors.append("problem.yaml:verifier.admission.trusted_hosts public keys must be distinct")
-            trusted_fingerprints.add(fingerprint)
-            trusted_profiles[fingerprint] = profile
-            label = profile.get("label")
-            operator_id = profile.get("operator_id")
-            if not isinstance(label, str) or not label:
-                errors.append(f"{prefix}.label must be non-empty")
-            elif label in labels:
-                errors.append("problem.yaml:verifier.admission.trusted_hosts labels must be distinct")
-            else:
-                labels.add(label)
-            if not isinstance(operator_id, str) or not operator_id:
-                errors.append(f"{prefix}.operator_id must be non-empty")
-            elif operator_id in operator_ids:
-                errors.append("problem.yaml:verifier.admission.trusted_hosts operator_id values must be distinct")
-            else:
-                operator_ids.add(operator_id)
+    trusted_fingerprints, trusted_profiles, trusted_profile_errors = (
+        _validate_trusted_operator_profiles(admission)
+    )
+    errors.extend(trusted_profile_errors)
 
     try:
         raw_matrix = dict(matrix_path) if isinstance(matrix_path, Mapping) else load_evidence_file(matrix_path)
@@ -364,6 +376,12 @@ def validate_fundable_release_admission(
     )
     if errors:
         return errors
+    manifest = load_manifest(Path(problem_dir).resolve())
+    verifier = manifest.get("verifier")
+    admission = verifier.get("admission") if isinstance(verifier, dict) else None
+    _, trusted_profiles, trusted_profile_errors = _validate_trusted_operator_profiles(admission)
+    if trusted_profile_errors:
+        return trusted_profile_errors
     try:
         from p42_prizes.runtime_admission import (
             load_fixture_manifest,
