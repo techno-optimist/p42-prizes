@@ -41,6 +41,20 @@ CANONICAL_BOARD_SLUGS = (
     "pnt-sparse-mertens-construction",
     "hadamard-668-defect",
 )
+RELEASE_BOARD_IDENTITY_FIELDS = (
+    "problemId", "problemSlug", "verifierVersion", "specHash",
+    "verifierSourceDigest", "verifierImageDigest", "admissionMatrixDigest",
+    "objectiveGuestElfPath", "objectiveGuestElfDigest", "objectiveGuestElfSha256",
+    "objectiveProgramVKey",
+)
+
+
+def _board_set_digest(problems: list[dict]) -> str:
+    identities = [
+        {field: problem.get(field) for field in RELEASE_BOARD_IDENTITY_FIELDS}
+        for problem in problems
+    ]
+    return sha256_bytes(canonical_json(identities).encode("utf-8"))
 
 
 def _production_binding(fixture: AttestationFixture, release: dict) -> dict:
@@ -63,7 +77,13 @@ def _production_binding(fixture: AttestationFixture, release: dict) -> dict:
     }
 
 
-def valid_report(tmp_path: Path, *, legacy: bool = False) -> tuple[dict, AttestationFixture, dict]:
+def valid_report(
+    tmp_path: Path,
+    *,
+    legacy: bool = False,
+    problem_overrides: dict[str, dict] | None = None,
+    board_set_digest_override: str | None = None,
+) -> tuple[dict, AttestationFixture, dict]:
     fixture = AttestationFixture(tmp_path)
     schema_version = (
         LEGACY_OPERATIONAL_CONTROLS_SCHEMA_VERSION if legacy else OPERATIONAL_CONTROLS_SCHEMA_VERSION
@@ -76,15 +96,39 @@ def valid_report(tmp_path: Path, *, legacy: bool = False) -> tuple[dict, Attesta
             manifest["governance"]["timelock"] = address(
                 "base-sepolia-shared.timelock-P42MultisigTimelock"
             )
+            for index, slug in enumerate(CANONICAL_BOARD_SLUGS, start=1):
+                manifest["problems"][index - 1]["problemId"] = str(index)
+                manifest["problems"][index - 1]["problemSlug"] = slug
+            manifest["releaseEvidence"]["boardSetDigest"] = (
+                board_set_digest_override or _board_set_digest(manifest["problems"])
+            )
             return manifest
 
         with patch("attestation_helpers.schema_valid_manifest_shell", side_effect=canonical_manifest):
             release = fixture.canonical_release_binding(
-                problem_overrides={
-                    str(index): {"problemSlug": slug}
-                    for index, slug in enumerate(CANONICAL_BOARD_SLUGS, start=1)
-                }
+                problem_overrides=problem_overrides
             )
+        manifest = json.loads(
+            (fixture.root / release["deployment_manifest"]["local_path"]).read_text()
+        )
+        timelock = next(
+            contract for contract in release["contracts"]
+            if contract["topology_key"] == "shared.timelock"
+        )
+        chain_evidence = json.loads(
+            (fixture.root / timelock["chain_bytecode_artifact"]["local_path"]).read_text()
+        )
+        fixture._chain_state[(
+            release["chain_id"],
+            timelock["address"].casefold(),
+            chain_evidence["block_number"],
+        )]["governance_state"] = {
+            "signer_count": len(manifest["governance"]["signers"]),
+            "signers": manifest["governance"]["signers"],
+            "threshold": manifest["governance"]["threshold"],
+            "delay_seconds": manifest["governance"]["delaySeconds"],
+            "guardian": manifest["roles"]["guardian"],
+        }
     owner = fixture.identity(
         "operations-owner", "Avery Nakamura", "operational-control-owner"
     )
@@ -542,6 +586,24 @@ def test_rejects_different_problem_ids_across_session_controls(tmp_path: Path) -
     _resign(control)
     _resign_report(report)
     with pytest.raises(OperationalControlsError, match="one identical problem_id"):
+        normalize(report, fixture, registry)
+
+
+def test_rejects_unique_aliased_manifest_problem_slug(tmp_path: Path) -> None:
+    report, fixture, registry = valid_report(
+        tmp_path,
+        problem_overrides={"2": {"problemSlug": "erdos-minimum-overlap"}},
+    )
+    with pytest.raises(OperationalControlsError, match="problem IDs and slugs.*ordered canonical"):
+        normalize(report, fixture, registry)
+
+
+def test_rejects_substituted_deployment_board_set_digest(tmp_path: Path) -> None:
+    report, fixture, registry = valid_report(
+        tmp_path,
+        board_set_digest_override="sha256:" + "ab" * 32,
+    )
+    with pytest.raises(OperationalControlsError, match="boardSetDigest.*canonical ordered"):
         normalize(report, fixture, registry)
 
 

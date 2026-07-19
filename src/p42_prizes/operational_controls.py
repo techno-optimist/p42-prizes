@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import stat
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +21,7 @@ from p42_prizes.legal import (
     resolved_artifact_bytes,
 )
 from p42_prizes.governance import validate_production_binding
-from p42_prizes.verdict import canonical_json, sha256_bytes
+from p42_prizes.verdict import canonical_json, sha256_bytes, strict_json_loads
 
 
 LEGACY_OPERATIONAL_CONTROLS_SCHEMA_VERSION = "p42-operational-controls/v1"
@@ -33,6 +34,21 @@ OWNER_ROLE = "operational-control-owner"
 REPORT_SIGNER_ROLE = "operational-controls-report-signer"
 EXECUTION_RUNNER_ROLE = "operational-control-execution-runner"
 ARTIFACT_ENVELOPE_SCHEMA_VERSION = "p42-operational-control-artifact/v1"
+PRODUCTION_BOARD_SET_PATH = "protocol/production-board-set-v1.json"
+PRODUCTION_BOARD_BINDINGS_PATH = "protocol/production-board-bindings-v1.json"
+RELEASE_BOARD_IDENTITY_FIELDS = (
+    "problemId",
+    "problemSlug",
+    "verifierVersion",
+    "specHash",
+    "verifierSourceDigest",
+    "verifierImageDigest",
+    "admissionMatrixDigest",
+    "objectiveGuestElfPath",
+    "objectiveGuestElfDigest",
+    "objectiveGuestElfSha256",
+    "objectiveProgramVKey",
+)
 REQUIRED_CONTROLS = frozenset(
     {
         "mutation_api_auth",
@@ -478,18 +494,42 @@ def _canonical_board_contracts(
             "report.release_binding.deployment_manifest must contain canonical JSON"
         ) from exc
     problems = deployment.get("problems") if isinstance(deployment, dict) else None
+    release_evidence = deployment.get("releaseEvidence") if isinstance(deployment, dict) else None
+    canonical_slugs = _canonical_production_board_slugs()
     contracts_by_key = {
         contract["topology_key"]: contract["address"].casefold()
         for contract in release["contracts"]
     }
-    if not isinstance(problems, list) or len(problems) != 10:
+    if not isinstance(problems, list) or len(problems) != len(canonical_slugs):
         raise OperationalControlsError(
             "report.release_binding.deployment_manifest must define the canonical exact-ten boards"
         )
+    identities: list[dict[str, Any]] = []
+    for board_number, (problem, expected_slug) in enumerate(
+        zip(problems, canonical_slugs, strict=True), start=1
+    ):
+        if (
+            not isinstance(problem, dict)
+            or problem.get("problemId") != str(board_number)
+            or problem.get("problemSlug") != expected_slug
+        ):
+            raise OperationalControlsError(
+                "report.release_binding.deployment_manifest problem IDs and slugs must exactly match "
+                "the ordered canonical production board set"
+            )
+        identities.append({field: problem.get(field) for field in RELEASE_BOARD_IDENTITY_FIELDS})
+    expected_board_set_digest = sha256_bytes(canonical_json(identities).encode("utf-8"))
+    if (
+        not isinstance(release_evidence, dict)
+        or release_evidence.get("boardSetDigest") != expected_board_set_digest
+    ):
+        raise OperationalControlsError(
+            "report.release_binding.deployment_manifest releaseEvidence.boardSetDigest must match "
+            "the canonical ordered deployment board identities"
+        )
     registry = contracts_by_key.get("shared.registry")
     result: dict[str, frozenset[str]] = {}
-    for board_number, problem in enumerate(problems, start=1):
-        slug = problem.get("problemSlug") if isinstance(problem, dict) else None
+    for board_number, slug in enumerate(canonical_slugs, start=1):
         keys = (
             "shared.registry",
             f"board.{board_number}.pool",
@@ -498,9 +538,7 @@ def _canonical_board_contracts(
             f"board.{board_number}.challenges",
         )
         if (
-            not isinstance(slug, str)
-            or not slug
-            or slug in result
+            slug in result
             or registry is None
             or any(key not in contracts_by_key for key in keys)
         ):
@@ -510,6 +548,48 @@ def _canonical_board_contracts(
             )
         result[slug] = frozenset(contracts_by_key[key] for key in keys)
     return result
+
+
+def _canonical_production_board_slugs() -> tuple[str, ...]:
+    root = Path(__file__).resolve().parents[2]
+    bindings_path = root / PRODUCTION_BOARD_BINDINGS_PATH
+    board_set_path = root / PRODUCTION_BOARD_SET_PATH
+    try:
+        bindings = strict_json_loads(bindings_path.read_bytes())
+        board_set_bytes = board_set_path.read_bytes()
+        board_set = strict_json_loads(board_set_bytes)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise OperationalControlsError(
+            "canonical production board binding artifacts must be readable strict JSON"
+        ) from exc
+    board_pin = bindings.get("board_set") if isinstance(bindings, dict) else None
+    records = bindings.get("records") if isinstance(bindings, dict) else None
+    slugs = board_set.get("boards") if isinstance(board_set, dict) else None
+    if (
+        not isinstance(bindings, dict)
+        or set(bindings) != {"schema_version", "board_set", "records"}
+        or bindings.get("schema_version") != "p42-prizes/production-board-bindings/v1"
+        or not isinstance(board_pin, dict)
+        or board_pin.get("path") != PRODUCTION_BOARD_SET_PATH
+        or board_pin.get("sha256") != sha256_bytes(board_set_bytes)
+        or not isinstance(board_set, dict)
+        or set(board_set) != {"schema", "status", "evidence", "boards"}
+        or board_set.get("schema") != "p42-prizes/production-board-set/v1"
+        or board_set.get("status") != "frozen-source-cohort"
+        or not isinstance(slugs, list)
+        or len(slugs) != 10
+        or len(set(slugs)) != 10
+        or any(
+            not isinstance(slug, str) or re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug) is None
+            for slug in slugs
+        )
+        or not isinstance(records, list)
+        or [record.get("slug") if isinstance(record, dict) else None for record in records] != slugs
+    ):
+        raise OperationalControlsError(
+            "canonical production board binding artifacts do not define one pinned ordered exact-ten cohort"
+        )
+    return tuple(slugs)
 
 
 def _require_text(value: Any, prefix: str) -> str:
