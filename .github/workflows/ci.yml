@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches: [main]   # was: all branches. Feature-branch commits are gated via pull_request below;
+                       # this stops every push+PR pair from double-running CI (~half the runs). No coverage loss.
   pull_request:
 
 # CI needs repository contents only. Release/deployment credentials never run here.
