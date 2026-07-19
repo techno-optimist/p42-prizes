@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -16,6 +17,7 @@ from p42_prizes.production_runtime_config import (
 )
 from p42_prizes.problem import load_manifest
 from p42_prizes.runtime_admission import (
+    exact_commit_snapshot as snapshot_commit,
     validate_clean_checkout as validate_checkout,
     validate_matrix_host_set_bundles as replay_host_sets,
 )
@@ -36,7 +38,7 @@ def _evidence_file(path: Path, value: dict) -> str:
     return sha256_bytes(payload)
 
 
-def _artifact(evidence_root: Path) -> dict:
+def _artifact(evidence_root: Path, *, release_commit: str = COMMIT_R) -> dict:
     evidence_root.mkdir(parents=True, exist_ok=True)
     slugs = json.loads((ROOT / "protocol/production-board-set-v1.json").read_text())["boards"]
     records = json.loads((ROOT / "protocol/production-board-bindings-v1.json").read_text())["records"]
@@ -44,7 +46,7 @@ def _artifact(evidence_root: Path) -> dict:
     dossier = {
         "dossier_hash": DIGEST_B,
         "verifier_source_commit": COMMIT_S,
-        "release_config_commit": COMMIT_R,
+        "release_config_commit": release_commit,
         "publication_journal_hash": "sha256:" + "c" * 64,
         "boards": [
             {"slug": slug, "release_manifest_path": f"problems/{slug}/problem.yaml"}
@@ -61,7 +63,7 @@ def _artifact(evidence_root: Path) -> dict:
             "dossier": {
                 "path": str(dossier_path),
                 "dossier_hash": DIGEST_B, "verifier_source_commit": COMMIT_S,
-                "release_config_commit": COMMIT_R,
+                "release_config_commit": release_commit,
             },
             "boards": [{"slug": slug} for slug in slugs],
             "host_set_hash": host_hash,
@@ -97,7 +99,7 @@ def _artifact(evidence_root: Path) -> dict:
             "verifier_image": f"ghcr.io/example/p42/{slug}@{image_digest}",
             "verifier_source_sha256": record["verifier"]["source_tree_sha256"],
             "verifier_source_commit": COMMIT_S,
-            "release_config_commit": COMMIT_R,
+            "release_config_commit": release_commit,
             "resource": resource,
             "resource_identity": sha256_bytes(canonical_json(resource).encode()),
             "admission": {
@@ -118,7 +120,7 @@ def _artifact(evidence_root: Path) -> dict:
             "file_sha256": dossier_file_sha256,
             "dossier_hash": DIGEST_B,
             "verifier_source_commit": COMMIT_S,
-            "release_config_commit": COMMIT_R,
+            "release_config_commit": release_commit,
             "publication_journal_hash": "sha256:" + "c" * 64,
         },
         "boards": boards,
@@ -133,6 +135,12 @@ def _stub_expensive_admission_replay(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runtime_config, "validate_admission_matrix", lambda matrix: dict(matrix))
     monkeypatch.setattr(runtime_config, "_trusted_operator_profiles", lambda *_: {"fixture-key": {}})
     monkeypatch.setattr(runtime_config, "validate_clean_checkout", lambda _root: COMMIT_R)
+
+    @contextmanager
+    def current_test_tree(root: Path, _commit: str):
+        yield root
+
+    monkeypatch.setattr(runtime_config, "exact_commit_snapshot", current_test_tree)
 
     def validate_bundles(matrix, bundles, *, dossier, **_kwargs) -> None:
         matrix_hashes = [item.get("host_set_hash") for item in matrix.get("host_sets", [])]
@@ -402,8 +410,7 @@ def test_runtime_release_rejects_dirty_checkout_before_local_inputs(
 ) -> None:
     checkout = tmp_path / "checkout"
     head = _git_checkout(checkout)
-    value = _artifact(tmp_path / "evidence")
-    value["verifier_image_release"]["release_config_commit"] = head
+    value = _artifact(tmp_path / "evidence", release_commit=head)
     (checkout / "dirty.txt").write_text("untracked\n", encoding="utf-8")
     path = tmp_path / "runtime-release.json"
     pin = _write(path, value)
@@ -427,4 +434,49 @@ def test_runtime_release_rejects_wrong_head_before_local_inputs(
     monkeypatch.setattr(runtime_config, "_load", lambda *_: pytest.fail("local input read before HEAD check"))
 
     with pytest.raises(ProductionRuntimeConfigError, match="HEAD does not match.*commit R"):
+        load_runtime_release(checkout, path, expected_sha256=pin, image_probe=lambda *_: None)
+
+
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_exact_checkout_rejects_index_flags_that_hide_tracked_replacement(
+    tmp_path: Path, flag: str,
+) -> None:
+    checkout = tmp_path / "checkout"
+    _git_checkout(checkout)
+    subprocess.run(
+        ["git", "-C", str(checkout), "update-index", flag, "tracked.txt"], check=True,
+    )
+    (checkout / "tracked.txt").write_text("hostile replacement\n", encoding="utf-8")
+
+    with pytest.raises(AdmissionError, match="assume-unchanged or skip-worktree"):
+        validate_checkout(checkout)
+
+
+def test_runtime_release_rejects_tracked_replacement_during_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "checkout"
+    subprocess.run(["git", "clone", "-q", str(ROOT), str(checkout)], check=True)
+    head = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    value = _artifact(tmp_path / "evidence", release_commit=head)
+    path = tmp_path / "runtime-release.json"
+    pin = _write(path, value)
+    original_load = runtime_config._load
+    replaced = False
+
+    def replace_during_first_local_read(local_path: Path):
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            (checkout / "README.md").write_text("hostile replacement during validation\n", encoding="utf-8")
+        return original_load(local_path)
+
+    monkeypatch.setattr(runtime_config, "validate_clean_checkout", validate_checkout)
+    monkeypatch.setattr(runtime_config, "exact_commit_snapshot", snapshot_commit)
+    monkeypatch.setattr(runtime_config, "_load", replace_during_first_local_read)
+
+    with pytest.raises(ProductionRuntimeConfigError, match="changed during validation.*tracked working-tree bytes"):
         load_runtime_release(checkout, path, expected_sha256=pin, image_probe=lambda *_: None)

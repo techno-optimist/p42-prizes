@@ -18,6 +18,7 @@ from .admission import (
 )
 from .problem import load_manifest
 from .runtime_admission import (
+    exact_commit_snapshot,
     load_fixture_manifest,
     validate_clean_checkout,
     validate_matrix_host_set_bundles,
@@ -226,6 +227,41 @@ def load_runtime_release(
         raise ProductionRuntimeConfigError(
             "production runtime checkout HEAD does not match release/config commit R"
         )
+    try:
+        with exact_commit_snapshot(root, release_config_commit) as snapshot_root:
+            checked = _validate_runtime_release_snapshot(
+                root,
+                snapshot_root,
+                value,
+                image_release,
+                release_config_commit,
+                image_probe=image_probe,
+                docker_host=docker_host,
+            )
+        final_head = validate_clean_checkout(root)
+    except AdmissionError as exc:
+        raise ProductionRuntimeConfigError(
+            f"production runtime checkout changed during validation: {exc}"
+        ) from exc
+    if final_head != release_config_commit:
+        raise ProductionRuntimeConfigError(
+            "production runtime checkout HEAD changed during validation"
+        )
+    return checked
+
+
+def _validate_runtime_release_snapshot(
+    checkout_root: Path,
+    root: Path,
+    value: Any,
+    image_release: Any,
+    release_config_commit: str,
+    *,
+    image_probe: Callable[[str, str | None], None] | None,
+    docker_host: str | None,
+) -> dict[str, Any]:
+    """Consume local validation inputs only from the materialized exact-R tree."""
+
     if not isinstance(value, dict) or value.get("schema_version") != RUNTIME_RELEASE_SCHEMA:
         raise ProductionRuntimeConfigError("unsupported production runtime release artifact schema")
     if value.get("status") != "finalized" or value.get("release_ready") is not True:
@@ -329,7 +365,7 @@ def load_runtime_release(
             raise ProductionRuntimeConfigError(f"{slug} admit-release-ready host evidence is invalid")
         _require_digest(admission.get("matrix_hash"), f"{slug} admission matrix")
         raw_matrix = _load_external_evidence(
-            root, admission.get("matrix_path"), admission.get("matrix_file_sha256"),
+            checkout_root, admission.get("matrix_path"), admission.get("matrix_file_sha256"),
             f"{slug} admission matrix",
         )
         try:
@@ -358,10 +394,10 @@ def load_runtime_release(
             if not isinstance(bundle_path_value, str) or not Path(bundle_path_value).is_absolute():
                 raise ProductionRuntimeConfigError(f"{slug} host-set bundle path must be absolute")
             bundle_path = Path(bundle_path_value)
-            if bundle_path.is_relative_to(root):
+            if bundle_path.is_relative_to(checkout_root):
                 raise ProductionRuntimeConfigError(f"{slug} host-set bundle must be external to the source checkout")
             host_set = _load_external_evidence(
-                root, str(bundle_path / "host-set.json"), host_file.get("file_sha256"),
+                checkout_root, str(bundle_path / "host-set.json"), host_file.get("file_sha256"),
                 f"{slug} host set {host_index + 1}",
             )
             host_dossier_path = host_set.get("dossier", {}).get("path")
@@ -373,7 +409,7 @@ def load_runtime_release(
             raise ProductionRuntimeConfigError(f"{slug} host-set dossier substitution detected")
         dossier_path = dossier_paths.pop()
         if bound_dossier is None:
-            bound_dossier = _load_bound_dossier(root, dossier_path, image_release)
+            bound_dossier = _load_bound_dossier(checkout_root, dossier_path, image_release)
             bound_dossier_path = dossier_path
         elif dossier_path != bound_dossier_path:
             raise ProductionRuntimeConfigError(f"{slug} host-set dossier substitution detected")

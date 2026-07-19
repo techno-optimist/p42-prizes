@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import ctypes
 import errno
+import hashlib
 import importlib.util
 import json
 import os
@@ -13,7 +15,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 import jsonschema
 
@@ -199,13 +201,154 @@ def _git(root: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
+def _git_bytes(root: Path, *args: str) -> bytes:
+    completed = subprocess.run(
+        ["git", "-C", str(root), *args], capture_output=True, check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeAdmissionError(
+            f"git {' '.join(args)} failed: {completed.stderr.decode(errors='replace').strip()}"
+        )
+    return completed.stdout
+
+
+def _git_blob_hash(payload: bytes, algorithm: str) -> str:
+    digest = hashlib.new(algorithm)
+    digest.update(f"blob {len(payload)}\0".encode("ascii"))
+    digest.update(payload)
+    return digest.hexdigest()
+
+
+def _read_exact_tracked_blob(path: Path, expected_mode: str) -> bytes:
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        raise RuntimeAdmissionError(f"tracked path is unavailable: {path}") from exc
+    if expected_mode == "120000":
+        if not stat.S_ISLNK(before.st_mode):
+            raise RuntimeAdmissionError(f"tracked path mode differs from release commit: {path}")
+        try:
+            payload = os.fsencode(os.readlink(path))
+            after = path.lstat()
+        except OSError as exc:
+            raise RuntimeAdmissionError(f"tracked symlink is unavailable: {path}") from exc
+        if (before.st_dev, before.st_ino, before.st_mode, before.st_size) != (
+            after.st_dev, after.st_ino, after.st_mode, after.st_size,
+        ):
+            raise RuntimeAdmissionError(f"tracked symlink changed while reading: {path}")
+        return payload
+    if expected_mode not in {"100644", "100755"} or not stat.S_ISREG(before.st_mode):
+        raise RuntimeAdmissionError(f"tracked path mode differs from release commit: {path}")
+    expected_permissions = 0o755 if expected_mode == "100755" else 0o644
+    if before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != expected_permissions:
+        raise RuntimeAdmissionError(f"tracked file mode differs from release commit: {path}")
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise RuntimeAdmissionError("exact checkout validation requires O_NOFOLLOW")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0))
+    except OSError as exc:
+        raise RuntimeAdmissionError(f"could not open tracked path without following links: {path}") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            raise RuntimeAdmissionError(f"tracked path changed while opening: {path}")
+        payload = bytearray()
+        while len(payload) < opened.st_size:
+            chunk = os.read(descriptor, opened.st_size - len(payload))
+            if not chunk:
+                raise RuntimeAdmissionError(f"tracked path was truncated while reading: {path}")
+            payload.extend(chunk)
+        final_fd = os.fstat(descriptor)
+        final_path = path.lstat()
+        identity = (
+            opened.st_dev, opened.st_ino, opened.st_mode, opened.st_size,
+            opened.st_mtime_ns, opened.st_ctime_ns,
+        )
+        if identity != (
+            final_fd.st_dev, final_fd.st_ino, final_fd.st_mode, final_fd.st_size,
+            final_fd.st_mtime_ns, final_fd.st_ctime_ns,
+        ) or identity != (
+            final_path.st_dev, final_path.st_ino, final_path.st_mode, final_path.st_size,
+            final_path.st_mtime_ns, final_path.st_ctime_ns,
+        ):
+            raise RuntimeAdmissionError(f"tracked path changed while reading: {path}")
+        return bytes(payload)
+    finally:
+        os.close(descriptor)
+
+
 def validate_clean_checkout(root: Path) -> str:
-    """Return HEAD only after proving that no tracked or untracked path is dirty."""
+    """Prove index and working-tree bytes are exactly the checked-out commit."""
 
     head = _git(root, "rev-parse", "HEAD")
-    if _git(root, "status", "--porcelain", "--untracked-files=all"):
+    object_format = _git(root, "rev-parse", "--show-object-format")
+    if object_format not in {"sha1", "sha256"}:
+        raise RuntimeAdmissionError("production evidence requires a supported Git object format")
+    tree_records: dict[bytes, tuple[str, str]] = {}
+    for record in _git_bytes(root, "ls-tree", "-rz", "--full-tree", head).split(b"\0"):
+        if not record:
+            continue
+        metadata, path = record.split(b"\t", 1)
+        mode, object_type, object_id = metadata.decode("ascii").split()
+        if object_type != "blob" or path in tree_records:
+            raise RuntimeAdmissionError("production release commit contains unsupported or duplicate entries")
+        tree_records[path] = (mode, object_id)
+    index_records: dict[bytes, tuple[str, str]] = {}
+    for record in _git_bytes(root, "ls-files", "-s", "-z").split(b"\0"):
+        if not record:
+            continue
+        metadata, path = record.split(b"\t", 1)
+        mode, object_id, stage = metadata.decode("ascii").split()
+        if stage != "0" or path in index_records:
+            raise RuntimeAdmissionError("production checkout index contains unmerged or duplicate entries")
+        index_records[path] = (mode, object_id)
+    if index_records != tree_records:
+        raise RuntimeAdmissionError("production checkout index does not exactly match the release commit")
+    flag_records = [record for record in _git_bytes(root, "ls-files", "-v", "-z").split(b"\0") if record]
+    if len(flag_records) != len(tree_records) or any(record[:2] != b"H " for record in flag_records):
+        raise RuntimeAdmissionError("production checkout index contains assume-unchanged or skip-worktree flags")
+    if _git_bytes(root, "ls-files", "--others", "--exclude-standard", "-z"):
         raise RuntimeAdmissionError("production evidence requires an entirely clean checkout")
+    for relative, (mode, object_id) in tree_records.items():
+        logical = os.fsdecode(relative)
+        if Path(logical).is_absolute() or ".." in Path(logical).parts:
+            raise RuntimeAdmissionError("release commit contains an unsafe tracked path")
+        payload = _read_exact_tracked_blob(root / logical, mode)
+        if _git_blob_hash(payload, object_format) != object_id:
+            raise RuntimeAdmissionError(f"tracked working-tree bytes differ from release commit: {logical}")
+    if _git(root, "rev-parse", "HEAD") != head:
+        raise RuntimeAdmissionError("production checkout HEAD changed during exact-tree validation")
     return head
+
+
+@contextmanager
+def exact_commit_snapshot(root: Path, commit: str) -> Iterator[Path]:
+    """Materialize local validation inputs solely from one immutable Git commit."""
+
+    if re.fullmatch(r"[0-9a-f]{40,64}", commit) is None:
+        raise RuntimeAdmissionError("exact snapshot commit is invalid")
+    with tempfile.TemporaryDirectory(prefix="p42-exact-release-") as directory:
+        archive_path = Path(directory) / "release.tar"
+        completed = subprocess.run(
+            ["git", "-C", str(root), "archive", "--format=tar", "-o", str(archive_path), commit],
+            text=True, capture_output=True, check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeAdmissionError(
+                f"could not materialize exact release snapshot: {completed.stderr.strip()}"
+            )
+        snapshot = Path(directory) / "checkout"
+        snapshot.mkdir(mode=0o700)
+        try:
+            with tarfile.open(archive_path, mode="r:") as archive:
+                archive.extractall(snapshot, filter="data")
+        except (OSError, tarfile.TarError) as exc:
+            raise RuntimeAdmissionError("could not extract exact release snapshot") from exc
+        yield snapshot
 
 
 def validate_clean_source(root: Path, dossier: Mapping[str, Any]) -> None:
