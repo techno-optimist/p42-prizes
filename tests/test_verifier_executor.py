@@ -213,6 +213,22 @@ def test_communicate_and_reap_timeouts_share_one_spawn_deadline(tmp_path: Path, 
     assert events[1] == "worker:5.75"
 
 
+def test_process_lookup_during_kill_waits_before_reporting_reaped(tmp_path: Path, monkeypatch) -> None:
+    events = []
+
+    class ObservedUninterruptibleProcess(UninterruptibleProcess):
+        def poll(self):
+            self.events.append("poll")
+            return None
+
+    process = ObservedUninterruptibleProcess(events)
+    monkeypatch.setattr(os, "killpg", lambda _pid, _signal: (_ for _ in ()).throw(ProcessLookupError()))
+    service = executor(tmp_path, FakeDocker(events))
+
+    assert service._terminate_and_reap_bounded(process, absolute_deadline=107.0) is False
+    assert events == ["poll", "wait:0.5", "poll"]
+
+
 def test_orphan_reconcile_failure_prevents_any_new_lease(tmp_path: Path, monkeypatch) -> None:
     events = []
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: pytest.fail("worker must not start"))

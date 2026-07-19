@@ -66,6 +66,7 @@
         "generated_at_utc",
         "started_at_utc",
         "problem",
+        "board_identity",
         "solution",
         "da",
         "resource_limits",

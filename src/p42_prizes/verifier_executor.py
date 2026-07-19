@@ -362,7 +362,14 @@ class VerifierExecutor:
             try:
                 os.killpg(process.pid, signal_number)
             except ProcessLookupError:
-                return True
+                remaining = absolute_deadline - self.monotonic()
+                if remaining > 0:
+                    try:
+                        process.wait(timeout=min(0.5, remaining))
+                        return True
+                    except subprocess.TimeoutExpired:
+                        pass
+                return process.poll() is not None
             remaining = absolute_deadline - self.monotonic()
             if remaining <= 0:
                 return process.poll() is not None
