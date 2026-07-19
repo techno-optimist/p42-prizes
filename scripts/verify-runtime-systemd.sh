@@ -14,16 +14,18 @@ resolver="$root/deployments/p42-resolver@.service.example"
 indexer="$root/deployments/p42-indexer.service.example"
 failure="$root/deployments/p42-runtime-failure@.service.example"
 sysusers="$root/deployments/p42-runtime.sysusers.example"
+tmpfiles="$root/deployments/p42-runtime.tmpfiles.example"
 boards="$root/deployments/p42-verifier-executor-boards.json.example"
-for f in "$operator" "$executor" "$docker" "$resolver" "$indexer" "$failure" "$sysusers" "$boards"; do [[ -f $f ]] || fail "missing $f"; done
+for f in "$operator" "$executor" "$docker" "$resolver" "$indexer" "$failure" "$sysusers" "$tmpfiles" "$boards"; do [[ -f $f ]] || fail "missing $f"; done
 
-line "$operator" 'User=p42-operator'
-line "$operator" 'Group=p42-operator'
+line "$operator" 'User=p42-operator-%i'
+line "$operator" 'Group=p42-verifier-submitters'
 line "$operator" 'Requires=p42-verifier-executor.service'
 line "$operator" 'After=network-online.target p42-verifier-executor.service'
 line "$operator" 'EnvironmentFile=/etc/p42/operator/%i/runtime.env'
 line "$operator" 'ProtectSystem=strict'
 line "$operator" 'StateDirectoryMode=0700'
+line "$operator" 'StateDirectory=p42/operator/%i'
 line "$operator" 'ReadWritePaths=/var/lib/p42/operator/%i /var/lib/p42/operator/coordination'
 line "$operator" '  --cycle-timeout-ms 22000000 --kill-grace-ms 10000 --max-failures 5 \'
 absent "$operator" '^Environment=DOCKER_HOST| --docker-host|--host-scheduler|p42-verifier-docker/docker.sock' 'must not access Docker or executor state directly'
@@ -41,6 +43,7 @@ line "$executor" '  --cgroup-attestation /run/p42-verifier-docker/cgroup-attesta
 line "$executor" '  --reserve-memory-mb 2048 \'
 line "$executor" '  --memory-safety-factor 2.0 \'
 line "$executor" '  --authorization-fence-timeout-seconds 30 \'
+line "$executor" '  --operator-user-prefix p42-operator- \'
 line "$executor" 'ReadOnlyPaths=/etc/p42/verifier-executor /opt/p42'
 line "$docker" 'User=p42-verifier-executor'
 line "$docker" 'Group=p42-verifier-executor'
@@ -117,14 +120,19 @@ line "$failure" 'NoNewPrivileges=true'
 for expected in \
  'g p42-verifier-submitters -' \
  'u p42-verifier-executor - "P42 host verifier executor" /var/lib/p42/verifier-executor /usr/sbin/nologin' \
- 'm p42-operator p42-verifier-submitters' \
  'm p42-verifier-executor p42-verifier-submitters'; do line "$sysusers" "$expected"; done
 
 for expected in \
- 'u p42-operator - "P42 operator runtime" /var/lib/p42/operator /usr/sbin/nologin' \
  'u p42-resolver - "P42 resolver runtime" /var/lib/p42/resolver /usr/sbin/nologin' \
  'u p42-indexer - "P42 indexer runtime" /var/lib/p42/indexer /usr/sbin/nologin' \
  'u p42-runtime-evidence - "P42 runtime failure evidence recorder" /var/lib/p42/runtime-evidence /usr/sbin/nologin'; do line "$sysusers" "$expected"; done
+
+for board in 2 3 4 5 6 8 9 10 11 12; do
+  line "$sysusers" "u p42-operator-$board - \"P42 board $board operator runtime\" /var/lib/p42/operator/$board /usr/sbin/nologin"
+  line "$sysusers" "m p42-operator-$board p42-verifier-submitters"
+done
+absent "$sysusers" '^u p42-operator ' 'must not define a shared cross-board operator UID'
+line "$tmpfiles" 'd /var/lib/p42/operator/coordination 0770 root p42-verifier-submitters -'
 
 preflight="$root/scripts/p42_rootless_docker_preflight.py"
 ready="$root/scripts/p42_rootless_docker_ready.py"

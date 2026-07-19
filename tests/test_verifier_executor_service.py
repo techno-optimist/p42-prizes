@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -219,3 +220,61 @@ def test_board_key_forces_identity_and_rejects_shared_uid_substitution(tmp_path:
             SERVICE.bind_job_to_board(board, {**supplied, field: value})
     with pytest.raises(SERVICE.VerifierExecutorError, match="chain problem"):
         SERVICE.bind_job_to_board(board, {"chain_claim": {"problem_id": "other"}})
+
+
+def make_board(tmp_path: Path, board_id: str) -> SERVICE.BoardExecution:
+    suffix = board_id.split(":", 2)[1]
+    return SERVICE.BoardExecution(
+        board_id, tmp_path / suffix / "queue", tmp_path / suffix / "transcripts",
+        tmp_path / suffix / "stage", tmp_path / suffix / "alerts", 4096, 90, {},
+    )
+
+
+def test_peer_board_map_requires_distinct_per_board_os_principals(tmp_path: Path) -> None:
+    first = make_board(tmp_path, "84532:2:first")
+    second = make_board(tmp_path, "84532:3:second")
+    users = {"p42-operator-2": 2002, "p42-operator-3": 2003}
+
+    mapping = SERVICE.build_peer_board_map(
+        {first.board_id: first, second.board_id: second}, "p42-operator-",
+        user_lookup=lambda name: SimpleNamespace(pw_uid=users[name]),
+    )
+
+    assert mapping == {2002: first, 2003: second}
+    with pytest.raises(SERVICE.VerifierExecutorError, match="distinct non-root UIDs"):
+        SERVICE.build_peer_board_map(
+            {first.board_id: first, second.board_id: second}, "p42-operator-",
+            user_lookup=lambda _name: SimpleNamespace(pw_uid=2002),
+        )
+    with pytest.raises(SERVICE.VerifierExecutorError, match="missing per-board operator user"):
+        SERVICE.build_peer_board_map(
+            {first.board_id: first}, "p42-operator-", user_lookup=lambda _name: (_ for _ in ()).throw(KeyError()),
+        )
+
+
+@pytest.mark.parametrize(
+    ("operation", "arguments"),
+    [("execute", None), ("fence", None)]
+    + [("bridge", [command]) for command in sorted(SERVICE.BRIDGE_COMMANDS)],
+)
+def test_ipc_boundary_rejects_cross_board_substitution_for_every_operation(
+    tmp_path: Path, operation: str, arguments: list[str] | None,
+) -> None:
+    own = make_board(tmp_path, "84532:2:first")
+    other = make_board(tmp_path, "84532:3:second")
+    request = {"operation": operation, "board_id": other.board_id}
+    if arguments is not None:
+        request["arguments"] = arguments
+
+    with pytest.raises(SERVICE.VerifierExecutorError, match="does not match peer authority"):
+        SERVICE.authorize_peer_board(4242, 2002, request, {2002: own, 2003: other})
+
+
+@pytest.mark.parametrize("board_id", [None, "", "84532:2:first\x00substitution"])
+def test_ipc_boundary_fails_closed_without_exact_peer_board_id(tmp_path: Path, board_id: str | None) -> None:
+    board = make_board(tmp_path, "84532:2:first")
+    with pytest.raises(SERVICE.VerifierExecutorError, match="does not match peer authority"):
+        SERVICE.authorize_peer_board(4242, 2002, {"board_id": board_id}, {2002: board})
+    assert SERVICE.authorize_peer_board(
+        4242, 2002, {"board_id": board.board_id}, {2002: board},
+    ) is board

@@ -41,6 +41,7 @@ sys.modules[LAUNCH_SPEC.name] = LAUNCH
 LAUNCH_SPEC.loader.exec_module(LAUNCH)
 FILES = (
     "deployments/p42-runtime.sysusers.example",
+    "deployments/p42-runtime.tmpfiles.example",
     "deployments/p42-operator@.service.example",
     "deployments/p42-resolver@.service.example",
     "deployments/p42-indexer.service.example",
@@ -314,7 +315,12 @@ def test_rootless_launcher_rejects_an_unbound_command() -> None:
 @pytest.mark.parametrize(
     ("relative", "old", "new", "error"),
     [
-        ("deployments/p42-operator@.service.example", "User=p42-operator", "User=root", "User=p42-operator"),
+        (
+            "deployments/p42-operator@.service.example",
+            "User=p42-operator-%i",
+            "User=p42-operator",
+            "User=p42-operator-%i",
+        ),
         (
             "deployments/p42-verifier-docker.service.example",
             "User=p42-verifier-executor",

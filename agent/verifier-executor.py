@@ -36,6 +36,10 @@ from p42_prizes.verifier_executor import (  # noqa: E402
 
 MAX_REQUEST_BYTES = 16 * 1024
 FENCE_RELEASE_FRAME = b"RELEASE\n"
+BRIDGE_COMMANDS = frozenset({
+    "enqueue", "read", "record-action", "terminalize-local", "reconcile-terminal-alert",
+    "quarantine-canonical",
+})
 
 
 def send_response(connection: socket.socket, response: dict) -> bool:
@@ -219,6 +223,40 @@ def validate_effective_cgroup_policy(
         raise VerifierExecutorError("executor policy differs from effective cgroup readiness attestation")
 
 
+def build_peer_board_map(
+    boards: dict[str, BoardExecution], operator_user_prefix: str, *, user_lookup=pwd.getpwnam,
+) -> dict[int, BoardExecution]:
+    """Bind each configured board to a distinct, kernel-attested operator UID."""
+    if not operator_user_prefix or "/" in operator_user_prefix:
+        raise VerifierExecutorError("invalid per-board operator user prefix")
+    peers: dict[int, BoardExecution] = {}
+    for board in boards.values():
+        parts = board.board_id.split(":", 2)
+        if len(parts) != 3 or not parts[1].isdigit() or not parts[1]:
+            raise VerifierExecutorError("board id cannot be bound to a per-board operator user")
+        username = f"{operator_user_prefix}{parts[1]}"
+        try:
+            uid = user_lookup(username).pw_uid
+        except KeyError as exc:
+            raise VerifierExecutorError(f"missing per-board operator user: {username}") from exc
+        if uid < 1 or uid in peers:
+            raise VerifierExecutorError("per-board operator users must have distinct non-root UIDs")
+        peers[uid] = board
+    return peers
+
+
+def authorize_peer_board(
+    pid: int, uid: int, request: dict, peer_boards: dict[int, BoardExecution],
+) -> BoardExecution:
+    """Resolve board authority from SO_PEERCRED and reject payload substitution."""
+    board = peer_boards.get(uid)
+    if pid < 1 or board is None:
+        raise VerifierExecutorError("unauthorized executor IPC peer")
+    if request.get("board_id") != board.board_id:
+        raise VerifierExecutorError("executor IPC board does not match peer authority")
+    return board
+
+
 def bind_job_to_board(board: BoardExecution, supplied: dict) -> dict:
     """Reject substitutions, then inject the executor-owned board identity."""
     identity = dict(board.identity or {})
@@ -250,7 +288,6 @@ def serve(args: argparse.Namespace) -> None:
         raise VerifierExecutorError("authorization fence deadline must be in (0, 60] seconds")
     if not Path(args.cgroup_attestation).is_absolute():
         raise VerifierExecutorError("executor cgroup attestation path must be absolute")
-    expected_uid = pwd.getpwnam(args.operator_user).pw_uid
     submit_group = grp.getgrnam(args.submit_group).gr_gid
     singleton_lock_fd = acquire_singleton_lock(Path(args.lock))
     pin_path = Path(args.runtime_release_sha256_file)
@@ -264,6 +301,7 @@ def serve(args: argparse.Namespace) -> None:
             or configured_release.get("sha256") != release_pin):
         raise VerifierExecutorError("executor config does not match the independently pinned runtime release")
     boards = load_boards(Path(args.config), Path(args.repository_root), docker_host=args.docker_host)
+    peer_boards = build_peer_board_map(boards, args.operator_user_prefix)
     capacity_reader = lambda: host_capacity_snapshot(Path(args.cgroup_attestation))
     startup_capacity = capacity_reader()
     validate_effective_cgroup_policy(
@@ -286,18 +324,17 @@ def serve(args: argparse.Namespace) -> None:
     os.chown(socket_path, os.getuid(), submit_group)
     os.chmod(socket_path, 0o660)
     listener.listen(128)
-    pending: queue.Queue[tuple[socket.socket, dict]] = queue.Queue(maxsize=1024)
+    pending: queue.Queue[tuple[socket.socket, dict, BoardExecution]] = queue.Queue(maxsize=1024)
     auxiliary_slots = threading.BoundedSemaphore(64)
-    active_request_ids: set[str] = set()
+    active_request_ids: set[tuple[str, str]] = set()
     active_request_ids_lock = threading.Lock()
 
-    def bridge_request(request: dict) -> dict:
-        board = executor.boards.get(str(request.get("board_id")))
+    def bridge_request(board: BoardExecution, request: dict) -> dict:
         arguments = request.get("arguments")
-        if board is None or not isinstance(arguments, list) or not arguments or not all(isinstance(v, str) for v in arguments):
+        if not isinstance(arguments, list) or not arguments or not all(isinstance(v, str) for v in arguments):
             raise VerifierExecutorError("invalid board bridge request")
         command = arguments[0]
-        if command not in {"enqueue", "read", "record-action", "terminalize-local", "reconcile-terminal-alert", "quarantine-canonical"}:
+        if command not in BRIDGE_COMMANDS:
             raise VerifierExecutorError("bridge command is not allowed through executor IPC")
         cleaned = [command]
         skip = False
@@ -348,10 +385,11 @@ def serve(args: argparse.Namespace) -> None:
 
     def worker() -> None:
         while True:
-            connection, request = pending.get()
+            connection, request, board = pending.get()
             try:
                 response = {"ok": True, "result": executor.execute({
-                    key: request[key] for key in ("schema_version", "request_id", "board_id", "chain_timestamp")
+                    "schema_version": request["schema_version"], "request_id": request["request_id"],
+                    "board_id": board.board_id, "chain_timestamp": request["chain_timestamp"],
                 })}
             except Exception as error:
                 response = {"ok": False, "error": str(error)[:512]}
@@ -361,18 +399,15 @@ def serve(args: argparse.Namespace) -> None:
                 request_id = request.get("request_id")
                 if isinstance(request_id, str):
                     with active_request_ids_lock:
-                        active_request_ids.discard(request_id)
+                        active_request_ids.discard((board.board_id, request_id))
                 connection.close()
                 pending.task_done()
 
-    def auxiliary(connection: socket.socket, request: dict) -> None:
+    def auxiliary(connection: socket.socket, request: dict, board: BoardExecution) -> None:
         try:
             if request.get("operation") == "bridge":
-                response = bridge_request(request)
+                response = bridge_request(board, request)
             elif request.get("operation") == "fence":
-                board = executor.boards.get(str(request.get("board_id")))
-                if board is None:
-                    raise VerifierExecutorError("unknown fence board")
                 run_authorization_fence(
                     connection,
                     [sys.executable, str(ROOT / "agent/runtime_bridge.py"), "authorization-fence",
@@ -395,31 +430,33 @@ def serve(args: argparse.Namespace) -> None:
         connection, _ = listener.accept()
         try:
             pid, uid, _gid = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-            if uid != expected_uid or pid < 1:
-                raise VerifierExecutorError("unauthorized executor IPC peer")
             request = json.loads(read_request_frame(connection, args.ipc_read_timeout_seconds))
+            if not isinstance(request, dict):
+                raise VerifierExecutorError("executor IPC request must be an object")
+            board = authorize_peer_board(pid, uid, request, peer_boards)
             if request.get("operation") == "execute":
                 request_id = request.get("request_id")
                 if not isinstance(request_id, str):
                     raise VerifierExecutorError("execute request has no request id")
+                active_key = (board.board_id, request_id)
                 with active_request_ids_lock:
-                    if request_id in active_request_ids:
+                    if active_key in active_request_ids:
                         send_response(connection, {"ok": True, "result": {
                             "reason": "executor_request_already_pending", "selected_job_id": None,
                         }})
                         connection.close()
                         continue
-                    active_request_ids.add(request_id)
+                    active_request_ids.add(active_key)
                 try:
-                    pending.put_nowait((connection, request))
+                    pending.put_nowait((connection, request, board))
                 except queue.Full:
                     with active_request_ids_lock:
-                        active_request_ids.discard(request_id)
+                        active_request_ids.discard(active_key)
                     raise
             else:
                 if not auxiliary_slots.acquire(blocking=False):
                     raise VerifierExecutorError("too many concurrent executor control requests")
-                threading.Thread(target=auxiliary, args=(connection, request), daemon=True).start()
+                threading.Thread(target=auxiliary, args=(connection, request, board), daemon=True).start()
         except Exception as error:
             send_response(connection, {"ok": False, "error": str(error)[:512]})
             connection.close()
@@ -433,7 +470,8 @@ def main() -> None:
     parser.add_argument("--runtime-release", required=True)
     parser.add_argument("--runtime-release-sha256-file", required=True)
     parser.add_argument("--state", required=True); parser.add_argument("--lock", required=True)
-    parser.add_argument("--docker-host", required=True); parser.add_argument("--operator-user", default="p42-operator")
+    parser.add_argument("--docker-host", required=True)
+    parser.add_argument("--operator-user-prefix", default="p42-operator-")
     parser.add_argument("--submit-group", default="p42-verifier-submitters")
     parser.add_argument("--reserve-memory-mb", type=int, default=2048)
     parser.add_argument("--max-swap-used-mb", type=int, default=1024)

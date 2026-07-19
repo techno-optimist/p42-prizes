@@ -24,6 +24,7 @@ ExecStart=/usr/bin/python3 /opt/p42/agent/verifier-executor.py \
   --reserve-memory-mb 2048 \
   --memory-safety-factor 2.0 \
   --authorization-fence-timeout-seconds 30 \
+  --operator-user-prefix p42-operator- \
   --docker-host unix:///run/p42-verifier-docker/docker.sock
 Restart=on-failure
 RestartSec=15s

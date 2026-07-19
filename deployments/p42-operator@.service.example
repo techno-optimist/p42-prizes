@@ -9,8 +9,9 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=p42-operator
-Group=p42-operator
+# Instance %i is the registry board number and selects a distinct OS principal.
+User=p42-operator-%i
+Group=p42-verifier-submitters
 EnvironmentFile=/etc/p42/operator/%i/runtime.env
 LoadCredential=operator-private-key:/etc/p42/operator/%i/credentials/operator-private-key
 LoadCredential=rpc-primary-url:/etc/p42/operator/%i/credentials/rpc-primary-url
@@ -51,7 +52,7 @@ KillMode=mixed
 TimeoutStopSec=20s
 SendSIGKILL=yes
 UMask=0077
-StateDirectory=p42/operator/%i p42/operator/coordination
+StateDirectory=p42/operator/%i
 StateDirectoryMode=0700
 NoNewPrivileges=true
 CapabilityBoundingSet=

@@ -1,8 +1,26 @@
 g p42-verifier-submitters -
-u p42-operator - "P42 operator runtime" /var/lib/p42/operator /usr/sbin/nologin
+u p42-operator-2 - "P42 board 2 operator runtime" /var/lib/p42/operator/2 /usr/sbin/nologin
+u p42-operator-3 - "P42 board 3 operator runtime" /var/lib/p42/operator/3 /usr/sbin/nologin
+u p42-operator-4 - "P42 board 4 operator runtime" /var/lib/p42/operator/4 /usr/sbin/nologin
+u p42-operator-5 - "P42 board 5 operator runtime" /var/lib/p42/operator/5 /usr/sbin/nologin
+u p42-operator-6 - "P42 board 6 operator runtime" /var/lib/p42/operator/6 /usr/sbin/nologin
+u p42-operator-8 - "P42 board 8 operator runtime" /var/lib/p42/operator/8 /usr/sbin/nologin
+u p42-operator-9 - "P42 board 9 operator runtime" /var/lib/p42/operator/9 /usr/sbin/nologin
+u p42-operator-10 - "P42 board 10 operator runtime" /var/lib/p42/operator/10 /usr/sbin/nologin
+u p42-operator-11 - "P42 board 11 operator runtime" /var/lib/p42/operator/11 /usr/sbin/nologin
+u p42-operator-12 - "P42 board 12 operator runtime" /var/lib/p42/operator/12 /usr/sbin/nologin
 u p42-verifier-executor - "P42 host verifier executor" /var/lib/p42/verifier-executor /usr/sbin/nologin
 u p42-resolver - "P42 resolver runtime" /var/lib/p42/resolver /usr/sbin/nologin
 u p42-indexer - "P42 indexer runtime" /var/lib/p42/indexer /usr/sbin/nologin
 u p42-runtime-evidence - "P42 runtime failure evidence recorder" /var/lib/p42/runtime-evidence /usr/sbin/nologin
-m p42-operator p42-verifier-submitters
+m p42-operator-2 p42-verifier-submitters
+m p42-operator-3 p42-verifier-submitters
+m p42-operator-4 p42-verifier-submitters
+m p42-operator-5 p42-verifier-submitters
+m p42-operator-6 p42-verifier-submitters
+m p42-operator-8 p42-verifier-submitters
+m p42-operator-9 p42-verifier-submitters
+m p42-operator-10 p42-verifier-submitters
+m p42-operator-11 p42-verifier-submitters
+m p42-operator-12 p42-verifier-submitters
 m p42-verifier-executor p42-verifier-submitters
