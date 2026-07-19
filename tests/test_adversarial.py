@@ -146,12 +146,23 @@ def valid_campaign_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dic
         evidence_hash=verifier_report_hash,
         reason_code="verifier_rejected",
     )
+    board_identity = {
+        "problem_slug": "hadamard-mini",
+        "problem_path": "problems/hadamard-mini",
+        "verifier_command": "python3 verifier/verify.py --solution {solution}",
+        "verifier_image": "ghcr.io/p42/hadamard-mini@sha256:" + "1" * 64,
+        "verifier_source_sha256": "sha256:" + "2" * 64,
+        "resource_identity": "sha256:" + "3" * 64,
+        "memory_mb": 512,
+        "wall_seconds": 60,
+    }
     transcript = {
         "schema_version": "p42-runner-transcript/v1",
         "job_id": "84532:submission:attack:0",
         "generated_at_utc": "2026-07-08T18:55:00Z",
         "started_at_utc": "2026-07-08T18:54:00Z",
         "problem": "problems/hadamard-mini",
+        "board_identity": board_identity,
         "solution": planted_artifacts["verifier_planted_exploit"]["local_path"],
         "da": {"ok": True},
         "resource_limits": {
@@ -187,6 +198,7 @@ def valid_campaign_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dic
         "generated_at_utc": "2026-07-08T18:57:00Z",
         "started_at_utc": "2026-07-08T18:56:00Z",
         "problem": "problems/hadamard-mini",
+        "board_identity": board_identity,
         "solution": planted_artifacts["da_expiry_or_missing_payload"]["local_path"],
         "da": {"ok": False, "error": "content-addressed payload is absent"},
         "resource_limits": {
@@ -418,6 +430,69 @@ def test_runner_archive_embedded_transcript_schema_extends_standalone_security_f
         "chain_claim",
         "challenge_candidate",
     }.issubset(embedded["properties"]["verifier"]["required"])
+
+
+def test_production_transcript_schemas_require_board_identity(tmp_path: Path) -> None:
+    report, fixture, _ = valid_campaign_report(tmp_path)
+    archive = read_artifact(fixture, report["transcript_archive"])
+    transcript = archive["transcripts"][0]["transcript"]
+    standalone_schema = json.loads((ROOT / "schemas" / "runner-transcript.schema.json").read_text())
+    archive_schema = json.loads(
+        (ROOT / "schemas" / "runner-transcript-archive.schema.json").read_text()
+    )
+    jsonschema.validate(transcript, standalone_schema)
+    jsonschema.validate(archive, archive_schema)
+
+    transcript.pop("board_identity")
+    with pytest.raises(jsonschema.ValidationError, match="board_identity.*required property"):
+        jsonschema.validate(transcript, standalone_schema)
+    with pytest.raises(jsonschema.ValidationError, match="board_identity.*required property"):
+        jsonschema.validate(archive, archive_schema)
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        (lambda transcript: transcript.pop("board_identity"), "missing required field.*board_identity"),
+        (
+            lambda transcript: transcript["board_identity"].update(extra="forbidden"),
+            "exact production identity fields",
+        ),
+        (
+            lambda transcript: transcript["board_identity"].update(problem_slug=""),
+            "problem_slug must be a non-placeholder string",
+        ),
+        (
+            lambda transcript: transcript["board_identity"].update(problem_path="problems/other"),
+            "problem_path must match",
+        ),
+        (
+            lambda transcript: transcript["board_identity"].update(verifier_image="image:latest"),
+            "immutable repository@sha256 reference",
+        ),
+        (
+            lambda transcript: transcript["board_identity"].update(resource_identity="sha256:bad"),
+            "resource_identity must be a canonical SHA-256 digest",
+        ),
+        (
+            lambda transcript: transcript["board_identity"].update(memory_mb=True),
+            "memory_mb must be a positive integer",
+        ),
+    ],
+)
+def test_adversarial_campaign_rejects_invalid_board_identity(
+    tmp_path: Path, mutation, message: str,
+) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    archive = read_artifact(fixture, report["transcript_archive"])
+    transcript = archive["transcripts"][0]["transcript"]
+    mutation(transcript)
+    transcript.pop("transcript_hash")
+    transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
+    rewrite_signed_runner_evidence(report, fixture, archive)
+
+    with pytest.raises(AdversarialCampaignError, match=message):
+        normalize(report, fixture, registry)
 
 
 def test_adversarial_campaign_rejects_runner_transcript_without_chain_claim(tmp_path: Path) -> None:

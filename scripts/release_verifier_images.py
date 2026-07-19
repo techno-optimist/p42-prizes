@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
@@ -25,23 +26,29 @@ from uuid import uuid4
 import jsonschema
 
 from p42_prizes.admission import (
+    AdmissionError,
     OCI_REVISION_LABEL,
     PROBLEM_ID_LABEL,
     SOURCE_HASH_ALGORITHM,
     SOURCE_HASH_ALGORITHM_LABEL,
     SOURCE_HASH_LABEL,
     VERIFIER_VERSION_LABEL,
+    _validate_portable_descriptor_receipt,
     compute_source_hash,
 )
 from p42_prizes.problem import load_manifest
 from p42_prizes.verdict import canonical_json, sha256_bytes, strict_json_loads
 
 
-SCHEMA_VERSION = "p42-verifier-image-release/v2"
+SCHEMA_VERSION = "p42-verifier-image-release/v3"
+LEGACY_SCHEMA_VERSIONS = frozenset({
+    "p42-verifier-image-release/v1", "p42-verifier-image-release/v2",
+})
 LEGACY_SCHEMA_VERSION = "p42-verifier-image-release/v1"
 PLAN_SCHEMA_VERSION = "p42-verifier-image-release-plan/v2"
-JOURNAL_SCHEMA_VERSION = "p42-verifier-image-publish-journal/v2"
-IDENTITY_MODEL = "p42-verifier-source-release-config/v1"
+JOURNAL_SCHEMA_VERSION = "p42-verifier-image-publish-journal/v3"
+PUBLICATION_AUTHORITY_SCHEMA = "p42-verifier-image-publication-authority/v1"
+IDENTITY_MODEL = "p42-verifier-source-release-config/v2"
 INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json"
 MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
 CONFIG_MEDIA_TYPE = "application/vnd.oci.image.config.v1+json"
@@ -107,6 +114,22 @@ REPOSITORY_RE = re.compile(
     r"[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$"
 )
 MAX_INSPECT_BYTES = 4 * 1024 * 1024
+MAX_AUTHORITY_RECEIPT_BYTES = 32 * 1024 * 1024
+CANONICAL_REPOSITORY = "techno-optimist/p42-prizes"
+CANONICAL_REMOTE_URLS = frozenset({
+    f"https://github.com/{CANONICAL_REPOSITORY}.git",
+    f"git@github.com:{CANONICAL_REPOSITORY}.git",
+})
+CI_WORKFLOW_ID = 310385148
+REQUIRED_CI_JOBS = frozenset({
+    "Python verifier gates",
+    "Autonomous agent gates",
+    "Portal gates",
+    "Contract gates",
+    "SP1 objective-program gates (ubuntu-22.04)",
+    "SP1 objective-program gates (ubuntu-24.04)",
+    "SP1 objective-program reproducibility",
+})
 
 
 class ReleaseError(RuntimeError):
@@ -204,6 +227,354 @@ def require_clean_exact_commit(
     if dirty:
         raise ReleaseError("refusing release from a dirty git tree")
     return head
+
+
+def require_clean_checkout(
+    root: Path,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> str:
+    head = _run(["git", "rev-parse", "HEAD"], cwd=root, runner=runner).strip()
+    if not COMMIT_RE.fullmatch(head):
+        raise ReleaseError("checked-out git HEAD is not an exact commit")
+    dirty = _run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=root, runner=runner)
+    if dirty:
+        raise ReleaseError("refusing release from a dirty git tree")
+    return head
+
+
+def _load_current_main_replay_module(root: Path):
+    script = root / "scripts" / "replay_current_main_ci_artifacts.py"
+    spec = importlib.util.spec_from_file_location(
+        f"p42_current_main_replay_{uuid4().hex}", script
+    )
+    if spec is None or spec.loader is None:
+        raise ReleaseError("current-main CI replay verifier is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        raise ReleaseError("current-main CI replay verifier could not be loaded") from exc
+    return module
+
+
+def _read_exact_main_receipt(path: Path) -> dict[str, Any]:
+    try:
+        return _read_canonical_private(path, max_bytes=MAX_AUTHORITY_RECEIPT_BYTES)
+    except (OSError, ReleaseError) as exc:
+        raise ReleaseError("exact-main CI receipt is unavailable, non-private, or unsafe") from exc
+
+
+def _gh_api_pages(
+    endpoint: str,
+    *,
+    root: Path,
+    runner: Callable[..., subprocess.CompletedProcess[str]],
+) -> list[Any]:
+    raw = _run(
+        ["gh", "api", "--hostname", "github.com", "--paginate", "--slurp", endpoint],
+        cwd=root,
+        runner=runner,
+    )
+    try:
+        pages = strict_json_loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise ReleaseError("authenticated GitHub response is not strict JSON") from exc
+    if not isinstance(pages, list) or not pages:
+        raise ReleaseError("authenticated GitHub response must be a non-empty slurped page array")
+    return pages
+
+
+def _default_source_release_validator(root: Path) -> Mapping[str, Any]:
+    from p42_prizes.source_release import validate_current_source_release
+
+    return validate_current_source_release(repo_root=root)
+
+
+def _authority_hash(value: Mapping[str, Any]) -> str:
+    unsigned = dict(value)
+    unsigned.pop("authority_hash", None)
+    return sha256_bytes(canonical_json(unsigned).encode("utf-8"))
+
+
+def _validate_publication_authority(value: Mapping[str, Any]) -> dict[str, Any]:
+    required = {
+        "schema", "commit", "authority_head", "receipt_hash", "source_release_evidence_hash",
+        "run", "pull_request", "approvers", "jobs", "artifacts", "authority_hash",
+    }
+    if set(value) != required or value.get("schema") != PUBLICATION_AUTHORITY_SCHEMA:
+        raise ReleaseError("publication authority keys or schema are invalid")
+    if not COMMIT_RE.fullmatch(value.get("commit", "")):
+        raise ReleaseError("publication authority commit is invalid")
+    if not COMMIT_RE.fullmatch(value.get("authority_head", "")):
+        raise ReleaseError("publication authority head is invalid")
+    for field in ("receipt_hash", "source_release_evidence_hash", "authority_hash"):
+        if not DIGEST_RE.fullmatch(value.get(field, "")):
+            raise ReleaseError(f"publication authority {field} is invalid")
+    if value["authority_hash"] != _authority_hash(value):
+        raise ReleaseError("publication authority hash mismatch")
+    if not isinstance(value.get("approvers"), list) or not value["approvers"]:
+        raise ReleaseError("publication authority lacks approvers")
+    if not isinstance(value.get("jobs"), list) or len(value["jobs"]) != len(REQUIRED_CI_JOBS):
+        raise ReleaseError("publication authority jobs are incomplete")
+    if not isinstance(value.get("artifacts"), list) or len(value["artifacts"]) != 10:
+        raise ReleaseError("publication authority artifacts are incomplete")
+    return dict(value)
+
+
+def verify_exact_main_publication_authority(
+    root: Path,
+    commit: str,
+    receipt_path: Path,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    source_release_validator: Callable[[Path], Mapping[str, Any]] = _default_source_release_validator,
+) -> dict[str, Any]:
+    """Bind irreversible publication to retained replay plus live GitHub authority."""
+
+    receipt = _read_exact_main_receipt(receipt_path)
+    replay = _load_current_main_replay_module(root)
+    try:
+        replay.validate_receipt(receipt)
+    except Exception as exc:
+        raise ReleaseError("exact-main CI receipt failed offline replay validation") from exc
+    inputs = receipt.get("inputs", {})
+    if inputs.get("repository") != CANONICAL_REPOSITORY or inputs.get("mainSha") != commit:
+        raise ReleaseError("exact-main CI receipt does not bind the publication commit")
+    run_id = inputs.get("runId")
+    pr_number = inputs.get("pullRequestNumber")
+    if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id < 1:
+        raise ReleaseError("exact-main CI receipt run identity is invalid")
+    if isinstance(pr_number, bool) or not isinstance(pr_number, int) or pr_number < 1:
+        raise ReleaseError("exact-main CI receipt pull-request identity is invalid")
+    authority_head = require_clean_checkout(root, runner=runner)
+    source_release = source_release_validator(root)
+    if (
+        source_release.get("schemaVersion") != "p42-source-release-evidence/v3"
+        or source_release.get("observedBranchHead") != commit
+        or source_release.get("ci", {}).get("runId") != run_id
+        or source_release.get("derived", {}).get("validatedHead") != authority_head
+        or not DIGEST_RE.fullmatch(source_release.get("evidenceHash", ""))
+    ):
+        raise ReleaseError("signed current source-release authority does not bind publication CI")
+    try:
+        _run(
+            ["git", "merge-base", "--is-ancestor", commit, authority_head],
+            cwd=root,
+            runner=runner,
+        )
+    except ReleaseError as exc:
+        raise ReleaseError("verifier source commit is not an ancestor of the authority head") from exc
+    remote = _run(["git", "remote", "get-url", "origin"], cwd=root, runner=runner).strip()
+    if remote not in CANONICAL_REMOTE_URLS:
+        raise ReleaseError("origin is not the canonical P42 repository")
+
+    main = _gh_api_pages(
+        f"repos/{CANONICAL_REPOSITORY}/git/ref/heads/main", root=root, runner=runner
+    )
+    if len(main) != 1 or not isinstance(main[0], dict) or main[0].get("object", {}).get("sha") != authority_head:
+        raise ReleaseError("publication authority checkout is not authenticated current main")
+
+    run_pages = _gh_api_pages(
+        f"repos/{CANONICAL_REPOSITORY}/actions/runs/{run_id}", root=root, runner=runner
+    )
+    if len(run_pages) != 1 or not isinstance(run_pages[0], dict):
+        raise ReleaseError("authenticated GitHub workflow run is malformed")
+    run = run_pages[0]
+    captured_run = receipt["githubCapture"]["run"]
+    if (
+        run.get("id") != run_id
+        or run.get("workflow_id") != CI_WORKFLOW_ID
+        or run.get("event") != "push"
+        or run.get("head_branch") != "main"
+        or run.get("head_sha") != commit
+        or run.get("status") != "completed"
+        or run.get("conclusion") != "success"
+        or run.get("run_attempt") != captured_run.get("runAttempt")
+    ):
+        raise ReleaseError("authenticated GitHub workflow run is not exact successful main CI")
+
+    job_pages = _gh_api_pages(
+        f"repos/{CANONICAL_REPOSITORY}/actions/runs/{run_id}/jobs?per_page=100",
+        root=root,
+        runner=runner,
+    )
+    jobs: list[Any] = []
+    reported_total: int | None = None
+    for page in job_pages:
+        if not isinstance(page, dict) or not isinstance(page.get("jobs"), list):
+            raise ReleaseError("authenticated GitHub jobs response is malformed")
+        total = page.get("total_count")
+        if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+            raise ReleaseError("authenticated GitHub job total is malformed")
+        if reported_total is not None and total != reported_total:
+            raise ReleaseError("authenticated GitHub job totals disagree across pages")
+        reported_total = total
+        jobs.extend(page["jobs"])
+    names = [job.get("name") for job in jobs if isinstance(job, dict)]
+    captured_jobs = receipt["githubCapture"]["jobs"]
+    normalized_jobs = sorted(({
+        "id": job.get("id"), "name": job.get("name"), "status": job.get("status"),
+        "conclusion": job.get("conclusion"), "runId": job.get("run_id"),
+        "headSha": job.get("head_sha"),
+    } for job in jobs), key=lambda item: item["id"] if isinstance(item["id"], int) else -1)
+    if (
+        reported_total != len(REQUIRED_CI_JOBS)
+        or len(jobs) != len(REQUIRED_CI_JOBS)
+        or len(set(names)) != len(names)
+        or set(names) != REQUIRED_CI_JOBS
+        or any(job.get("status") != "completed" or job.get("conclusion") != "success" for job in jobs)
+        or normalized_jobs != captured_jobs
+    ):
+        raise ReleaseError("authenticated GitHub jobs are not the exact successful seven-job gate")
+
+    artifact_pages = _gh_api_pages(
+        f"repos/{CANONICAL_REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100",
+        root=root,
+        runner=runner,
+    )
+    live_artifacts: list[Any] = []
+    artifact_total: int | None = None
+    for page in artifact_pages:
+        if not isinstance(page, dict) or not isinstance(page.get("artifacts"), list):
+            raise ReleaseError("authenticated GitHub artifacts response is malformed")
+        total = page.get("total_count")
+        if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+            raise ReleaseError("authenticated GitHub artifact total is malformed")
+        if artifact_total is not None and total != artifact_total:
+            raise ReleaseError("authenticated GitHub artifact totals disagree across pages")
+        artifact_total = total
+        live_artifacts.extend(page["artifacts"])
+    captured_artifacts = receipt["githubCapture"]["artifactApiRecords"]
+    captured_names = {item["name"] for item in captured_artifacts}
+    normalized_artifacts = []
+    for artifact in live_artifacts:
+        if not isinstance(artifact, dict):
+            raise ReleaseError("authenticated GitHub artifact record is malformed")
+        if artifact.get("name") not in captured_names:
+            continue
+        workflow_run = artifact.get("workflow_run")
+        normalized_artifacts.append({
+            "id": artifact.get("id"), "name": artifact.get("name"),
+            "sizeInBytes": artifact.get("size_in_bytes"), "digest": artifact.get("digest"),
+            "expired": artifact.get("expired"),
+            "workflowRun": {
+                "id": workflow_run.get("id") if isinstance(workflow_run, dict) else None,
+                "headBranch": workflow_run.get("head_branch") if isinstance(workflow_run, dict) else None,
+                "headSha": workflow_run.get("head_sha") if isinstance(workflow_run, dict) else None,
+            },
+        })
+    normalized_artifacts.sort(key=lambda item: item["name"] if isinstance(item["name"], str) else "")
+    if (
+        artifact_total != receipt["githubCapture"]["capturedArtifactCount"]
+        or len(live_artifacts) != artifact_total
+        or len({item.get("id") for item in live_artifacts if isinstance(item, dict)}) != len(live_artifacts)
+        or normalized_artifacts != captured_artifacts
+    ):
+        raise ReleaseError("authenticated GitHub artifacts do not match the retained exact-ten receipt")
+
+    pr_pages = _gh_api_pages(
+        f"repos/{CANONICAL_REPOSITORY}/pulls/{pr_number}", root=root, runner=runner
+    )
+    if len(pr_pages) != 1 or not isinstance(pr_pages[0], dict):
+        raise ReleaseError("authenticated GitHub pull request is malformed")
+    pull = pr_pages[0]
+    author = pull.get("user", {}).get("login")
+    captured_pull = receipt["githubCapture"]["pullRequest"]
+    final_head = pull.get("head", {}).get("sha")
+    merged_at = pull.get("merged_at")
+    if (
+        pull.get("number") != pr_number
+        or pull.get("state") != "closed"
+        or pull.get("merged") is not True
+        or pull.get("merge_commit_sha") != commit
+        or pull.get("base", {}).get("ref") != "main"
+        or final_head != captured_pull.get("headSha")
+        or merged_at != captured_pull.get("mergedAt")
+        or not isinstance(author, str)
+        or not author
+    ):
+        raise ReleaseError("authenticated GitHub pull request does not bind merged main")
+
+    review_pages = _gh_api_pages(
+        f"repos/{CANONICAL_REPOSITORY}/pulls/{pr_number}/reviews?per_page=100",
+        root=root,
+        runner=runner,
+    )
+    if any(not isinstance(page, list) for page in review_pages):
+        raise ReleaseError("authenticated GitHub review pagination is malformed")
+    reviews = [review for page in review_pages for review in page]
+    if len({review.get("id") for review in reviews if isinstance(review, dict)}) != len(reviews):
+        raise ReleaseError("authenticated GitHub review IDs are duplicated or malformed")
+    decisive: dict[str, tuple[str, str, int]] = {}
+    for review in reviews:
+        if not isinstance(review, dict):
+            raise ReleaseError("authenticated GitHub review response is malformed")
+        login = review.get("user", {}).get("login")
+        state = review.get("state")
+        submitted = review.get("submitted_at")
+        association = review.get("author_association")
+        review_commit = review.get("commit_id")
+        review_id = review.get("id")
+        if (
+            isinstance(login, str)
+            and login != author
+            and state in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+            and isinstance(submitted, str)
+            and association in {"MEMBER", "COLLABORATOR"}
+            and review_commit == final_head
+            and submitted <= merged_at
+            and isinstance(review_id, int)
+        ):
+            if login not in decisive or submitted > decisive[login][0]:
+                decisive[login] = (submitted, state, review_id)
+    approved_logins = sorted(login for login, (_submitted, state, _id) in decisive.items() if state == "APPROVED")
+    approvers = []
+    for login in approved_logins:
+        permission_pages = _gh_api_pages(
+            f"repos/{CANONICAL_REPOSITORY}/collaborators/{login}/permission",
+            root=root,
+            runner=runner,
+        )
+        if len(permission_pages) != 1 or not isinstance(permission_pages[0], dict):
+            raise ReleaseError("authenticated GitHub collaborator permission is malformed")
+        permission = permission_pages[0].get("permission")
+        if permission not in {"admin", "maintain", "write"}:
+            continue
+        submitted, _state, review_id = decisive[login]
+        approvers.append({
+            "login": login, "review_id": review_id, "commit_id": final_head,
+            "submitted_at": submitted, "permission": permission,
+        })
+    if not approvers:
+        raise ReleaseError("merged publication commit lacks an independent authorized approval")
+    if require_clean_checkout(root, runner=runner) != authority_head:
+        raise ReleaseError("publication authority checkout changed during validation")
+    final_main = _gh_api_pages(
+        f"repos/{CANONICAL_REPOSITORY}/git/ref/heads/main", root=root, runner=runner
+    )
+    if (
+        len(final_main) != 1
+        or not isinstance(final_main[0], dict)
+        or final_main[0].get("object", {}).get("sha") != authority_head
+    ):
+        raise ReleaseError("authenticated current main changed during publication validation")
+    authority = {
+        "schema": PUBLICATION_AUTHORITY_SCHEMA,
+        "commit": commit,
+        "authority_head": authority_head,
+        "receipt_hash": receipt["receiptHash"],
+        "source_release_evidence_hash": source_release["evidenceHash"],
+        "run": {"id": run_id, "attempt": run["run_attempt"], "workflow_id": CI_WORKFLOW_ID},
+        "pull_request": {
+            "number": pr_number, "head_sha": final_head, "merged_at": merged_at,
+        },
+        "approvers": approvers,
+        "jobs": normalized_jobs,
+        "artifacts": normalized_artifacts,
+    }
+    authority["authority_hash"] = _authority_hash(authority)
+    return _validate_publication_authority(authority)
 
 
 def _strict_object(raw: str, label: str) -> dict[str, Any]:
@@ -522,9 +893,9 @@ def _finalize_dossier(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def validate_release_dossier(value: Mapping[str, Any]) -> dict[str, Any]:
-    if value.get("schema_version") == LEGACY_SCHEMA_VERSION:
+    if value.get("schema_version") in LEGACY_SCHEMA_VERSIONS:
         raise ReleaseError(
-            "v1 release dossiers are historical-only: they do not separate verifier source from release configuration"
+            "legacy release dossiers are historical-only and lack portable raw OCI receipts"
         )
     root_keys = {
         "schema_version", "published_at_utc", "identity_model",
@@ -563,9 +934,12 @@ def validate_release_dossier(value: Mapping[str, Any]) -> dict[str, Any]:
     board_keys = {
         "slug", "problem_id", "version", "source_hash", "repository",
         "index_digest", "immutable_reference", "release_manifest_path",
-        "release_manifest_sha256", "platform_manifests",
+        "release_manifest_sha256", "platform_manifests", "descriptor_receipt",
     }
-    platform_keys = {"platform", "manifest_digest", "manifest_size", "config_digest", "config_size", "layer_count", "labels", "runtime"}
+    platform_keys = {
+        "platform", "manifest_digest", "manifest_size", "config_digest",
+        "config_size", "layer_count", "layer_descriptors", "labels", "runtime",
+    }
     for board in boards:
         if set(board) != board_keys or board["problem_id"] != board["slug"] or board["repository"] != image_repository(base, board["slug"]):
             raise ReleaseError("release dossier board binding is invalid")
@@ -585,6 +959,20 @@ def validate_release_dossier(value: Mapping[str, Any]) -> dict[str, Any]:
                 raise ReleaseError("release dossier platform descriptor is invalid")
             if any(not isinstance(record.get(key), int) or isinstance(record.get(key), bool) or record[key] <= 0 for key in ("manifest_size", "config_size", "layer_count")):
                 raise ReleaseError("release dossier platform sizes are invalid")
+            layers = record.get("layer_descriptors")
+            if not isinstance(layers, list) or len(layers) != record["layer_count"] or not layers:
+                raise ReleaseError("release dossier layer descriptors are invalid")
+            for layer in layers:
+                if (
+                    not isinstance(layer, Mapping)
+                    or set(layer) != {"mediaType", "digest", "size"}
+                    or layer.get("mediaType") not in LAYER_MEDIA_TYPES
+                    or not DIGEST_RE.fullmatch(layer.get("digest") or "")
+                    or not isinstance(layer.get("size"), int)
+                    or isinstance(layer.get("size"), bool)
+                    or layer["size"] <= 0
+                ):
+                    raise ReleaseError("release dossier layer descriptor is invalid")
             expected_labels = {
                 OCI_REVISION_LABEL: verifier_source_commit,
                 SOURCE_HASH_LABEL: board["source_hash"],
@@ -596,6 +984,10 @@ def validate_release_dossier(value: Mapping[str, Any]) -> dict[str, Any]:
             runtime = record.get("runtime")
             if not isinstance(runtime, Mapping) or set(runtime) != {"user", "workdir", "entrypoint", "cmd"} or runtime.get("workdir") != f"/repo/problems/{board['problem_id']}" or runtime.get("entrypoint") is not None or runtime.get("cmd") != [] or runtime.get("user") not in ("inherited-root-overridden-by-runner", "65534", "65534:65534"):
                 raise ReleaseError("release dossier runtime binding is invalid")
+        try:
+            _validate_portable_descriptor_receipt(board)
+        except AdmissionError as exc:
+            raise ReleaseError(f"release dossier portable OCI receipt is invalid: {exc}") from exc
     return dict(value)
 
 
@@ -679,7 +1071,10 @@ def _read_canonical_private(path: Path, *, max_bytes: int = MAX_INSPECT_BYTES) -
     if not nofollow:
         raise ReleaseError("secure journal reads require O_NOFOLLOW")
     before = path.lstat()
-    descriptor = os.open(path, os.O_RDONLY | nofollow)
+    if not stat.S_ISREG(before.st_mode):
+        raise ReleaseError("publish journal is not a private regular file")
+    flags = os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(path, flags)
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_ino != before.st_ino or metadata.st_dev != before.st_dev or metadata.st_nlink != 1 or metadata.st_mode & 0o777 != 0o600:
@@ -688,17 +1083,18 @@ def _read_canonical_private(path: Path, *, max_bytes: int = MAX_INSPECT_BYTES) -
             raise ReleaseError("publish journal owner mismatch")
         if metadata.st_size < 2 or metadata.st_size > max_bytes:
             raise ReleaseError("publish journal size is invalid")
-        raw = b""
-        while len(raw) < metadata.st_size:
-            chunk = os.read(descriptor, metadata.st_size - len(raw))
+        raw_buffer = bytearray()
+        while len(raw_buffer) < metadata.st_size:
+            chunk = os.read(descriptor, metadata.st_size - len(raw_buffer))
             if not chunk:
                 raise ReleaseError("publish journal was truncated during read")
-            raw += chunk
+            raw_buffer.extend(chunk)
         after = path.lstat()
         if after.st_ino != metadata.st_ino or after.st_dev != metadata.st_dev or after.st_size != metadata.st_size:
             raise ReleaseError("publish journal changed during read")
     finally:
         os.close(descriptor)
+    raw = bytes(raw_buffer)
     try:
         text = raw.decode("utf-8")
         value = strict_json_loads(text)
@@ -741,6 +1137,7 @@ def _journal_immutable(value: Mapping[str, Any]) -> dict[str, Any]:
         "schema_version": value["schema_version"],
         "verifier_source_commit": value["verifier_source_commit"],
         "verifier_source_archive_digest": value["verifier_source_archive_digest"],
+        "publication_authority": value["publication_authority"],
         "registry_base": value["registry_base"], "platforms": value["platforms"],
         "boards": [
             {key: board[key] for key in ("slug", "problem_id", "version", "source_hash", "repository", "tag")}
@@ -752,11 +1149,13 @@ def _journal_immutable(value: Mapping[str, Any]) -> dict[str, Any]:
 def _build_publish_journal(
     *, boards: Sequence[Mapping[str, Any]], verifier_source_commit: str,
     verifier_source_archive_digest: str, registry_base: str,
+    publication_authority: Mapping[str, Any],
 ) -> dict[str, Any]:
     value = {
         "schema_version": JOURNAL_SCHEMA_VERSION,
         "verifier_source_commit": verifier_source_commit,
         "verifier_source_archive_digest": verifier_source_archive_digest,
+        "publication_authority": _validate_publication_authority(publication_authority),
         "registry_base": registry_base, "platforms": list(PLATFORMS), "generation": 0,
         "boards": [
             {
@@ -774,7 +1173,8 @@ def _build_publish_journal(
 def _validate_publish_journal(value: Mapping[str, Any]) -> dict[str, Any]:
     if set(value) != {
         "schema_version", "verifier_source_commit", "verifier_source_archive_digest",
-        "registry_base", "platforms", "generation", "boards", "journal_hash",
+        "publication_authority", "registry_base", "platforms", "generation", "boards",
+        "journal_hash",
     }:
         raise ReleaseError("publish journal keys are invalid")
     if value.get("schema_version") != JOURNAL_SCHEMA_VERSION or value.get("platforms") != list(PLATFORMS):
@@ -786,6 +1186,9 @@ def _validate_publish_journal(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ReleaseError("publish journal release binding is invalid")
     if not DIGEST_RE.fullmatch(value.get("verifier_source_archive_digest") or ""):
         raise ReleaseError("publish journal source archive binding is invalid")
+    authority = _validate_publication_authority(value.get("publication_authority", {}))
+    if authority["commit"] != value["verifier_source_commit"]:
+        raise ReleaseError("publish journal authority commit mismatch")
     if not isinstance(value.get("generation"), int) or isinstance(value.get("generation"), bool) or value["generation"] < 0:
         raise ReleaseError("publish journal generation is invalid")
     boards = value.get("boards")
@@ -907,6 +1310,7 @@ def _inspect_release_record(
     raw_index = verify_raw_index_digest(raw_index_response, index_digest)
     children = parse_oci_index(raw_index)
     platform_records = []
+    receipt_platforms = []
     for platform in PLATFORMS:
         child = children[platform]
         child_reference = f"{board['repository']}@{child['digest']}"
@@ -925,21 +1329,41 @@ def _inspect_release_record(
         platform_records.append({
             "platform": platform, "manifest_digest": child["digest"], "manifest_size": child["size"],
             "config_digest": config_descriptor["digest"], "config_size": config_descriptor["size"],
-            "layer_count": len(child_manifest["layers"]), **validated,
+            "layer_count": len(child_manifest["layers"]),
+            "layer_descriptors": child_manifest["layers"], **validated,
         })
-    return {**dict(board), "index_digest": index_digest, "immutable_reference": f"{board['repository']}@{index_digest}", "platform_manifests": platform_records}
+        receipt_platforms.append({
+            "platform": platform,
+            "manifest_base64": base64.b64encode(raw_child.encode("utf-8")).decode("ascii"),
+            "config_base64": base64.b64encode(raw_config.encode("utf-8")).decode("ascii"),
+        })
+    return {
+        **dict(board),
+        "index_digest": index_digest,
+        "immutable_reference": f"{board['repository']}@{index_digest}",
+        "platform_manifests": platform_records,
+        "descriptor_receipt": {
+            "index_base64": base64.b64encode(raw_index.encode("utf-8")).decode("ascii"),
+            "platforms": receipt_platforms,
+        },
+    }
 
 
 def release(
     *, root: Path, registry_base: str, commit: str, publish: bool,
-    output: Path | None, runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    output: Path | None, exact_main_ci_receipt: Path | None = None,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     board_binding_verifier: Callable[[Path], None] | None = None,
+    publication_authority_verifier: Callable[[Path, str, Path], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     root = root.resolve()
     board_binding_verifier = board_binding_verifier or verify_production_board_bindings
     base = canonicalize_registry_base(registry_base)
-    require_clean_exact_commit(root, commit, runner=runner)
+    if publish:
+        require_clean_checkout(root, runner=runner)
+    else:
+        require_clean_exact_commit(root, commit, runner=runner)
     board_binding_verifier(root)
     boards = _board_inputs(root, base)
     if not publish:
@@ -950,6 +1374,16 @@ def release(
         }
     if output is None:
         raise ReleaseError("--journal is required in publish mode")
+    if exact_main_ci_receipt is None:
+        raise ReleaseError("--exact-main-ci-receipt is required in publish mode")
+    authority_verifier = publication_authority_verifier or (
+        lambda authority_root, authority_commit, authority_receipt: verify_exact_main_publication_authority(
+            authority_root, authority_commit, authority_receipt, runner=runner
+        )
+    )
+    publication_authority = _validate_publication_authority(
+        authority_verifier(root, commit, exact_main_ci_receipt)
+    )
     output_parent = output.absolute().parent
     output_parent.mkdir(parents=True, exist_ok=True)
     output = output_parent.resolve(strict=True) / output.name
@@ -974,7 +1408,7 @@ def release(
     expected_journal = _build_publish_journal(
         boards=boards, verifier_source_commit=commit,
         verifier_source_archive_digest=source_archive_digest,
-        registry_base=base,
+        registry_base=base, publication_authority=publication_authority,
     )
     journal, _created = _reserve_publish_journal(journal_path, expected_journal)
     for index, board in enumerate(boards):
@@ -985,6 +1419,11 @@ def release(
         if durable_board["state"] == "planned":
             if metadata_file.exists():
                 raise ReleaseError(f"{board['slug']} has unexpected pre-existing build metadata")
+            observed_authority = _validate_publication_authority(
+                authority_verifier(root, commit, exact_main_ci_receipt)
+            )
+            if canonical_json(observed_authority) != canonical_json(publication_authority):
+                raise ReleaseError("publication authority changed before canonical registry mutation")
             journal = _record_build_started(journal_path, expected_hash=journal["journal_hash"], index=index)
             _run(buildx_command(frozen_root, board["repository"], commit, manifest, board["source_hash"], metadata_file), cwd=frozen_root, timeout=3600, runner=runner)
             require_board_source_unchanged(frozen_root, board, commit, runner=runner, check_git=False)
@@ -1020,7 +1459,7 @@ def release(
     if any(board["state"] != "verified" for board in journal["boards"]):
         raise ReleaseError("publish journal is incomplete after the release run")
     # Publication deliberately stops at a complete, self-hashed journal. The
-    # immutable index digests must first be committed to problem.yaml. A v2
+    # immutable index digests must first be committed to problem.yaml. A v3
     # dossier is finalized only from that later clean release-config commit.
     return journal
 
@@ -1048,13 +1487,18 @@ def finalize_release_dossier(
     if any(board["state"] != "verified" for board in journal["boards"]):
         raise ReleaseError("cannot finalize an incomplete verifier image publication journal")
     verifier_source_commit = journal["verifier_source_commit"]
+    authority_head = journal["publication_authority"]["authority_head"]
     try:
         _run(
-            ["git", "merge-base", "--is-ancestor", verifier_source_commit, release_config_commit],
+            ["git", "merge-base", "--is-ancestor", verifier_source_commit, authority_head],
+            cwd=root, runner=runner,
+        )
+        _run(
+            ["git", "merge-base", "--is-ancestor", authority_head, release_config_commit],
             cwd=root, runner=runner,
         )
     except ReleaseError as exc:
-        raise ReleaseError("verifier source commit is not an ancestor of the release-config commit") from exc
+        raise ReleaseError("release ancestry must satisfy verifier-source <= authority-head <= release-config") from exc
 
     board_binding_verifier(root)
     base = journal["registry_base"]
@@ -1135,7 +1579,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verifier-source-commit", "--commit", dest="verifier_source_commit")
     parser.add_argument("--publish", action="store_true", help="push and inspect all ten source-bound images")
     parser.add_argument("--journal", type=Path, help="private resumable publication journal path")
-    parser.add_argument("--finalize-journal", type=Path, help="completed v2 publication journal to adopt")
+    parser.add_argument(
+        "--exact-main-ci-receipt", type=Path,
+        help="canonical v3 current-main CI replay receipt; required for publication",
+    )
+    parser.add_argument("--finalize-journal", type=Path, help="completed authority-bound v3 publication journal to adopt")
     parser.add_argument("--release-config-commit", help="clean commit containing all ten immutable image digests")
     parser.add_argument("--output", type=Path, help="non-overwriting finalized v2 dossier path")
     return parser
@@ -1146,7 +1594,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         root = Path(__file__).resolve().parents[1]
         if args.finalize_journal is not None:
-            if args.publish or args.journal is not None or args.registry_base is not None or args.verifier_source_commit is not None:
+            if args.publish or args.journal is not None or args.exact_main_ci_receipt is not None or args.registry_base is not None or args.verifier_source_commit is not None:
                 raise ReleaseError("finalize mode cannot be combined with plan or publish inputs")
             if args.release_config_commit is None or args.output is None:
                 raise ReleaseError("finalize mode requires --release-config-commit and --output")
@@ -1161,10 +1609,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise ReleaseError("--release-config-commit and --output are finalize-only")
             if args.publish != (args.journal is not None):
                 raise ReleaseError("publish mode requires --publish and --journal together")
+            if args.publish != (args.exact_main_ci_receipt is not None):
+                raise ReleaseError("publish mode requires --publish and --exact-main-ci-receipt together")
             result = release(
                 root=root, registry_base=args.registry_base,
                 commit=args.verifier_source_commit, publish=args.publish,
-                output=args.journal,
+                output=args.journal, exact_main_ci_receipt=args.exact_main_ci_receipt,
             )
     except (ReleaseError, ValueError, OSError) as exc:
         print(f"release error: {exc}", file=sys.stderr)

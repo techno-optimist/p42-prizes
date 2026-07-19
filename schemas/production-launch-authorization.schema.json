@@ -108,12 +108,15 @@
         "production_release_verification",
         "production_release_slate",
         "production_board_bindings",
+        "verifier_image_release",
+        "verifier_image_publication_journal",
         "release_capsule",
         "deployment_manifest",
         "reconciliation_report",
         "explorer_dossier",
         "explorer_operator_policy",
-        "activation_rpc_operator_registry"
+        "activation_rpc_operator_registry",
+        "production_timestamp_dossier"
       ],
       "properties": {
         "security_audit": { "$ref": "#/$defs/artifact" },
@@ -125,12 +128,15 @@
         "production_release_verification": { "$ref": "#/$defs/artifact" },
         "production_release_slate": { "$ref": "#/$defs/artifact" },
         "production_board_bindings": { "$ref": "#/$defs/artifact" },
+        "verifier_image_release": { "$ref": "#/$defs/artifact" },
+        "verifier_image_publication_journal": { "$ref": "#/$defs/artifact" },
         "release_capsule": { "$ref": "#/$defs/artifact" },
         "deployment_manifest": { "$ref": "#/$defs/artifact" },
         "reconciliation_report": { "$ref": "#/$defs/artifact" },
         "explorer_dossier": { "$ref": "#/$defs/artifact" },
         "explorer_operator_policy": { "$ref": "#/$defs/artifact" },
-        "activation_rpc_operator_registry": { "$ref": "#/$defs/artifact" }
+        "activation_rpc_operator_registry": { "$ref": "#/$defs/artifact" },
+        "production_timestamp_dossier": { "$ref": "#/$defs/artifact" }
       }
     },
     "problemReview": {

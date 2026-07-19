@@ -7,11 +7,17 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 from typing import Any, Callable, Mapping
 
 import jsonschema
 
+from p42_prizes.admission import (
+    AdmissionError,
+    SOURCE_HASH_ALGORITHM,
+    validate_image_release_checkout,
+)
 from p42_prizes.adversarial import normalize_adversarial_campaign_report
 from p42_prizes.bounded_process import OutputLimitExceeded, run_bounded_process
 from p42_prizes.governance import normalize_governance_signoff
@@ -34,7 +40,14 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 SCHEMA_VERSION = "p42-production-launch-authorization/v1"
-MATH_REVIEW_SCHEMA_VERSION = "p42-math-review/v2"
+MATH_REVIEW_SCHEMA_VERSION = "p42-math-review/v4"
+SOURCE_ONLY_ACCEPTANCE_LIMITATION = (
+    "No canonical fixture exercises verifier acceptance; acceptance-path review is limited to source inspection."
+)
+FIXTURE_REPLAY_ACCEPTANCE_LIMITATION = (
+    "Canonical accepted fixtures exercise the verifier acceptance path; this does not prove complete "
+    "acceptance-boundary coverage."
+)
 NETWORK_CHAIN_IDS = {"base-sepolia": 84532, "base-mainnet": 8453}
 AUTHORIZER_ROLES = {
     "production-launch-authority",
@@ -137,7 +150,13 @@ def normalize_launch_authorization(
         raise LaunchAuthorizationError("release_binding network does not match authorization")
 
     artifacts = authorization.get("artifacts")
-    expected_artifacts = {*GATE_NORMALIZERS, "production_release_verification", "production_release_slate", "production_board_bindings", "release_capsule", "deployment_manifest", "reconciliation_report", "explorer_dossier", "explorer_operator_policy", "activation_rpc_operator_registry"}
+    expected_artifacts = {
+        *GATE_NORMALIZERS,
+        "production_release_verification", "production_release_slate", "production_board_bindings",
+        "verifier_image_release", "verifier_image_publication_journal", "release_capsule",
+        "deployment_manifest", "reconciliation_report", "explorer_dossier",
+        "explorer_operator_policy", "activation_rpc_operator_registry", "production_timestamp_dossier",
+    }
     if not isinstance(artifacts, Mapping) or set(artifacts) != expected_artifacts:
         raise LaunchAuthorizationError("artifacts must contain the exact launch evidence set")
     normalized_gate_hashes: dict[str, str] = {}
@@ -181,6 +200,32 @@ def normalize_launch_authorization(
         "authorization.artifacts.production_board_bindings",
         context,
     )
+    image_release_ref = _validate_artifact_reference(
+        artifacts["verifier_image_release"],
+        "authorization.artifacts.verifier_image_release",
+        LaunchAuthorizationError,
+        context,
+    )
+    image_release = _read_json_artifact(
+        artifacts["verifier_image_release"],
+        "authorization.artifacts.verifier_image_release",
+        context,
+    )
+    journal_ref = _validate_artifact_reference(
+        artifacts["verifier_image_publication_journal"],
+        "authorization.artifacts.verifier_image_publication_journal",
+        LaunchAuthorizationError,
+        context,
+    )
+    _validate_frozen_board_release(
+        image_release=image_release,
+        image_release_ref=image_release_ref,
+        publication_journal_ref=journal_ref,
+        board_bindings=board_bindings,
+        release_report=release_report,
+        release_slate=release_slate,
+        context=context,
+    )
     manifest = _read_json_artifact(artifacts["deployment_manifest"], "authorization.artifacts.deployment_manifest", context)
     _validate_deployment_manifest(manifest, release_report, network)
     reconciliation = _read_json_artifact(
@@ -198,7 +243,16 @@ def normalize_launch_authorization(
         context,
     )
     _validate_activation_rpc_operator_registry(rpc_operator_registry)
-    _validate_explorer_dossier(dossier, manifest, expires)
+    timestamp_dossier = _read_json_artifact(
+        artifacts["production_timestamp_dossier"],
+        "authorization.artifacts.production_timestamp_dossier",
+        context,
+    )
+    completion_timestamp = _validated_production_completion_timestamp(
+        timestamp_dossier, manifest, rpc_operator_registry,
+    )
+    explorer_validation_time = datetime.fromtimestamp(completion_timestamp, timezone.utc)
+    _validate_explorer_dossier(dossier, manifest, explorer_validation_time)
     _validate_explorer_with_node(
         artifact_root=Path(artifact_root),
         context=context,
@@ -206,7 +260,7 @@ def normalize_launch_authorization(
         capsule_ref=artifacts["release_capsule"],
         dossier_ref=artifacts["explorer_dossier"],
         operator_policy=operator_policy,
-        validation_time=issued,
+        validation_time=explorer_validation_time,
     )
     _validate_problem_reviews(
         authorization.get("problem_reviews"),
@@ -214,6 +268,7 @@ def normalize_launch_authorization(
         release_slate=release_slate,
         deployment_manifest=manifest,
         board_bindings=board_bindings,
+        image_release=image_release,
         trust_registry=trust_registry,
         context=context,
         issued=issued,
@@ -374,6 +429,60 @@ def _validate_activation_rpc_operator_registry(registry: Mapping[str, Any]) -> N
         origins.add(origin)
 
 
+def _validated_production_completion_timestamp(
+    dossier: Mapping[str, Any], manifest: Mapping[str, Any], rpc_registry: Mapping[str, Any],
+) -> int:
+    expected_keys = {
+        "schema", "manifestDigest", "deploymentConfigHash", "deploymentCommit",
+        "slateDigest", "capsuleDigest", "blocks",
+    }
+    if set(dossier) != expected_keys or dossier.get("schema") != "p42-prizes/production-timestamp-dossier/v1":
+        raise LaunchAuthorizationError("production timestamp dossier shape is invalid")
+    release_evidence = manifest.get("releaseEvidence", {})
+    if (
+        dossier.get("manifestDigest") != sha256_bytes(canonical_json(manifest).encode("utf-8"))
+        or dossier.get("deploymentConfigHash") != manifest.get("deploymentConfigHash")
+        or dossier.get("deploymentCommit") != manifest.get("deploymentCommit")
+        or dossier.get("slateDigest") != release_evidence.get("slateDigest")
+        or dossier.get("capsuleDigest") != release_evidence.get("capsuleDigest")
+    ):
+        raise LaunchAuthorizationError("production timestamp dossier release binding mismatch")
+    allowed_operators = {profile.get("operatorId") for profile in rpc_registry.get("profiles", [])}
+    rows = dossier.get("blocks")
+    if not isinstance(rows, list) or not rows:
+        raise LaunchAuthorizationError("production timestamp dossier has no block evidence")
+    by_block: dict[int, Mapping[str, Any]] = {}
+    row_keys = {"blockNumber", "blockHash", "timestamp", "primaryOperatorId", "secondaryOperatorId"}
+    for row in rows:
+        if (
+            not isinstance(row, Mapping) or set(row) != row_keys
+            or type(row.get("blockNumber")) is not int or row["blockNumber"] < 0
+            or type(row.get("timestamp")) is not int or row["timestamp"] <= 0
+            or not isinstance(row.get("blockHash"), str)
+            or re.fullmatch(r"0x[0-9a-fA-F]{64}", row["blockHash"]) is None
+            or row.get("primaryOperatorId") == row.get("secondaryOperatorId")
+            or row.get("primaryOperatorId") not in allowed_operators
+            or row.get("secondaryOperatorId") not in allowed_operators
+            or row["blockNumber"] in by_block
+        ):
+            raise LaunchAuthorizationError("production timestamp dossier block evidence is invalid")
+        by_block[row["blockNumber"]] = row
+    governance = manifest.get("governanceSetup", {})
+    completion = governance.get("completionBlockEvidence", {})
+    row = by_block.get(governance.get("completionBlock"))
+    if (
+        row is None
+        or row.get("timestamp") != governance.get("completionBlockTimestamp")
+        or row.get("timestamp") != completion.get("timestamp")
+        or str(row.get("blockHash", "")).casefold() != str(governance.get("completionBlockHash", "")).casefold()
+        or str(row.get("blockHash", "")).casefold() != str(completion.get("blockHash", "")).casefold()
+        or row.get("primaryOperatorId") != completion.get("primaryOperatorId")
+        or row.get("secondaryOperatorId") != completion.get("secondaryOperatorId")
+    ):
+        raise LaunchAuthorizationError("production timestamp dossier does not independently bind governance completion")
+    return row["timestamp"]
+
+
 def _canonical_activation_rpc_origin(value: Any) -> str:
     if not isinstance(value, str) or not value or value != value.strip() or "%" in value:
         raise LaunchAuthorizationError("activation RPC origin must be exact ASCII without percent escapes")
@@ -460,7 +569,49 @@ def _validate_deployment_manifest(manifest: Mapping[str, Any], release_report: M
             raise LaunchAuthorizationError(f"deployment {manifest_key} does not match verified release")
     if release_evidence.get("contractCount") != 47 or release_evidence.get("boardCount") != 10:
         raise LaunchAuthorizationError("deployment release evidence must bind canonical 47-contract topology")
-    _canonical_contract_entries(manifest)
+    entries = _canonical_contract_entries(manifest)
+    governance = manifest.get("governanceSetup")
+    if not isinstance(governance, Mapping) or governance.get("status") != "complete":
+        raise LaunchAuthorizationError("deployment manifest lacks completed governance setup evidence")
+    completion_block = governance.get("completionBlock")
+    completion_timestamp = governance.get("completionBlockTimestamp")
+    completion_hash = governance.get("completionBlockHash")
+    completion_evidence = governance.get("completionBlockEvidence")
+    anchor = governance.get("finalityAnchor")
+    if (
+        type(completion_block) is not int or completion_block < 0
+        or type(completion_timestamp) is not int or completion_timestamp <= 0
+        or not isinstance(completion_hash, str) or re.fullmatch(r"0x[0-9a-fA-F]{64}", completion_hash) is None
+        or not isinstance(completion_evidence, Mapping)
+        or not isinstance(anchor, Mapping)
+    ):
+        raise LaunchAuthorizationError("deployment governance completion evidence is incomplete")
+    evidence_hash = str(completion_evidence.get("blockHash", ""))
+    primary_hash = str(completion_evidence.get("primaryBlockHash", ""))
+    secondary_hash = str(completion_evidence.get("secondaryBlockHash", ""))
+    finalized = anchor.get("l2", {}).get("finalized", {}) if isinstance(anchor.get("l2"), Mapping) else {}
+    primary_operator = completion_evidence.get("primaryOperatorId")
+    secondary_operator = completion_evidence.get("secondaryOperatorId")
+    rpc_evidence = anchor.get("rpcEvidence", {}) if isinstance(anchor.get("rpcEvidence"), Mapping) else {}
+    if (
+        type(completion_evidence.get("blockNumber")) is not int
+        or type(completion_evidence.get("timestamp")) is not int
+        or completion_evidence.get("blockNumber") != completion_block
+        or completion_evidence.get("timestamp") != completion_timestamp
+        or evidence_hash.casefold() != completion_hash.casefold()
+        or primary_hash.casefold() != completion_hash.casefold()
+        or secondary_hash.casefold() != completion_hash.casefold()
+        or not isinstance(primary_operator, str) or not isinstance(secondary_operator, str)
+        or primary_operator == secondary_operator
+        or anchor.get("schema") != "p42-prizes/base-sepolia-finality-anchor/v1"
+        or anchor.get("operators") != [primary_operator, secondary_operator]
+        or rpc_evidence.get("primaryOperatorId") != primary_operator
+        or rpc_evidence.get("secondaryOperatorId") != secondary_operator
+        or finalized.get("number") != completion_block
+        or str(finalized.get("hash", "")).casefold() != completion_hash.casefold()
+        or any(type(entry.get("blockNumber")) is not int or entry["blockNumber"] > completion_block for _path, entry, _factory in entries)
+    ):
+        raise LaunchAuthorizationError("deployment governance completion timestamp is not bound to canonical finalized evidence")
 
 
 def _flatten_contract_addresses(value: Any) -> set[str]:
@@ -672,29 +823,45 @@ def _validate_contract_entry(value: Any, expected_name: str, factory_created: bo
     return value
 
 
-def _validate_explorer_dossier(dossier: Mapping[str, Any], manifest: Mapping[str, Any], expires: datetime) -> None:
-    expected_keys = {"schema", "chainId", "releaseBindingDigest", "capsuleDigest", "deploymentCommit", "finalizedAt", "expiresAt", "contracts", "evidenceDigest", "operatorRoster", "attestations", "dossierDigest"}
+def _validate_explorer_dossier(dossier: Mapping[str, Any], manifest: Mapping[str, Any], validation_time: datetime) -> None:
+    expected_keys = {"schema", "request", "attestations", "dossierDigest"}
     if set(dossier) != expected_keys:
         raise LaunchAuthorizationError("explorer dossier has unexpected or missing fields")
-    if dossier.get("schema") != "p42-prizes/explorer-verification-dossier/v2":
-        raise LaunchAuthorizationError("explorer dossier must be v2")
+    if dossier.get("schema") != "p42-prizes/explorer-verification-dossier/v3":
+        raise LaunchAuthorizationError("explorer dossier must be v3")
     signed_body = {key: value for key, value in dossier.items() if key != "dossierDigest"}
     if dossier.get("dossierDigest") != sha256_bytes(canonical_json(signed_body).encode("utf-8")):
         raise LaunchAuthorizationError("explorer dossier digest is not canonical")
-    core = {key: value for key, value in signed_body.items() if key not in {"evidenceDigest", "operatorRoster", "attestations"}}
-    if dossier.get("evidenceDigest") != sha256_bytes(canonical_json(core).encode("utf-8")):
+    request = dossier.get("request")
+    request_keys = {"schema", "evidence", "operatorRoster", "operatorNonces", "createdAt", "expiresAt", "requestDigest"}
+    if not isinstance(request, Mapping) or set(request) != request_keys or request.get("schema") != "p42-prizes/explorer-verification-request/v1":
+        raise LaunchAuthorizationError("explorer dossier request shape is invalid")
+    request_body = {key: value for key, value in request.items() if key != "requestDigest"}
+    if request.get("requestDigest") != sha256_bytes(canonical_json(request_body).encode("utf-8")):
+        raise LaunchAuthorizationError("explorer request digest is not canonical")
+    evidence = request.get("evidence")
+    evidence_keys = {"schema", "chainId", "releaseBindingDigest", "capsuleDigest", "deploymentCommit", "collectedAt", "finalityAnchor", "blockEvidence", "contracts", "evidenceDigest"}
+    if not isinstance(evidence, Mapping) or set(evidence) != evidence_keys or evidence.get("schema") != "p42-prizes/explorer-verification-evidence/v1":
+        raise LaunchAuthorizationError("explorer evidence shape is invalid")
+    evidence_body = {key: value for key, value in evidence.items() if key != "evidenceDigest"}
+    if evidence.get("evidenceDigest") != sha256_bytes(canonical_json(evidence_body).encode("utf-8")):
         raise LaunchAuthorizationError("explorer dossier evidence digest is not canonical")
-    if dossier.get("chainId") != manifest.get("network", {}).get("chainId"):
+    if evidence.get("chainId") != manifest.get("network", {}).get("chainId"):
         raise LaunchAuthorizationError("explorer dossier chain does not match deployment")
-    if dossier.get("deploymentCommit") != manifest.get("deploymentCommit"):
+    if evidence.get("deploymentCommit") != manifest.get("deploymentCommit"):
         raise LaunchAuthorizationError("explorer dossier commit does not match deployment")
     if dossier.get("dossierDigest") != manifest.get("sourceVerification", {}).get("dossierDigest"):
         raise LaunchAuthorizationError("explorer dossier digest does not match deployment manifest")
     release_evidence = manifest.get("releaseEvidence", {})
-    if dossier.get("releaseBindingDigest") != release_evidence.get("releaseBindingDigest") or dossier.get("capsuleDigest") != release_evidence.get("capsuleDigest"):
+    if evidence.get("releaseBindingDigest") != release_evidence.get("releaseBindingDigest") or evidence.get("capsuleDigest") != release_evidence.get("capsuleDigest"):
         raise LaunchAuthorizationError("explorer dossier does not match deployment release evidence")
+    roster = request.get("operatorRoster")
+    nonces = request.get("operatorNonces")
+    attestations = dossier.get("attestations")
+    if not isinstance(roster, list) or len(roster) != 2 or len({str(item).casefold() for item in roster}) != 2 or not isinstance(nonces, list) or len(nonces) != 2 or not isinstance(attestations, list) or len(attestations) != 2:
+        raise LaunchAuthorizationError("explorer dossier must bind exactly two operators, nonces, and attestations")
     deployed = _canonical_contract_entries(manifest)
-    dossier_contracts = dossier.get("contracts")
+    dossier_contracts = evidence.get("contracts")
     if not isinstance(dossier_contracts, list) or len(dossier_contracts) != 47:
         raise LaunchAuthorizationError("explorer dossier must cover canonical ordered 47 contracts")
     for index, ((path, contract, _factory_key), row) in enumerate(zip(deployed, dossier_contracts, strict=True)):
@@ -728,14 +895,29 @@ def _validate_explorer_dossier(dossier: Mapping[str, Any], manifest: Mapping[str
                 or str(receipt.get("logAddress", "")).casefold() != str(provenance["factoryAddress"]).casefold()
                 or [str(topic).casefold() for topic in receipt.get("topics", [])] != [topic.casefold() for topic in expected_topics]
                 or receipt.get("data") != "0x"
-                or str(receipt.get("configurationResult", "")).casefold() != str(provenance["configurationHash"]).casefold()
             ):
-                raise LaunchAuthorizationError(f"explorer dossier contract {index} receipt/event/configuration mismatch")
+                raise LaunchAuthorizationError(f"explorer dossier contract {index} receipt/event mismatch")
+            snapshot = deployment.get("snapshotConfiguration")
+            block_evidence = evidence.get("blockEvidence")
+            if (
+                not isinstance(snapshot, Mapping)
+                or not isinstance(block_evidence, Mapping)
+                or snapshot.get("blockNumber") != block_evidence.get("blockNumber")
+                or str(snapshot.get("blockHash", "")).casefold() != str(block_evidence.get("blockHash", "")).casefold()
+                or str(snapshot.get("primaryResult", "")).casefold() != str(provenance["configurationHash"]).casefold()
+                or str(snapshot.get("secondaryResult", "")).casefold() != str(provenance["configurationHash"]).casefold()
+            ):
+                raise LaunchAuthorizationError(f"explorer dossier contract {index} finalized configuration mismatch")
         elif set(deployment) != {"kind"}:
             raise LaunchAuthorizationError(f"explorer dossier direct contract {index} has unexpected provenance")
-    dossier_expiry = datetime.fromtimestamp(dossier.get("expiresAt", 0), timezone.utc)
-    if dossier_expiry < expires:
-        raise LaunchAuthorizationError("authorization cannot outlive explorer verification evidence")
+    try:
+        created = datetime.fromisoformat(str(request.get("createdAt", "")).replace("Z", "+00:00"))
+        collected = datetime.fromisoformat(str(evidence.get("collectedAt", "")).replace("Z", "+00:00"))
+        dossier_expiry = datetime.fromtimestamp(request.get("expiresAt", 0), timezone.utc)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise LaunchAuthorizationError("explorer verification timestamps are invalid") from exc
+    if created.tzinfo is None or collected.tzinfo is None or created > validation_time or collected > validation_time or dossier_expiry < validation_time:
+        raise LaunchAuthorizationError("explorer verification was not valid at governance completion")
 
 
 def _validate_explorer_with_node(
@@ -777,6 +959,78 @@ def _validate_explorer_with_node(
         raise LaunchAuthorizationError(f"explorer dossier failed independent static validation: {detail}")
 
 
+def _validate_frozen_board_release(
+    *,
+    image_release: Mapping[str, Any],
+    image_release_ref: Mapping[str, Any],
+    publication_journal_ref: Mapping[str, Any],
+    board_bindings: Mapping[str, Any],
+    release_report: Mapping[str, Any],
+    release_slate: Mapping[str, Any],
+    context: AttestationValidationContext,
+) -> None:
+    release_commit = image_release.get("release_config_commit")
+    if release_commit != release_report.get("sourceCommit"):
+        raise LaunchAuthorizationError(
+            "verifier image release config commit does not match deployment release commit"
+        )
+    image_registry = release_slate.get("imageRegistry")
+    if (
+        not isinstance(image_registry, Mapping)
+        or image_registry.get("path") != image_release_ref["local_path"]
+        or image_registry.get("digest") != image_release_ref["sha256"]
+    ):
+        raise LaunchAuthorizationError("release slate image registry does not bind the exact image release dossier")
+
+    validator_root = _SCHEMA_DIR.parent
+
+    def verify_snapshot(snapshot: Path) -> None:
+        script = validator_root / "scripts" / "verify_production_board_bindings.py"
+        try:
+            result = run_bounded_process(
+                [sys.executable, str(script), "--repo-root", str(snapshot)],
+                cwd=validator_root,
+                env={
+                    "PATH": os.environ.get("PATH", os.defpath),
+                    "PYTHONPATH": str(snapshot / "src"),
+                },
+                timeout=300,
+            )
+        except (OSError, subprocess.SubprocessError, OutputLimitExceeded) as exc:
+            raise AdmissionError(f"exact-ten frozen board replay could not run: {exc}") from exc
+        if result.returncode != 0:
+            raise AdmissionError("exact-ten frozen board replay failed")
+        try:
+            frozen_bindings = loads_strict_json(
+                (snapshot / "protocol" / "production-board-bindings-v1.json").read_bytes()
+            )
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            raise AdmissionError("frozen canonical board bindings are unreadable") from exc
+        if frozen_bindings != board_bindings:
+            raise AdmissionError("supplied board bindings do not equal the frozen canonical checkout")
+
+    journal_payload = context.resolved_artifacts.get(
+        (publication_journal_ref["local_path"], publication_journal_ref["sha256"])
+    )
+    if not isinstance(journal_payload, bytes):
+        raise LaunchAuthorizationError("verifier image publication journal was not resolved exactly")
+    try:
+        with tempfile.TemporaryDirectory(prefix="p42-launch-journal-") as temporary:
+            journal_path = Path(temporary) / "publication-journal.json"
+            journal_path.write_bytes(journal_payload)
+            validate_image_release_checkout(
+                validator_root,
+                image_release,
+                publication_journal_path=journal_path,
+                publication_journal_file_sha256=publication_journal_ref["sha256"],
+                board_binding_verifier=verify_snapshot,
+            )
+    except (AdmissionError, OSError, subprocess.SubprocessError) as exc:
+        raise LaunchAuthorizationError(
+            f"verifier image source/release checkout failed independent exact replay: {exc}"
+        ) from exc
+
+
 def _validate_problem_reviews(
     reviews: Any,
     *,
@@ -784,6 +1038,7 @@ def _validate_problem_reviews(
     release_slate: Mapping[str, Any],
     deployment_manifest: Mapping[str, Any],
     board_bindings: Mapping[str, Any],
+    image_release: Mapping[str, Any],
     trust_registry: Mapping[str, Any],
     context: AttestationValidationContext,
     issued: datetime,
@@ -815,9 +1070,28 @@ def _validate_problem_reviews(
         raise LaunchAuthorizationError("production board bindings release source does not match verified release")
     if not isinstance(slate_boards, list) or len(slate_boards) != 10:
         raise LaunchAuthorizationError("production release slate must contain exactly ten ordered boards")
-    for position, (binding_record, slate_board) in enumerate(zip(binding_records, slate_boards), start=1):
+    image_boards = image_release.get("boards")
+    if (
+        image_release.get("release_config_commit") != release_report.get("sourceCommit")
+        or not isinstance(image_boards, list)
+        or len(image_boards) != 10
+    ):
+        raise LaunchAuthorizationError("verifier image release does not match the exact deployment release")
+    for position, (binding_record, slate_board, image_board) in enumerate(
+        zip(binding_records, slate_boards, image_boards, strict=True), start=1
+    ):
         if not isinstance(slate_board, Mapping):
             raise LaunchAuthorizationError("production release slate contains an invalid board")
+        if (
+            not isinstance(image_board, Mapping)
+            or image_board.get("slug") != binding_record["slug"]
+            or image_board.get("source_hash") != binding_record["verifier"]["source_tree_sha256"]
+            or image_board.get("version") != binding_record["verifier"]["version"]
+            or image_board.get("index_digest") != slate_board.get("verifierImageDigest")
+        ):
+            raise LaunchAuthorizationError(
+                f"production board binding {position} does not match verifier image source evidence"
+            )
         expected_slate_binding = {
             "problemId": str(position),
             "problemSlug": binding_record["slug"],
@@ -837,6 +1111,11 @@ def _validate_problem_reviews(
         for row in deployment_manifest.get("problems", [])
         if isinstance(row, Mapping)
     }
+    image_by_slug = {
+        row.get("slug"): row
+        for row in image_boards
+        if isinstance(row, Mapping) and isinstance(row.get("slug"), str)
+    }
     seen_ids: set[str] = set()
     seen_slugs: set[str] = set()
     for index, review in enumerate(reviews):
@@ -851,7 +1130,11 @@ def _validate_problem_reviews(
             binding_position = int(problem_id)
         except (TypeError, ValueError) as exc:
             raise LaunchAuthorizationError("problem review id must be an exact canonical board position") from exc
-        if not 1 <= binding_position <= 10 or binding_records[binding_position - 1].get("slug") != slug:
+        if (
+            binding_position != index + 1
+            or not 1 <= binding_position <= 10
+            or binding_records[binding_position - 1].get("slug") != slug
+        ):
             raise LaunchAuthorizationError("problem review does not match its ordered canonical board binding")
         board = admitted.get(problem_id)
         if board is None or board.get("problemSlug") != slug or board.get("matrixDigest") != review.get("admission_matrix_digest"):
@@ -867,6 +1150,8 @@ def _validate_problem_reviews(
         binding_record = binding_by_slug.get(slug)
         if binding_record is None:
             raise LaunchAuthorizationError(f"problem review {problem_id} has no production board binding")
+        if image_by_slug.get(slug, {}).get("index_digest") != review.get("verifier_image_digest"):
+            raise LaunchAuthorizationError(f"problem review {problem_id} does not match exact verifier image release")
         board_binding_hash = sha256_bytes(canonical_json(binding_record).encode("utf-8"))
         if review.get("board_bindings_digest") != board_bindings_digest:
             raise LaunchAuthorizationError(f"problem review {problem_id} board bindings digest mismatch")
@@ -882,24 +1167,244 @@ def _validate_problem_reviews(
             chain_reader=context.chain_reader,
             error_type=LaunchAuthorizationError,
         )
-        _validate_math_review(packet, review, trust_registry, review_context, issued)
+        release_evidence = deployment_manifest.get("releaseEvidence")
+        if not isinstance(release_evidence, Mapping):
+            raise LaunchAuthorizationError("deployment manifest has no production release evidence")
+        deployed_release_binding = {
+            "board_position": binding_position,
+            "verifier_source_commit": image_release.get("verifier_source_commit"),
+            "verifier_source_archive_digest": image_release.get("verifier_source_archive_digest"),
+            "release_config_commit": image_release.get("release_config_commit"),
+            "release_config_archive_digest": image_release.get("release_config_archive_digest"),
+            "deployment_commit": release_report.get("sourceCommit"),
+            "release_capsule_digest": release_report.get("capsuleDigest"),
+            "release_slate_digest": release_report.get("slateDigest"),
+            "release_index_digest": release_report.get("releaseIndexDigest"),
+            "release_verification_digest": release_report.get("verificationReportDigest"),
+            "ceremony_config_digest": release_report.get("ceremonyConfigDigest"),
+            "release_binding_digest": release_evidence.get("releaseBindingDigest"),
+            "board_set_digest": release_evidence.get("boardSetDigest"),
+        }
+        _validate_math_review(
+            packet,
+            review,
+            trust_registry,
+            review_context,
+            issued,
+            deployed_release_binding=deployed_release_binding,
+            board_binding=binding_record,
+        )
         if review.get("review_hash") != packet.get("review_hash"):
             raise LaunchAuthorizationError(f"problem review {problem_id} hash mismatch")
 
 
-def _validate_math_review(packet: Mapping[str, Any], row: Mapping[str, Any], trust_registry: Mapping[str, Any], context: AttestationValidationContext, issued: datetime) -> None:
-    expected = {"schema_version", "problem_id", "problem_slug", "board_bindings_digest", "board_binding_hash", "verifier_image_digest", "admission_matrix_digest", "status", "completed_at_utc", "reviewer", "review_hash", "signature"}
-    if set(packet) != expected or packet.get("schema_version") != MATH_REVIEW_SCHEMA_VERSION or packet.get("status") != "approved":
-        raise LaunchAuthorizationError("math review packet has invalid shape or status")
+def _validate_math_review(
+    packet: Mapping[str, Any],
+    row: Mapping[str, Any],
+    trust_registry: Mapping[str, Any],
+    context: AttestationValidationContext,
+    issued: datetime,
+    *,
+    deployed_release_binding: Mapping[str, Any],
+    board_binding: Mapping[str, Any],
+) -> None:
+    del trust_registry
+    try:
+        schema = json.loads((_SCHEMA_DIR / "math-review.schema.json").read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator.check_schema(schema)
+        jsonschema.Draft202012Validator(
+            schema, format_checker=jsonschema.FormatChecker()
+        ).validate(packet)
+    except (OSError, ValueError, jsonschema.SchemaError, jsonschema.ValidationError) as exc:
+        raise LaunchAuthorizationError(f"math review packet failed v4 schema validation: {exc}") from exc
     for packet_key, row_key in (("problem_id", "problem_id"), ("problem_slug", "problem_slug"), ("board_bindings_digest", "board_bindings_digest"), ("board_binding_hash", "board_binding_hash"), ("verifier_image_digest", "verifier_image_digest"), ("admission_matrix_digest", "admission_matrix_digest")):
         if packet.get(packet_key) != row.get(row_key):
             raise LaunchAuthorizationError(f"math review {packet_key} does not match authorization")
+    if packet.get("deployed_release_binding") != dict(deployed_release_binding):
+        raise LaunchAuthorizationError("math review deployed_release_binding does not match exact deployed release")
+    if deployed_release_binding.get("release_config_commit") != deployed_release_binding.get("deployment_commit"):
+        raise LaunchAuthorizationError("math review release config commit R does not match deployment commit R")
+    _validate_math_review_evidence_bindings(
+        packet,
+        board_binding=board_binding,
+        deployed_release_binding=deployed_release_binding,
+    )
     completed = _require_utc(packet.get("completed_at_utc"), "math_review.completed_at_utc", LaunchAuthorizationError)
     if completed > issued:
         raise LaunchAuthorizationError("math review completion must not follow authorization issuance")
-    reviewer = _validate_identity(packet.get("reviewer"), "math_review.reviewer", expected_role="independent-math-reviewer", require_independent=True, error_type=LaunchAuthorizationError, context=context)
-    unsigned = {key: value for key, value in packet.items() if key not in {"review_hash", "signature"}}
+    literature_completed = _require_utc(
+        packet["literature_review"].get("completed_at_utc"),
+        "math_review.literature_review.completed_at_utc",
+        LaunchAuthorizationError,
+    )
+    if literature_completed > completed:
+        raise LaunchAuthorizationError("math review literature review must complete before packet completion")
+
+    reviewer = _validate_identity(
+        packet.get("reviewer"), "math_review.reviewer",
+        expected_role="independent-math-reviewer", require_independent=True,
+        error_type=LaunchAuthorizationError, context=context,
+    )
+    acceptance = packet["problem_owner_acceptance"]
+    owner = _validate_identity(
+        acceptance.get("owner"), "math_review.problem_owner_acceptance.owner",
+        expected_role="problem-owner", error_type=LaunchAuthorizationError, context=context,
+    )
+    if reviewer["public_key"] == owner["public_key"]:
+        raise LaunchAuthorizationError("math reviewer and problem owner must use distinct registered keys")
+    accepted_at = _require_utc(
+        acceptance.get("accepted_at_utc"),
+        "math_review.problem_owner_acceptance.accepted_at_utc",
+        LaunchAuthorizationError,
+    )
+    if accepted_at > completed:
+        raise LaunchAuthorizationError("problem-owner acceptance must not follow math review completion")
+
+    for prefix, artifact in _math_review_artifacts(packet):
+        _validate_artifact_reference(artifact, prefix, LaunchAuthorizationError, context)
+
+    findings = packet["findings"]
+    finding_ids = [finding["finding_id"] for finding in findings]
+    if len(finding_ids) != len(set(finding_ids)):
+        raise LaunchAuthorizationError("math review finding_id values must be unique")
+    remediated = {finding["finding_id"] for finding in findings if finding["disposition"] == "resolved"}
+    remediation = packet["remediation_and_retest"]
+    if set(remediation["finding_ids"]) != remediated:
+        raise LaunchAuthorizationError("math review remediation finding_ids must cover every resolved finding exactly")
+    expected_remediation_status = "completed" if remediated else "not-required"
+    if remediation["status"] != expected_remediation_status:
+        raise LaunchAuthorizationError(
+            f"math review remediation status must be {expected_remediation_status} for its finding dispositions"
+        )
+
+    unsigned = {
+        key: value for key, value in packet.items()
+        if key not in {"review_hash", "reviewer_signature", "problem_owner_signature"}
+    }
     review_hash = sha256_bytes(canonical_json(unsigned).encode("utf-8"))
     if packet.get("review_hash") != review_hash:
         raise LaunchAuthorizationError("math review hash is not canonical")
-    _validate_signature(packet.get("signature"), "math_review.signature", schema_version=MATH_REVIEW_SCHEMA_VERSION, artifact_hash=review_hash, identity=reviewer, expected_role="independent-math-reviewer", error_type=LaunchAuthorizationError, context=context, not_after=completed)
+    _validate_signature(
+        packet.get("reviewer_signature"), "math_review.reviewer_signature",
+        schema_version=MATH_REVIEW_SCHEMA_VERSION, artifact_hash=review_hash,
+        identity=reviewer, expected_role="independent-math-reviewer",
+        error_type=LaunchAuthorizationError, context=context, not_after=completed,
+    )
+    _validate_signature(
+        packet.get("problem_owner_signature"), "math_review.problem_owner_signature",
+        schema_version=MATH_REVIEW_SCHEMA_VERSION, artifact_hash=review_hash,
+        identity=owner, expected_role="problem-owner",
+        error_type=LaunchAuthorizationError, context=context, not_after=completed,
+    )
+
+
+def _math_review_artifacts(packet: Mapping[str, Any]) -> list[tuple[str, Any]]:
+    expertise = packet["expertise_and_conflicts"]
+    verifier = packet["verifier_schema_and_fixtures"]
+    literature = packet["literature_review"]
+    artifacts = [
+        ("math_review.expertise_and_conflicts.expertise_evidence", expertise["expertise_evidence"]),
+        ("math_review.verifier_schema_and_fixtures.replay_result", verifier["replay_result"]),
+        ("math_review.literature_review.search_record", literature["search_record"]),
+    ]
+    remediation = packet["remediation_and_retest"]
+    if remediation["status"] == "completed":
+        artifacts.extend([
+            ("math_review.remediation_and_retest.remediation_artifact", remediation["remediation_artifact"]),
+            ("math_review.remediation_and_retest.retest_artifact", remediation["retest_artifact"]),
+        ])
+    return artifacts
+
+
+def _validate_math_review_evidence_bindings(
+    packet: Mapping[str, Any],
+    *,
+    board_binding: Mapping[str, Any],
+    deployed_release_binding: Mapping[str, Any],
+) -> None:
+    slug = packet["problem_slug"]
+    if board_binding.get("slug") != slug:
+        raise LaunchAuthorizationError("math review evidence board binding does not match problem slug")
+    verifier_binding = board_binding.get("verifier")
+    if not isinstance(verifier_binding, Mapping):
+        raise LaunchAuthorizationError("math review evidence has no canonical verifier binding")
+    source_identity = {
+        "verifier_source_commit": deployed_release_binding.get("verifier_source_commit"),
+        "release_config_commit": deployed_release_binding.get("release_config_commit"),
+        "problem_slug": slug,
+        "tree_hash_algorithm": SOURCE_HASH_ALGORITHM,
+        "tree_hash": verifier_binding.get("source_tree_sha256"),
+    }
+
+    statement = packet["literal_statement_and_reduction"]
+    verifier = packet["verifier_schema_and_fixtures"]
+    expected_board_artifacts = (
+        ("statement_artifact", statement["statement_artifact"], board_binding.get("specification")),
+        ("solution_schema", verifier["solution_schema"], board_binding.get("solution_schema")),
+    )
+    bound_refs: list[tuple[str, str]] = []
+    for role, observed, canonical in expected_board_artifacts:
+        expected = dict(canonical) | {"source_identity": source_identity} if isinstance(canonical, Mapping) else None
+        if observed != expected:
+            raise LaunchAuthorizationError(
+                f"math review {role} does not match its canonical board artifact and source identity"
+            )
+        bound_refs.append((observed["path"], observed["sha256"]))
+    if statement["canonical_claim_scope"] != board_binding.get("claim_scope"):
+        raise LaunchAuthorizationError("math review canonical_claim_scope does not match the board claim boundary")
+    if statement["canonical_objective"] != board_binding.get("objective"):
+        raise LaunchAuthorizationError("math review canonical_objective does not match the board objective")
+
+    expected_verifier_source = {
+        "problem_path": f"problems/{slug}",
+        "version": verifier_binding.get("version"),
+        "command": verifier_binding.get("command"),
+        "source_identity": source_identity,
+    }
+    if verifier["verifier_source"] != expected_verifier_source:
+        raise LaunchAuthorizationError(
+            "math review verifier_source does not match the canonical verifier and source identity"
+        )
+
+    fixture_verdicts = verifier["fixture_verdicts"]
+    canonical_fixtures = board_binding.get("math_review_fixtures")
+    if not isinstance(canonical_fixtures, list):
+        raise LaunchAuthorizationError("math review evidence has no canonical board fixture corpus")
+    expected_fixtures = []
+    for fixture in canonical_fixtures:
+        if not isinstance(fixture, Mapping) or not isinstance(fixture.get("expected_verdict"), Mapping):
+            raise LaunchAuthorizationError("math review evidence has an invalid canonical board fixture corpus")
+        expected_fixtures.append({
+            "path": fixture.get("path"),
+            "sha256": fixture.get("sha256"),
+            "expected_verdict": fixture["expected_verdict"],
+            "source_identity": source_identity,
+        })
+    if fixture_verdicts != expected_fixtures:
+        raise LaunchAuthorizationError("math review fixture_verdicts do not exactly match canonical verifier results")
+    accepted_count = sum(
+        fixture["expected_verdict"]["status"] == "accepted" for fixture in expected_fixtures
+    )
+    expected_counts = {
+        "accepted": accepted_count,
+        "rejected": len(expected_fixtures) - accepted_count,
+        "total": len(expected_fixtures),
+    }
+    if verifier["fixture_verdict_counts"] != expected_counts:
+        raise LaunchAuthorizationError("math review fixture_verdict_counts do not match canonical verifier results")
+    expected_acceptance_review = {
+        "method": "canonical-fixture-replay" if accepted_count else "source-inspection-only",
+        "limitation": (
+            FIXTURE_REPLAY_ACCEPTANCE_LIMITATION
+            if accepted_count
+            else SOURCE_ONLY_ACCEPTANCE_LIMITATION
+        ),
+    }
+    if verifier["acceptance_path_review"] != expected_acceptance_review:
+        raise LaunchAuthorizationError(
+            "math review acceptance_path_review overclaims canonical acceptance-path evidence"
+        )
+    for fixture in fixture_verdicts:
+        bound_refs.append((fixture["path"], fixture["sha256"]))
+    if len(bound_refs) != len(set(bound_refs)):
+        raise LaunchAuthorizationError("math review evidence roles must use distinct canonical source references")

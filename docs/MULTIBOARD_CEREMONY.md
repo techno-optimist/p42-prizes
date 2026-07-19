@@ -45,8 +45,8 @@ strict JSON file named by `P42_MULTIBOARD_CEREMONY_CONFIG`. Its root shape is:
 {
   "schema": "p42-prizes/multi-board-ceremony/v1",
   "governance": {
-    "signers": ["0x...", "0x...", "0x..."],
-    "threshold": "2",
+    "signers": ["0x...", "0x...", "0x...", "0x...", "0x..."],
+    "threshold": "3",
     "delaySeconds": "172800",
     "guardian": "0x..."
   },
@@ -136,7 +136,7 @@ validator accepts it.
 
 The canonical contract preparation, offline verification, and production
 deployment paths reject the historical `p42-verifier-image-release/v1` shape.
-They consume the exact canonical `p42-verifier-image-release/v2` dossier and
+They consume the exact canonical `p42-verifier-image-release/v3` dossier and
 invoke `admit-release-ready`, binding its independently pinned raw
 bytes, `dossier_hash`, verifier-source commit, release-config commit, final
 manifest hashes, ten-board order, OCI labels, and immutable index digests. It
@@ -254,9 +254,17 @@ For ten boards this is 110 independently confirmed operations. The only
 supported continuation command is `npm run continue:base-sepolia`. Production
 continuation requires two named, operator-distinct RPCs to agree on canonical
 Base Sepolia `finalized`/`safe` tags and OP Stack L1-origin/finality evidence.
-It reserves a private governance-operation journal bound to the authenticated
-release, deployment-config hash, timelock address/runtime, and complete ordered
-operation builders. The continuation process has no governance signer keys and
+It reserves a private v2 governance-operation journal bound to the authenticated
+release, deployment commit, deployment-config hash, timelock address/runtime,
+five-signer policy, and complete ordered operation builders. The first phase
+contains the 40 prerequisite requests; the final journal contains all 110 and
+is exact-content reserved from the frozen preflight plan before any deployment
+transaction is signed or broadcast. Partial-phase handoffs recompute the
+exact-byte digest after all observation writes. The
+deployment-config field binds the immutable ceremony-input digest in
+`releaseEvidence.configDigest`, while the manifest retains its separate hash
+over mined deployment evidence. The
+continuation process has no governance signer keys and
 never schedules or confirms an operation. It only ingests execution evidence at
 the agreed finalized block, including a deterministic override fallback, and
 persists recovered observations through the same fenced, dead-owner-reclaiming
@@ -288,11 +296,17 @@ read using `P42_EXPLORER_DOSSIER_PATH`; offline consumers must independently pin
 the exact file bytes with `P42_EXPLORER_DOSSIER_SHA256`. A URL, screenshot, or
 caller-authored `verified` value is not evidence.
 
-The v2 dossier stores each provider's exact bounded raw bytes and is attested by
-two configured verification operators using EIP-712. Completion uses the
-finalized block timestamp as the validation instant, rejects any future fetch
-time or expiry anomaly, and live re-queries Etherscan V2 plus Sourcify V2 before
-the manifest may transition to `governance-setup-complete`.
+The v3 ceremony separates the credentialed network collector from both signing
+operators. Collection stores each provider's exact bounded raw bytes and one
+immutable finalized block observed by two operator-distinct RPC authorities.
+An offline preparer creates the complete request and per-operator CSPRNG nonces;
+the operators EIP-712 sign detached artifacts; an offline assembler verifies the
+exact two-signer roster and emits the dossier. Completion uses the finalized
+completion-block timestamp as the validation instant, rejects any future fetch
+time or expiry anomaly, and rechecks the retained finality anchor across both
+RPC authorities before the manifest may transition to
+`governance-setup-complete`. It never gives the Etherscan credential host
+signing authority and never depends on a later explorer re-query.
 The admission preflight is a source-level prevention control, not a substitute
 for independently attested hosts, immutable image publication, external math
 review, audit, legal approval, or a real testnet rehearsal.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 from pathlib import Path
 import subprocess
@@ -146,14 +147,46 @@ def _release_dossier(smoke) -> dict:
             smoke.VERIFIER_VERSION_LABEL: "1.0.0",
         }
         records = []
+        raw_platforms = []
+        index_manifests = []
         for index, platform in enumerate(smoke.image_release.PLATFORMS):
+            os_name, architecture = platform.split("/")
+            config_raw = smoke.canonical_json({
+                "architecture": architecture,
+                "os": os_name,
+                "config": {
+                    "Labels": labels,
+                    "User": "",
+                    "WorkingDir": f"/repo/problems/{slug}",
+                    "Entrypoint": None,
+                    "Cmd": [],
+                },
+            })
+            config_digest = smoke.sha256_bytes(config_raw.encode())
+            layer = {
+                "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+                "digest": "sha256:" + str(index + 7) * 64,
+                "size": 500 + index,
+            }
+            manifest_raw = smoke.canonical_json({
+                "schemaVersion": 2,
+                "mediaType": smoke.image_release.MANIFEST_MEDIA_TYPE,
+                "config": {
+                    "mediaType": smoke.image_release.CONFIG_MEDIA_TYPE,
+                    "digest": config_digest,
+                    "size": len(config_raw.encode()),
+                },
+                "layers": [layer],
+            })
+            manifest_digest = smoke.sha256_bytes(manifest_raw.encode())
             records.append({
                 "platform": platform,
-                "manifest_digest": "sha256:" + str(index + 1) * 64,
-                "manifest_size": 100 + index,
-                "config_digest": "sha256:" + str(index + 3) * 64,
-                "config_size": 200 + index,
-                "layer_count": 4,
+                "manifest_digest": manifest_digest,
+                "manifest_size": len(manifest_raw.encode()),
+                "config_digest": config_digest,
+                "config_size": len(config_raw.encode()),
+                "layer_count": 1,
+                "layer_descriptors": [layer],
                 "labels": labels,
                 "runtime": {
                     "user": "inherited-root-overridden-by-runner",
@@ -162,8 +195,24 @@ def _release_dossier(smoke) -> dict:
                     "cmd": [],
                 },
             })
+            raw_platforms.append({
+                "platform": platform,
+                "manifest_base64": base64.b64encode(manifest_raw.encode()).decode(),
+                "config_base64": base64.b64encode(config_raw.encode()).decode(),
+            })
+            index_manifests.append({
+                "mediaType": smoke.image_release.MANIFEST_MEDIA_TYPE,
+                "digest": manifest_digest,
+                "size": len(manifest_raw.encode()),
+                "platform": {"os": os_name, "architecture": architecture},
+            })
         repository = f"{registry}/{slug}"
-        index_digest = "sha256:" + "f" * 64
+        index_raw = smoke.canonical_json({
+            "schemaVersion": 2,
+            "mediaType": smoke.image_release.INDEX_MEDIA_TYPE,
+            "manifests": index_manifests,
+        })
+        index_digest = smoke.sha256_bytes(index_raw.encode())
         boards.append({
             "slug": slug,
             "problem_id": slug,
@@ -175,6 +224,10 @@ def _release_dossier(smoke) -> dict:
             "release_manifest_path": f"problems/{slug}/problem.yaml",
             "release_manifest_sha256": "sha256:" + "9" * 64,
             "platform_manifests": records,
+            "descriptor_receipt": {
+                "index_base64": base64.b64encode(index_raw.encode()).decode(),
+                "platforms": raw_platforms,
+            },
         })
     return smoke.image_release._finalize_dossier({
         "schema_version": smoke.image_release.SCHEMA_VERSION,

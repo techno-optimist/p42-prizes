@@ -10,6 +10,7 @@ import pytest
 from scripts.verify_production_board_bindings import (
     BoardBindingError,
     _verify_guest_evidence,
+    canonical_math_review_fixtures,
     verify_board_bindings,
 )
 
@@ -67,6 +68,49 @@ def test_exact_ten_board_bindings_reject_source_drift(tmp_path: Path) -> None:
     mutated = tmp_path / "bindings.json"
     mutated.write_text(json.dumps(value))
     with pytest.raises(BoardBindingError, match="problem_yaml.sha256"):
+        verify_board_bindings(ROOT, mutated)
+
+
+def test_exact_ten_math_review_fixture_corpora_are_deterministic() -> None:
+    dossier = json.loads(DOSSIER.read_text())
+    for record in dossier["records"]:
+        corpus = canonical_math_review_fixtures(ROOT, record)
+        assert record["math_review_fixtures"] == corpus
+        seed = next(item for item in corpus if item["path"] == record["seed"]["path"])
+        assert seed["expected_verdict"]["status"] == "rejected"
+        assert seed["expected_verdict"]["reason"] == "NOT_STRICT_IMPROVEMENT"
+        assert all(item["expected_verdict"]["status"] == "rejected" for item in corpus)
+
+
+@pytest.mark.parametrize(
+    "attack",
+    ["invent", "omit", "status-flip", "reason-substitution", "report-substitution", "hash-substitution"],
+)
+def test_exact_ten_board_bindings_reject_fixture_corpus_substitution(
+    tmp_path: Path, attack: str,
+) -> None:
+    value = deepcopy(json.loads(DOSSIER.read_text()))
+    fixtures = value["records"][0]["math_review_fixtures"]
+    if attack == "invent":
+        fixtures.append({
+            "path": "problems/q6-intersecting-hypergraph/tests/invented.json",
+            "sha256": "sha256:" + "0" * 64,
+            "expected_verdict": deepcopy(fixtures[0]["expected_verdict"]),
+        })
+    elif attack == "omit":
+        fixtures.pop()
+    elif attack == "status-flip":
+        fixtures[0]["expected_verdict"].update(status="accepted", valid=True, returncode=0)
+    elif attack == "reason-substitution":
+        fixtures[0]["expected_verdict"]["reason"] = "SUBSTITUTED_REASON"
+    elif attack == "report-substitution":
+        fixtures[0]["expected_verdict"]["report_sha256"] = "sha256:" + "0" * 64
+    else:
+        fixtures[0]["sha256"] = "sha256:" + "0" * 64
+    mutated = tmp_path / "bindings.json"
+    mutated.write_text(json.dumps(value))
+
+    with pytest.raises(BoardBindingError, match="math_review_fixtures"):
         verify_board_bindings(ROOT, mutated)
 
 

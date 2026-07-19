@@ -1,0 +1,58 @@
+[Unit]
+Description=P42 durable multi-board indexer
+After=network-online.target
+Wants=network-online.target
+OnFailure=p42-runtime-failure@%n.service
+StartLimitIntervalSec=30min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=p42-indexer
+Group=p42-indexer
+EnvironmentFile=/etc/p42/indexer/runtime.env
+LoadCredential=rpc-primary-url:/etc/p42/indexer/credentials/rpc-primary-url
+UnsetEnvironment=P42_RPC_URL P42_TRANSCRIPT_ENDPOINTS
+ExecStart=/usr/bin/node /opt/p42/agent/indexer-service.mjs \
+  --rpc-url-file ${CREDENTIALS_DIRECTORY}/rpc-primary-url \
+  --manifest /etc/p42/indexer/manifest.json \
+  --publication-root /var/lib/p42/indexer/publication \
+  --health /var/lib/p42/indexer/health.json \
+  --transcript-endpoint ${P42_TRANSCRIPT_ENDPOINT_PRIMARY} \
+  --transcript-endpoint ${P42_TRANSCRIPT_ENDPOINT_SECONDARY} \
+  --interval-ms 30000 --max-stale-seconds 300 --max-consecutive-failures 5
+Restart=on-failure
+RestartSec=15s
+RestartPreventExitStatus=64 70 78 143
+OOMPolicy=kill
+LimitCORE=0
+MemoryHigh=2G
+MemoryMax=3G
+MemorySwapMax=0
+TasksMax=256
+KillMode=mixed
+TimeoutStopSec=20s
+SendSIGKILL=yes
+UMask=0077
+StateDirectory=p42/indexer p42/indexer/publication
+StateDirectoryMode=0700
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadOnlyPaths=/etc/p42/indexer /opt/p42
+ReadWritePaths=/var/lib/p42/indexer
+InaccessiblePaths=/etc/p42/operator /etc/p42/resolver /var/lib/p42/operator /var/lib/p42/resolver
+
+[Install]
+WantedBy=multi-user.target

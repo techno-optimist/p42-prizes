@@ -200,3 +200,7 @@ Do not roll database identity backward. Restore must retain all epoch and
 acceptance rows and the matching control pointer. A normal outage is not a
 rollback signal: configured-database failures never fall back to file state or
 publish a funding target.
+
+Application rollback is commit-pinned and must not roll database identity or
+history backward. Use the exact `PREVIOUS` deployment ceremony in
+`docs/DEPLOYMENT.md`, then run the release guard in its pinned rollback mode.

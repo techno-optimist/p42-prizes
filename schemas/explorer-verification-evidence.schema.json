@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.ai/prizes/schemas/explorer-verification-evidence.schema.json",
+  "title": "P42 credentialed explorer evidence collection",
+  "$ref": "https://projectforty2.ai/prizes/schemas/explorer-verification-dossier.schema.json#/$defs/evidence"
+}

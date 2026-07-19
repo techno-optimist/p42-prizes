@@ -9,7 +9,7 @@ import { AbiCoder, keccak256 } from "ethers";
 import { parseStrictJsonBytes } from "../../agent/strict-json.mjs";
 import { withDurableJournalLock } from "./signed-deployment-journal.js";
 
-export const GOVERNANCE_OPERATION_JOURNAL_SCHEMA = "p42-prizes/governance-operation-journal/v1";
+export const GOVERNANCE_OPERATION_JOURNAL_SCHEMA = "p42-prizes/governance-operation-journal/v2";
 const MAX_BYTES = 8 * 1024 * 1024;
 const STATES = Object.freeze({ planned: 0, pending: 1, executed: 2 });
 
@@ -89,11 +89,13 @@ function durableReplace(path, value) {
 function immutableView(record) {
   return {
     schema: record.schema, chainId: record.chainId, timelock: record.timelock,
+    deploymentCommit: record.deploymentCommit, governance: record.governance,
     deploymentConfigHash: record.deploymentConfigHash, releaseBindingDigest: record.releaseBindingDigest,
     expectedTimelockCodeHash: record.expectedTimelockCodeHash,
-    operations: record.operations.map(({ sequence, label, operationClass, target, value, data, salt, operationId, fallbackOperationId, dependsOn, requiredConfirmations, delaySeconds, transactionBuilderDigest, overrideFallbackDigest }) => ({
+    operations: record.operations.map(({ sequence, label, operationClass, target, value, data, salt, operationId, fallbackOperationId, dependsOn, requiredConfirmations, delaySeconds, transactionBuilder, transactionBuilderDigest, overrideFallback, overrideFallbackDigest }) => ({
       sequence, label, operationClass, target, value, data, salt, operationId, dependsOn,
-      fallbackOperationId, requiredConfirmations, delaySeconds, transactionBuilderDigest, overrideFallbackDigest,
+      fallbackOperationId, requiredConfirmations, delaySeconds, transactionBuilder, transactionBuilderDigest,
+      overrideFallback, overrideFallbackDigest,
     })),
   };
 }
@@ -106,7 +108,9 @@ function plannedOperationRecords(operations) {
     operationId: operation.operationId, fallbackOperationId: operation.overrideFallback?.operationId ?? null,
     dependsOn: [...(operation.dependsOn ?? [])],
     requiredConfirmations: operation.requiredConfirmations, delaySeconds: operation.delaySeconds,
+    transactionBuilder: structuredClone(operation.transactionBuilder),
     transactionBuilderDigest: digest(operation.transactionBuilder),
+    overrideFallback: operation.overrideFallback === null ? null : structuredClone(operation.overrideFallback),
     overrideFallbackDigest: operation.overrideFallback === null ? null : digest(operation.overrideFallback),
     state: "planned", observedOperationId: null, scheduleTxHash: null,
     executeTxHash: null, blockNumber: null, blockHash: null,
@@ -123,7 +127,16 @@ function assertGovernanceOperations(operations) {
     if (computedId.toLowerCase() !== operation.operationId.toLowerCase()) throw new Error("governance operation id does not match payload");
     if (operation.fallbackOperationId !== null) assertHex(operation.fallbackOperationId, 32, "fallback operation id");
     if (!Array.isArray(operation.dependsOn) || operation.dependsOn.some((id) => { try { assertHex(id, 32, "operation dependency"); return !ids.has(id.toLowerCase()); } catch { return true; } })) throw new Error("governance operation dependencies are malformed or not earlier in the plan");
-    if (!/^[1-9][0-9]*$/.test(operation.requiredConfirmations) || !/^[1-9][0-9]*$/.test(operation.delaySeconds) || !/^sha256:[0-9a-f]{64}$/.test(operation.transactionBuilderDigest) || !(operation.overrideFallbackDigest === null || /^sha256:[0-9a-f]{64}$/.test(operation.overrideFallbackDigest))) throw new Error("governance operation authorization metadata is malformed");
+    if (!/^[1-9][0-9]*$/.test(operation.requiredConfirmations) || !/^[1-9][0-9]*$/.test(operation.delaySeconds) || !/^sha256:[0-9a-f]{64}$/.test(operation.transactionBuilderDigest) || digest(operation.transactionBuilder) !== operation.transactionBuilderDigest || !(operation.overrideFallbackDigest === null || /^sha256:[0-9a-f]{64}$/.test(operation.overrideFallbackDigest))) throw new Error("governance operation authorization metadata is malformed");
+    if (operation.overrideFallback === null) {
+      if (operation.fallbackOperationId !== null || operation.overrideFallbackDigest !== null) throw new Error("governance operation fallback metadata is inconsistent");
+    } else {
+      const fallback = operation.overrideFallback;
+      if (!fallback || Object.keys(fallback).sort().join("\0") !== ["delaySeconds", "operationId", "requiredConfirmations", "salt", "transactionBuilder"].sort().join("\0")) throw new Error("governance operation fallback keys mismatch");
+      assertHex(fallback.operationId, 32, "fallback operation id"); assertHex(fallback.salt, 32, "fallback operation salt");
+      const computedFallbackId = keccak256(AbiCoder.defaultAbiCoder().encode(["address", "uint256", "bytes", "bytes32"], [operation.target, operation.value, operation.data, fallback.salt]));
+      if (computedFallbackId.toLowerCase() !== fallback.operationId.toLowerCase() || fallback.operationId.toLowerCase() !== operation.fallbackOperationId.toLowerCase() || digest(fallback) !== operation.overrideFallbackDigest || !/^[1-9][0-9]*$/.test(fallback.requiredConfirmations) || !/^[1-9][0-9]*$/.test(fallback.delaySeconds)) throw new Error("governance operation fallback identity or authorization metadata is malformed");
+    }
     if (operation.value !== "0" || ids.has(operation.operationId.toLowerCase()) || !(operation.state in STATES)) throw new Error("governance operation identity or state drift");
     ids.add(operation.operationId.toLowerCase());
     if (operation.state === "planned" && (operation.observedOperationId !== null || operation.scheduleTxHash !== null || operation.executeTxHash !== null || operation.blockNumber !== null || operation.blockHash !== null)) throw new Error("planned governance operation contains observation evidence");
@@ -145,16 +158,30 @@ export function assertGovernanceOperationJournal(record) {
   assertHex(record.timelock, 20, "timelock");
   assertHex(record.deploymentConfigHash, 32, "deployment config hash");
   assertHex(record.expectedTimelockCodeHash, 32, "expected timelock code hash");
+  if (!/^[0-9a-f]{40}$/.test(record.deploymentCommit ?? "")) throw new Error("governance journal deployment commit is malformed");
+  const governance = record.governance;
+  if (!governance || Object.keys(governance).sort().join("\0") !== ["delaySeconds", "guardian", "overrideDelaySeconds", "overrideThreshold", "signers", "threshold"].sort().join("\0") || !Array.isArray(governance.signers) || governance.signers.length < 3 || governance.signers.length > 5) throw new Error("governance journal policy is malformed");
+  for (const [index, signer] of governance.signers.entries()) assertHex(signer, 20, `governance signer ${index}`);
+  if (new Set(governance.signers.map((value) => value.toLowerCase())).size !== governance.signers.length) throw new Error("governance journal signers are not distinct");
+  assertHex(governance.guardian, 20, "governance guardian");
+  for (const field of ["threshold", "overrideThreshold", "delaySeconds", "overrideDelaySeconds"]) if (!/^[1-9][0-9]*$/.test(governance[field])) throw new Error(`governance journal ${field} is malformed`);
   if (!/^sha256:[0-9a-f]{64}$/.test(record.releaseBindingDigest ?? "")) throw new Error("governance journal release binding is malformed");
   assertGovernanceOperations(record.operations);
+  for (const operation of record.operations) {
+    const threshold = operation.operationClass === "override" ? governance.overrideThreshold : governance.threshold;
+    const delay = operation.operationClass === "override" ? governance.overrideDelaySeconds : governance.delaySeconds;
+    if (operation.requiredConfirmations !== threshold || operation.delaySeconds !== delay) throw new Error("governance operation does not match journal policy");
+    if (operation.overrideFallback !== null && (operation.overrideFallback.requiredConfirmations !== governance.overrideThreshold || operation.overrideFallback.delaySeconds !== governance.overrideDelaySeconds)) throw new Error("governance fallback does not match journal policy");
+  }
   if (record.planDigest !== digest(immutableView(record))) throw new Error("governance operation plan digest mismatch");
   if (!Number.isSafeInteger(record.generation) || record.generation < 0) throw new Error("governance operation generation is invalid");
   return record;
 }
 
-export function buildGovernanceOperationJournal({ chainId, timelock, deploymentConfigHash, releaseBindingDigest, expectedTimelockCodeHash, operations }) {
+export function buildGovernanceOperationJournal({ chainId, timelock, deploymentCommit, governance, deploymentConfigHash, releaseBindingDigest, expectedTimelockCodeHash, operations }) {
   const record = {
     schema: GOVERNANCE_OPERATION_JOURNAL_SCHEMA, chainId: Number(chainId), timelock,
+    deploymentCommit, governance: structuredClone(governance),
     deploymentConfigHash, releaseBindingDigest, expectedTimelockCodeHash,
     generation: 0, operations: plannedOperationRecords(operations),
   };
@@ -172,7 +199,7 @@ export function governanceOperationJournalPath(manifestPath) {
   return join(realpathSync(dirname(absolute)), `${basename(absolute)}.governance-operations.json`);
 }
 
-export function readGovernanceOperationJournal(path) {
+function readGovernanceOperationJournalWithBytes(path) {
   path = trustedPath(path);
   assertAncestors(path);
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -185,8 +212,25 @@ export function readGovernanceOperationJournal(path) {
     while (offset < bytes.length) { const count = readSync(fd, bytes, offset, bytes.length - offset, offset); if (count <= 0) throw new Error("governance journal truncated during read"); offset += count; }
     const after = lstatSync(path);
     if (after.ino !== metadata.ino || after.dev !== metadata.dev || after.size !== metadata.size) throw new Error("governance journal changed during read");
-    return assertGovernanceOperationJournal(parseStrictJsonBytes(bytes, { maxBytes: MAX_BYTES, maxDepth: 64, trailingNewline: "require" }));
+    return { record: assertGovernanceOperationJournal(parseStrictJsonBytes(bytes, { maxBytes: MAX_BYTES, maxDepth: 64, trailingNewline: "require" })), bytes };
   } finally { closeSync(fd); }
+}
+
+export function readGovernanceOperationJournal(path) {
+  return readGovernanceOperationJournalWithBytes(path).record;
+}
+
+export function readGovernanceOperationJournalExact(path, expectedDigest) {
+  if (!/^sha256:[0-9a-f]{64}$/.test(expectedDigest ?? "")) throw new Error("governance journal requires an exact out-of-band sha256 digest");
+  const { record, bytes } = readGovernanceOperationJournalWithBytes(path);
+  const observed = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  if (observed !== expectedDigest) throw new Error("governance journal exact-bytes digest mismatch");
+  return record;
+}
+
+export function governanceOperationJournalFileDigest(path) {
+  const { bytes } = readGovernanceOperationJournalWithBytes(path);
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
 export function reserveGovernanceOperationJournal(path, expected) {

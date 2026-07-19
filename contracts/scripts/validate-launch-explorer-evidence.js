@@ -25,7 +25,6 @@ validateExplorerVerificationDossier(dossier, {
   capsule,
   trustedOperators,
   now: Number(validationTime),
-  maxAgeMs: Number.MAX_SAFE_INTEGER,
   futureSkewMs: 0,
 });
 process.stdout.write("OK\n");

@@ -93,6 +93,79 @@ def test_launch_authorization_requires_factory_provenance() -> None:
         launch_module._canonical_contract_entries(manifest)
 
 
+def test_deployment_manifest_binds_governance_time_to_finalized_evidence() -> None:
+    manifest = canonical_topology_manifest()
+    block_hash = "0x" + "a" * 64
+    for _path, entry, _factory in launch_module._canonical_contract_entries(manifest):
+        entry["blockNumber"] = 100
+    manifest.update({
+        "schema": "p42-prizes/deployment-manifest/v2",
+        "status": "governance-setup-complete",
+        "releaseMode": "production",
+        "deploymentCommit": "1" * 40,
+        "network": {"name": "baseSepolia", "chainId": 84532},
+        "releaseEvidence": {
+            "capsuleDigest": "sha256:" + "2" * 64,
+            "slateDigest": "sha256:" + "3" * 64,
+            "configDigest": "sha256:" + "4" * 64,
+            "contractCount": 47,
+            "boardCount": 10,
+        },
+        "governanceSetup": {
+            "status": "complete",
+            "completionBlock": 200,
+            "completionBlockTimestamp": 1_800_000_000,
+            "completionBlockHash": block_hash,
+            "completionBlockEvidence": {
+                "blockNumber": 200, "blockHash": block_hash, "timestamp": 1_800_000_000,
+                "primaryOperatorId": "operator-a", "secondaryOperatorId": "operator-b",
+                "primaryBlockHash": block_hash, "secondaryBlockHash": block_hash,
+            },
+            "finalityAnchor": {
+                "schema": "p42-prizes/base-sepolia-finality-anchor/v1",
+                "operators": ["operator-a", "operator-b"],
+                "rpcEvidence": {"primaryOperatorId": "operator-a", "secondaryOperatorId": "operator-b"},
+                "l2": {"finalized": {"number": 200, "hash": block_hash}},
+            },
+        },
+    })
+    report = {
+        "sourceCommit": manifest["deploymentCommit"],
+        "capsuleDigest": manifest["releaseEvidence"]["capsuleDigest"],
+        "slateDigest": manifest["releaseEvidence"]["slateDigest"],
+        "ceremonyConfigDigest": manifest["releaseEvidence"]["configDigest"],
+    }
+    launch_module._validate_deployment_manifest(manifest, report, "base-sepolia")
+    for field, value in (("completionBlockTimestamp", 1_799_999_999), ("completionBlockTimestamp", True), ("completionBlockHash", "0x" + "b" * 64)):
+        changed = json.loads(json.dumps(manifest))
+        changed["governanceSetup"][field] = value
+        with pytest.raises(LaunchAuthorizationError, match="completion evidence|canonical finalized evidence"):
+            launch_module._validate_deployment_manifest(changed, report, "base-sepolia")
+    future = json.loads(json.dumps(manifest))
+    future["contracts"][launch_module.CANONICAL_SHARED_CONTRACTS[0][0]]["blockNumber"] = 201
+    with pytest.raises(LaunchAuthorizationError, match="canonical finalized evidence"):
+        launch_module._validate_deployment_manifest(future, report, "base-sepolia")
+    registry = {"profiles": [{"operatorId": "operator-a"}, {"operatorId": "operator-b"}]}
+    timestamp_dossier = {
+        "schema": "p42-prizes/production-timestamp-dossier/v1",
+        "manifestDigest": sha256_bytes(canonical_json(manifest).encode("utf-8")),
+        "deploymentConfigHash": manifest.get("deploymentConfigHash"),
+        "deploymentCommit": manifest["deploymentCommit"],
+        "slateDigest": manifest["releaseEvidence"]["slateDigest"],
+        "capsuleDigest": manifest["releaseEvidence"]["capsuleDigest"],
+        "blocks": [{
+            "blockNumber": 200, "blockHash": block_hash, "timestamp": 1_800_000_000,
+            "primaryOperatorId": "operator-a", "secondaryOperatorId": "operator-b",
+        }],
+    }
+    assert launch_module._validated_production_completion_timestamp(timestamp_dossier, manifest, registry) == 1_800_000_000
+    coherent_backdate = json.loads(json.dumps(manifest))
+    coherent_backdate["governanceSetup"]["completionBlockTimestamp"] -= 3600
+    coherent_backdate["governanceSetup"]["completionBlockEvidence"]["timestamp"] -= 3600
+    with pytest.raises(LaunchAuthorizationError, match="release binding|independently bind"):
+        launch_module._validated_production_completion_timestamp(timestamp_dossier, coherent_backdate, registry)
+
+
 def test_launch_authorization_schema_is_valid_draft_2020_12() -> None:
     schema = json.loads(
         (ROOT / "schemas" / "production-launch-authorization.schema.json").read_text()
@@ -114,8 +187,9 @@ def test_launch_authorization_schema_resolves_canonical_binding_and_validates_in
         "security_audit", "legal_memo", "governance_signoff", "incident_drill",
         "adversarial_campaign", "operational_controls", "production_release_verification",
         "production_release_slate", "production_board_bindings", "release_capsule",
+        "verifier_image_release", "verifier_image_publication_journal",
         "deployment_manifest", "reconciliation_report", "explorer_dossier",
-        "explorer_operator_policy", "activation_rpc_operator_registry",
+        "explorer_operator_policy", "activation_rpc_operator_registry", "production_timestamp_dossier",
     )
     authorization = {
         "schema_version": "p42-production-launch-authorization/v1",
@@ -456,7 +530,89 @@ def test_reconciliation_checkpoint_v3_requires_independent_semantic_replay() -> 
         _validated_reconciliation_checkpoint(report)
 
 
-def test_math_review_requires_a_registered_independent_signature(tmp_path: Path) -> None:
+def _deployed_math_review_binding() -> dict:
+    return {
+        "board_position": 1,
+        "verifier_source_commit": "2" * 40,
+        "verifier_source_archive_digest": "sha256:" + "1" * 64,
+        "release_config_commit": "1" * 40,
+        "release_config_archive_digest": "sha256:" + "2" * 64,
+        "deployment_commit": "1" * 40,
+        "release_capsule_digest": "sha256:" + "a" * 64,
+        "release_slate_digest": "sha256:" + "b" * 64,
+        "release_index_digest": "sha256:" + "c" * 64,
+        "release_verification_digest": "sha256:" + "d" * 64,
+        "ceremony_config_digest": "sha256:" + "e" * 64,
+        "release_binding_digest": "sha256:" + "f" * 64,
+        "board_set_digest": "sha256:" + "0" * 64,
+    }
+
+
+def _math_review_board_binding() -> dict:
+    binding = {
+        "slug": "hadamard-mini",
+        "problem_yaml": {
+            "path": "problems/hadamard-mini/problem.yaml",
+            "sha256": "sha256:" + "5" * 64,
+        },
+        "specification": {
+            "path": "problems/hadamard-mini/SPEC.md",
+            "sha256": "sha256:" + "6" * 64,
+        },
+        "solution_schema": {
+            "path": "problems/hadamard-mini/solution.schema.json",
+            "sha256": "sha256:" + "7" * 64,
+        },
+        "seed": {
+            "path": "problems/hadamard-mini/examples/seed.json",
+            "sha256": "sha256:" + "8" * 64,
+        },
+        "verifier": {
+            "version": "1.2.3",
+            "command": "python3 verifier/verify.py --solution {solution}",
+            "source_tree_sha256": "sha256:" + "9" * 64,
+        },
+        "claim_scope": "Reviews only the finite submitted witness and exact verifier predicate.",
+        "objective": {
+            "direction": "maximize",
+            "score_name": "certified_order",
+            "seed_best": "4/1",
+            "optimum": "668/1",
+            "min_improvement": "1/1",
+            "gauge": "max(0, certified_order - seed_best)",
+            "target_classification": "search_target",
+        },
+    }
+    rejected = {
+        "status": "rejected",
+        "valid": False,
+        "returncode": 1,
+        "reason": "NOT_STRICT_IMPROVEMENT",
+        "report_sha256": "sha256:" + "e" * 64,
+    }
+    binding["math_review_fixtures"] = [
+        binding["seed"] | {"expected_verdict": rejected},
+        {
+            "path": "problems/hadamard-mini/tests/invalid.json",
+            "sha256": "sha256:" + "a" * 64,
+            "expected_verdict": rejected | {
+                "reason": "SCHEMA_INVALID",
+                "report_sha256": "sha256:" + "f" * 64,
+            },
+        },
+        {
+            "path": "problems/hadamard-mini/tests/malformed.json",
+            "sha256": "sha256:" + "d" * 64,
+            "expected_verdict": rejected | {
+                "reason": "MALFORMED_JSON",
+                "report_sha256": "sha256:" + "0" * 64,
+            },
+        },
+    ]
+    return binding
+
+
+def _math_review_packet(tmp_path: Path) -> tuple[dict, dict, object, dict]:
     fixture = AttestationFixture(tmp_path)
     reviewer = fixture.identity(
         "math-reviewer",
@@ -465,6 +621,48 @@ def test_math_review_requires_a_registered_independent_signature(tmp_path: Path)
         independent=True,
         organization="Independent Mathematics Institute",
     )
+    owner = fixture.identity(
+        "problem-owner", "Grace Hopper", "problem-owner",
+        organization="Problem Stewardship Foundation",
+    )
+    sections = json.loads(
+        (ROOT / "tests/fixtures/math-review-v3-sections.json").read_text(encoding="utf-8")
+    )
+    evidence = fixture.artifact(
+        "math-review-evidence",
+        content={"review": "exact finite claim evidence"},
+        created_at_utc="2026-07-08T15:00:00Z",
+    )
+    sections["expertise_and_conflicts"]["expertise_evidence"] = evidence
+    board_binding = _math_review_board_binding()
+    source_identity = {
+        "verifier_source_commit": _deployed_math_review_binding()["verifier_source_commit"],
+        "release_config_commit": _deployed_math_review_binding()["release_config_commit"],
+        "problem_slug": board_binding["slug"],
+        "tree_hash_algorithm": "p42-source-tree-sha256/v2",
+        "tree_hash": board_binding["verifier"]["source_tree_sha256"],
+    }
+    sections["literal_statement_and_reduction"].update(
+        statement_artifact=board_binding["specification"] | {"source_identity": source_identity},
+        canonical_claim_scope=board_binding["claim_scope"],
+        canonical_objective=board_binding["objective"],
+    )
+    sections["verifier_schema_and_fixtures"].update(
+        verifier_source={
+            "problem_path": "problems/hadamard-mini",
+            "version": board_binding["verifier"]["version"],
+            "command": board_binding["verifier"]["command"],
+            "source_identity": source_identity,
+        },
+        solution_schema=board_binding["solution_schema"] | {"source_identity": source_identity},
+        fixture_verdicts=[
+            {"path": item["path"], "sha256": item["sha256"],
+             "expected_verdict": item["expected_verdict"], "source_identity": source_identity}
+            for item in board_binding["math_review_fixtures"]
+        ],
+        replay_result=evidence,
+    )
+    sections["literature_review"]["search_record"] = evidence
     packet = {
         "schema_version": MATH_REVIEW_SCHEMA_VERSION,
         "problem_id": "1",
@@ -473,21 +671,37 @@ def test_math_review_requires_a_registered_independent_signature(tmp_path: Path)
         "board_binding_hash": "sha256:" + "4" * 64,
         "verifier_image_digest": "sha256:" + "1" * 64,
         "admission_matrix_digest": "sha256:" + "2" * 64,
+        "deployed_release_binding": _deployed_math_review_binding(),
         "status": "approved",
         "completed_at_utc": "2026-07-08T16:00:00Z",
         "reviewer": reviewer,
+        **sections,
+        "problem_owner_acceptance": {
+            "owner": owner,
+            "accepted_at_utc": "2026-07-08T16:00:00Z",
+            "accepted_without_substitution": True,
+            "acceptance_statement": (
+                "I accept this review and its exact deployed release bindings for the named problem."
+            ),
+        },
     }
     attach_signatures(
         packet,
         schema_version=MATH_REVIEW_SCHEMA_VERSION,
         hash_field="review_hash",
-        signatures_field="signature",
-        signers=[("independent-math-reviewer", reviewer, "2026-07-08T16:00:00Z")],
-        singular=True,
+        signatures_field="signatures",
+        signers=[
+            ("independent-math-reviewer", reviewer, "2026-07-08T16:00:00Z"),
+            ("problem-owner", owner, "2026-07-08T16:00:00Z"),
+        ],
     )
+    packet["reviewer_signature"], packet["problem_owner_signature"] = packet.pop("signatures")
     registry = fixture.trust_registry(
         MATH_REVIEW_SCHEMA_VERSION,
-        [("independent-math-reviewer", reviewer, "2026-07-08T16:00:00Z")],
+        [
+            ("independent-math-reviewer", reviewer, "2026-07-08T16:00:00Z"),
+            ("problem-owner", owner, "2026-07-08T16:00:00Z"),
+        ],
     )
     registry["environment"] = "production"
     context = build_attestation_context(
@@ -505,6 +719,131 @@ def test_math_review_requires_a_registered_independent_signature(tmp_path: Path)
         "verifier_image_digest": packet["verifier_image_digest"],
         "admission_matrix_digest": packet["admission_matrix_digest"],
     }
+    return packet, row, context, registry
+
+
+def _image_release_for_problem_reviews(board_bindings: dict, slate_boards: list[dict]) -> dict:
+    return {
+        "verifier_source_commit": "2" * 40,
+        "verifier_source_archive_digest": "sha256:" + "1" * 64,
+        "release_config_commit": "1" * 40,
+        "release_config_archive_digest": "sha256:" + "2" * 64,
+        "boards": [
+            {
+                "slug": record["slug"],
+                "source_hash": record["verifier"]["source_tree_sha256"],
+                "version": record["verifier"]["version"],
+                "index_digest": slate["verifierImageDigest"],
+            }
+            for record, slate in zip(board_bindings["records"], slate_boards, strict=True)
+        ],
+    }
+
+
+def _frozen_replay_fixture(tmp_path: Path) -> tuple[dict, dict, object, dict, dict]:
+    fixture = AttestationFixture(tmp_path)
+    image_release = {
+        "verifier_source_commit": "2" * 40,
+        "release_config_commit": "1" * 40,
+    }
+    image_ref = fixture.artifact("image-release", content=image_release)
+    journal_ref = fixture.artifact("image-journal", content={"journal": "exact"})
+    context = build_attestation_context(
+        "p42-production-launch-authorization/v1",
+        trust_registry=fixture.trust_registry("p42-production-launch-authorization/v1", []),
+        artifact_root=tmp_path,
+        chain_reader=None,
+        error_type=LaunchAuthorizationError,
+    )
+    launch_module._validate_artifact_reference(
+        image_ref, "image_release", LaunchAuthorizationError, context
+    )
+    launch_module._validate_artifact_reference(
+        journal_ref, "image_journal", LaunchAuthorizationError, context
+    )
+    release_report = {"sourceCommit": "1" * 40}
+    release_slate = {
+        "imageRegistry": {"path": image_ref["local_path"], "digest": image_ref["sha256"]}
+    }
+    return image_release, image_ref, context, journal_ref, release_report | {"slate": release_slate}
+
+
+def test_launch_replay_rejects_supplied_board_packet_not_frozen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_release, image_ref, context, journal_ref, release = _frozen_replay_fixture(tmp_path)
+    snapshot = tmp_path / "snapshot"
+    (snapshot / "protocol").mkdir(parents=True)
+    (snapshot / "protocol/production-board-bindings-v1.json").write_text('{"canonical":true}')
+    monkeypatch.setattr(
+        launch_module, "run_bounded_process",
+        lambda *args, **kwargs: type("Result", (), {"returncode": 0})(),
+    )
+
+    def fake_validate(*args, board_binding_verifier, **kwargs):
+        board_binding_verifier(snapshot)
+        return {}
+
+    monkeypatch.setattr(launch_module, "validate_image_release_checkout", fake_validate)
+    with pytest.raises(LaunchAuthorizationError, match="supplied board bindings"):
+        launch_module._validate_frozen_board_release(
+            image_release=image_release,
+            image_release_ref=image_ref,
+            publication_journal_ref=journal_ref,
+            board_bindings={"canonical": False},
+            release_report={"sourceCommit": release["sourceCommit"]},
+            release_slate=release["slate"],
+            context=context,
+        )
+
+
+def test_launch_replay_rejects_failed_exact_ten_frozen_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_release, image_ref, context, journal_ref, release = _frozen_replay_fixture(tmp_path)
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    monkeypatch.setattr(
+        launch_module, "run_bounded_process",
+        lambda *args, **kwargs: type("Result", (), {"returncode": 1})(),
+    )
+
+    def fake_validate(*args, board_binding_verifier, **kwargs):
+        board_binding_verifier(snapshot)
+        return {}
+
+    monkeypatch.setattr(launch_module, "validate_image_release_checkout", fake_validate)
+    with pytest.raises(LaunchAuthorizationError, match="exact-ten frozen board replay failed"):
+        launch_module._validate_frozen_board_release(
+            image_release=image_release,
+            image_release_ref=image_ref,
+            publication_journal_ref=journal_ref,
+            board_bindings={},
+            release_report={"sourceCommit": release["sourceCommit"]},
+            release_slate=release["slate"],
+            context=context,
+        )
+
+
+def test_launch_replay_rejects_image_release_r_substitution(tmp_path: Path) -> None:
+    image_release, image_ref, context, journal_ref, release = _frozen_replay_fixture(tmp_path)
+    image_release["release_config_commit"] = "3" * 40
+    with pytest.raises(LaunchAuthorizationError, match="release config commit"):
+        launch_module._validate_frozen_board_release(
+            image_release=image_release,
+            image_release_ref=image_ref,
+            publication_journal_ref=journal_ref,
+            board_bindings={},
+            release_report={"sourceCommit": release["sourceCommit"]},
+            release_slate=release["slate"],
+            context=context,
+        )
+
+
+def test_math_review_v4_schema_and_dual_registered_signatures(tmp_path: Path) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    schema = json.loads((ROOT / "schemas/math-review.schema.json").read_text(encoding="utf-8"))
+    jsonschema.Draft202012Validator.check_schema(schema)
 
     _validate_math_review(
         packet,
@@ -512,81 +851,325 @@ def test_math_review_requires_a_registered_independent_signature(tmp_path: Path)
         registry,
         context,
         datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+        deployed_release_binding=_deployed_math_review_binding(),
+        board_binding=_math_review_board_binding(),
     )
 
-    packet["problem_slug"] = "tampered"
-    with pytest.raises(LaunchAuthorizationError, match="problem_slug"):
+
+@pytest.mark.parametrize(
+    "omission",
+    [
+        "expertise_and_conflicts", "literal_statement_and_reduction",
+        "verifier_schema_and_fixtures", "literature_review", "findings",
+        "remediation_and_retest", "problem_owner_acceptance", "problem_owner_signature",
+    ],
+)
+def test_math_review_rejects_hostile_section_omissions(tmp_path: Path, omission: str) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    del packet[omission]
+    with pytest.raises(LaunchAuthorizationError, match="v4 schema validation"):
         _validate_math_review(
             packet,
             row,
             registry,
             context,
             datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
         )
 
 
-@pytest.mark.parametrize("field", ["board_bindings_digest", "board_binding_hash"])
-def test_math_review_rejects_claim_binding_substitution(tmp_path: Path, field: str) -> None:
-    fixture = AttestationFixture(tmp_path)
-    reviewer = fixture.identity(
-        "math-reviewer",
-        "Ada Lovelace",
-        "independent-math-reviewer",
-        independent=True,
-        organization="Independent Mathematics Institute",
-    )
-    packet = {
-        "schema_version": MATH_REVIEW_SCHEMA_VERSION,
-        "problem_id": "1",
-        "problem_slug": "hadamard-mini",
-        "board_bindings_digest": "sha256:" + "3" * 64,
-        "board_binding_hash": "sha256:" + "4" * 64,
-        "verifier_image_digest": "sha256:" + "1" * 64,
-        "admission_matrix_digest": "sha256:" + "2" * 64,
-        "status": "approved",
-        "completed_at_utc": "2026-07-08T16:00:00Z",
-        "reviewer": reviewer,
-    }
-    attach_signatures(
-        packet,
-        schema_version=MATH_REVIEW_SCHEMA_VERSION,
-        hash_field="review_hash",
-        signatures_field="signature",
-        signers=[("independent-math-reviewer", reviewer, "2026-07-08T16:00:00Z")],
-        singular=True,
-    )
-    registry = fixture.trust_registry(
-        MATH_REVIEW_SCHEMA_VERSION,
-        [("independent-math-reviewer", reviewer, "2026-07-08T16:00:00Z")],
-    )
-    registry["environment"] = "production"
-    context = build_attestation_context(
-        MATH_REVIEW_SCHEMA_VERSION,
-        trust_registry=registry,
-        artifact_root=tmp_path,
-        chain_reader=None,
-        error_type=LaunchAuthorizationError,
-    )
-    row = {
-        key: packet[key]
-        for key in (
-            "problem_id",
-            "problem_slug",
-            "board_bindings_digest",
-            "board_binding_hash",
-            "verifier_image_digest",
-            "admission_matrix_digest",
+@pytest.mark.parametrize(
+    ("substitution", "message"),
+    [
+        ("board_binding_hash", "board_binding_hash"),
+        ("board_bindings_digest", "board_bindings_digest"),
+        ("verifier_image_digest", "verifier_image_digest"),
+        ("admission_matrix_digest", "admission_matrix_digest"),
+        ("deployed_release_binding", "deployed_release_binding"),
+    ],
+)
+def test_math_review_rejects_hostile_binding_substitutions(
+    tmp_path: Path, substitution: str, message: str,
+) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    expected_release = _deployed_math_review_binding()
+    if substitution == "deployed_release_binding":
+        expected_release["release_index_digest"] = "sha256:" + "9" * 64
+    else:
+        row[substitution] = "sha256:" + "9" * 64
+
+    with pytest.raises(LaunchAuthorizationError, match=message):
+        _validate_math_review(
+            packet,
+            row,
+            registry,
+            context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=expected_release,
+            board_binding=_math_review_board_binding(),
         )
-    }
-    row[field] = "sha256:" + "9" * 64
+
+
+def test_math_review_rejects_legacy_v3_even_when_resealed(tmp_path: Path) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    packet["schema_version"] = "p42-math-review/v3"
+    with pytest.raises(LaunchAuthorizationError, match="v4 schema validation"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+def test_math_review_rejects_owner_signature_substitution(tmp_path: Path) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    packet["problem_owner_signature"] = dict(packet["reviewer_signature"])
+    with pytest.raises(LaunchAuthorizationError, match="signer_role"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+def test_math_review_rejects_unregistered_problem_owner(tmp_path: Path) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    registry["registrations"] = [
+        registration for registration in registry["registrations"]
+        if registration["signer_role"] != "problem-owner"
+    ]
+    with pytest.raises(LaunchAuthorizationError, match="not pre-registered.*problem-owner"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+def test_math_review_v3_registrations_cannot_authorize_v4_packet(tmp_path: Path) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    for registration in registry["registrations"]:
+        registration["attestation_class"] = "p42-math-review/v3"
+
+    with pytest.raises(LaunchAuthorizationError, match="not pre-registered for p42-math-review/v4"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("tree_hash", "sha256:" + "0123456789abcdef" * 4),
+        ("verifier_source_commit", "1" * 40),
+        ("release_config_commit", "3" * 40),
+    ],
+)
+def test_math_review_rejects_verifier_source_identity_substitution(
+    tmp_path: Path, field: str, value: str,
+) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    packet["verifier_schema_and_fixtures"]["verifier_source"] = dict(
+        packet["verifier_schema_and_fixtures"]["verifier_source"]
+    )
+    packet["verifier_schema_and_fixtures"]["verifier_source"]["source_identity"] = dict(
+        packet["verifier_schema_and_fixtures"]["verifier_source"]["source_identity"]
+    )
+    packet["verifier_schema_and_fixtures"]["verifier_source"]["source_identity"][field] = value
+    with pytest.raises(LaunchAuthorizationError, match="canonical verifier and source identity"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+def test_math_review_rejects_release_config_deployment_commit_split(tmp_path: Path) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    expected_release = _deployed_math_review_binding()
+    expected_release["release_config_commit"] = "3" * 40
+    packet["deployed_release_binding"] = expected_release
+
+    with pytest.raises(LaunchAuthorizationError, match="release config commit R"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=expected_release,
+            board_binding=_math_review_board_binding(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("target", "message"),
+    [
+        ("statement", "statement_artifact"),
+        ("solution_schema", "solution_schema"),
+    ],
+)
+def test_math_review_rejects_arbitrary_self_hashed_source_artifacts(
+    tmp_path: Path, target: str, message: str,
+) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    generic = dict(packet["literal_statement_and_reduction"]["statement_artifact"])
+    generic["path"] = "reviews/generic-evidence.json"
+    generic["sha256"] = "sha256:" + "b" * 64
+    if target == "statement":
+        packet["literal_statement_and_reduction"]["statement_artifact"] = generic
+    else:
+        packet["verifier_schema_and_fixtures"][target] = generic
+
+    with pytest.raises(LaunchAuthorizationError, match=message):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+def test_math_review_rejects_fake_problem_yaml_reduction_artifact(tmp_path: Path) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    packet["literal_statement_and_reduction"]["reduction_artifact"] = (
+        packet["literal_statement_and_reduction"]["statement_artifact"]
+    )
+
+    with pytest.raises(LaunchAuthorizationError, match="v4 schema validation"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+@pytest.mark.parametrize("field", ["canonical_claim_scope", "canonical_objective"])
+def test_math_review_rejects_canonical_reduction_semantics_substitution(
+    tmp_path: Path, field: str,
+) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    section = packet["literal_statement_and_reduction"]
+    if field == "canonical_claim_scope":
+        section[field] += " substituted"
+    else:
+        section[field] = dict(section[field])
+        section[field]["seed_best"] = "5/1"
 
     with pytest.raises(LaunchAuthorizationError, match=field):
         _validate_math_review(
-            packet,
-            row,
-            registry,
-            context,
+            packet, row, registry, context,
             datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+def test_math_review_rejects_invented_fixture_with_correct_source_identity(tmp_path: Path) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    fixtures = packet["verifier_schema_and_fixtures"]["fixture_verdicts"]
+    fixtures.append({
+        "path": "problems/hadamard-mini/tests/invented.json",
+        "sha256": "sha256:" + "c" * 64,
+        "expected_verdict": fixtures[0]["expected_verdict"],
+        "source_identity": fixtures[0]["source_identity"],
+    })
+
+    with pytest.raises(LaunchAuthorizationError, match="fixture_verdicts"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+def test_math_review_rejects_missing_canonical_fixture(tmp_path: Path) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    packet["verifier_schema_and_fixtures"]["fixture_verdicts"].pop()
+
+    with pytest.raises(LaunchAuthorizationError, match="fixture_verdicts"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+@pytest.mark.parametrize("field", ["status", "valid", "returncode", "reason", "report_sha256"])
+def test_math_review_rejects_fixture_verdict_substitution(tmp_path: Path, field: str) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    verdict = packet["verifier_schema_and_fixtures"]["fixture_verdicts"][0]["expected_verdict"]
+    substitutions = {
+        "status": "accepted",
+        "valid": True,
+        "returncode": 0,
+        "reason": "ACCEPTED",
+        "report_sha256": "sha256:" + "9" * 64,
+    }
+    verdict[field] = substitutions[field]
+
+    message = "v4 schema validation" if field in {"status", "valid", "returncode"} else "fixture_verdicts"
+    with pytest.raises(LaunchAuthorizationError, match=message):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+@pytest.mark.parametrize("field", ["accepted", "rejected", "total"])
+def test_math_review_rejects_fixture_verdict_count_substitution(
+    tmp_path: Path, field: str,
+) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    packet["verifier_schema_and_fixtures"]["fixture_verdict_counts"][field] += 1
+
+    with pytest.raises(LaunchAuthorizationError, match="fixture_verdict_counts"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+@pytest.mark.parametrize("field", ["method", "limitation"])
+def test_math_review_rejects_acceptance_path_overclaim(tmp_path: Path, field: str) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    review = packet["verifier_schema_and_fixtures"]["acceptance_path_review"]
+    review[field] = (
+        "canonical-fixture-replay"
+        if field == "method"
+        else "Canonical fixtures prove complete runtime acceptance coverage."
+    )
+
+    with pytest.raises(LaunchAuthorizationError, match="acceptance_path_review overclaims"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
+        )
+
+
+def test_math_review_rejects_incomplete_remediation_coverage(tmp_path: Path) -> None:
+    packet, row, context, registry = _math_review_packet(tmp_path)
+    packet["findings"][0]["disposition"] = "resolved"
+    with pytest.raises(LaunchAuthorizationError, match="remediation finding_ids"):
+        _validate_math_review(
+            packet, row, registry, context,
+            datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+            deployed_release_binding=_deployed_math_review_binding(),
+            board_binding=_math_review_board_binding(),
         )
 
 
@@ -641,7 +1224,8 @@ def test_problem_reviews_bind_the_exact_canonical_claim_record(
                 "problemPath": f"problems/{record['slug']}",
                 "verifierVersion": record["verifier"]["version"],
                 "specHash": "0x" + record["specification"]["sha256"].removeprefix("sha256:"),
-                "verifierSourceDigest": record["verifier"]["source_tree_sha256"],
+                    "verifierSourceDigest": record["verifier"]["source_tree_sha256"],
+                    "verifierImageDigest": image_digest,
             }
         )
     monkeypatch.setattr(launch_module, "_read_json_artifact", lambda value, *args, **kwargs: value)
@@ -656,8 +1240,9 @@ def test_problem_reviews_bind_the_exact_canonical_claim_record(
         reviews,
         release_report={"sourceCommit": "1" * 40, "admittedBoards": admitted},
         release_slate={"sourceCommit": "1" * 40, "boards": slate_boards},
-        deployment_manifest={"problems": deployed},
+        deployment_manifest={"problems": deployed, "releaseEvidence": {}},
         board_bindings=board_bindings,
+        image_release=_image_release_for_problem_reviews(board_bindings, slate_boards),
         trust_registry={},
         context=Context(),
         issued=datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
@@ -670,8 +1255,9 @@ def test_problem_reviews_bind_the_exact_canonical_claim_record(
             reviews,
             release_report={"sourceCommit": "1" * 40, "admittedBoards": admitted},
             release_slate={"sourceCommit": "1" * 40, "boards": slate_boards},
-            deployment_manifest={"problems": deployed},
+            deployment_manifest={"problems": deployed, "releaseEvidence": {}},
             board_bindings=board_bindings,
+            image_release=_image_release_for_problem_reviews(board_bindings, slate_boards),
             trust_registry={},
             context=Context(),
             issued=datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
@@ -687,8 +1273,9 @@ def test_problem_reviews_bind_the_exact_canonical_claim_record(
             reviews,
             release_report={"sourceCommit": "1" * 40, "admittedBoards": admitted},
             release_slate={"sourceCommit": "1" * 40, "boards": slate_boards},
-            deployment_manifest={"problems": deployed},
+            deployment_manifest={"problems": deployed, "releaseEvidence": {}},
             board_bindings=board_bindings,
+            image_release=_image_release_for_problem_reviews(board_bindings, slate_boards),
             trust_registry={},
             context=Context(),
             issued=datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
@@ -714,6 +1301,62 @@ def test_problem_reviews_reject_reordered_board_bindings(
             release_slate={},
             deployment_manifest={"problems": []},
             board_bindings=board_bindings,
+            image_release={},
+            trust_registry={},
+            context=None,
+            issued=datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+        )
+
+
+def test_problem_reviews_reject_reordered_review_packets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board_bindings = json.loads(
+        (ROOT / "protocol/production-board-bindings-v1.json").read_text(encoding="utf-8")
+    )
+    bindings_digest = sha256_bytes(canonical_json(board_bindings).encode("utf-8"))
+    reviews = []
+    admitted = []
+    deployed = []
+    slate_boards = []
+    for index, record in enumerate(board_bindings["records"], start=1):
+        problem_id = str(index)
+        image_digest = "sha256:" + f"{100 + index:064x}"
+        matrix_digest = "sha256:" + f"{200 + index:064x}"
+        review_hash = "sha256:" + f"{300 + index:064x}"
+        reviews.append({
+            "problem_id": problem_id,
+            "problem_slug": record["slug"],
+            "board_bindings_digest": bindings_digest,
+            "board_binding_hash": sha256_bytes(canonical_json(record).encode("utf-8")),
+            "verifier_image_digest": image_digest,
+            "admission_matrix_digest": matrix_digest,
+            "math_review_artifact": {"review_hash": review_hash},
+            "review_status": "approved",
+            "review_hash": review_hash,
+        })
+        admitted.append({"problemId": problem_id, "problemSlug": record["slug"], "matrixDigest": matrix_digest})
+        deployed.append({"problemId": problem_id, "problemSlug": record["slug"], "verifierImageDigest": image_digest, "admissionMatrixDigest": matrix_digest})
+        slate_boards.append({
+            "problemId": problem_id,
+            "problemSlug": record["slug"],
+            "problemPath": f"problems/{record['slug']}",
+            "verifierVersion": record["verifier"]["version"],
+            "specHash": "0x" + record["specification"]["sha256"].removeprefix("sha256:"),
+                "verifierSourceDigest": record["verifier"]["source_tree_sha256"],
+                "verifierImageDigest": image_digest,
+        })
+    reviews[0], reviews[1] = reviews[1], reviews[0]
+    monkeypatch.setattr(launch_module, "_read_json_artifact", lambda value, *args, **kwargs: value)
+
+    with pytest.raises(LaunchAuthorizationError, match="ordered canonical board binding"):
+        _validate_problem_reviews(
+            reviews,
+            release_report={"sourceCommit": "1" * 40, "admittedBoards": admitted},
+            release_slate={"sourceCommit": "1" * 40, "boards": slate_boards},
+            deployment_manifest={"problems": deployed, "releaseEvidence": {}},
+            board_bindings=board_bindings,
+            image_release=_image_release_for_problem_reviews(board_bindings, slate_boards),
             trust_registry={},
             context=None,
             issued=datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
@@ -886,13 +1529,19 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
             "records": [],
         },
     )
+    artifacts["verifier_image_release"] = fixture.artifact(
+        "verifier-image-release", content={"schema_version": "test-image-release"}
+    )
+    artifacts["verifier_image_publication_journal"] = fixture.artifact(
+        "verifier-image-publication-journal", content={"schema_version": "test-journal"}
+    )
     artifacts["release_capsule"] = fixture.artifact(
         "release-capsule", content={"schema": "test-capsule"}
     )
     next_address = iter("0x" + f"{index:040x}" for index in range(1, 48))
 
     def direct_contract(name: str) -> dict:
-        return {"name": name, "address": next(next_address)}
+        return {"name": name, "address": next(next_address), "blockNumber": 100}
 
     shared_contracts = {
         key: direct_contract(name)
@@ -936,15 +1585,38 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
             "boardCount": 10,
         },
         "sourceVerification": {"dossierDigest": "sha256:" + "b" * 64},
+        "governanceSetup": {
+            "status": "complete",
+            "completionBlock": 200,
+            "completionBlockTimestamp": 1783530000,
+            "completionBlockHash": "0x" + "a" * 64,
+            "completionBlockEvidence": {
+                "blockNumber": 200,
+                "blockHash": "0x" + "a" * 64,
+                "timestamp": 1783530000,
+                "primaryOperatorId": "rpc-operator-a",
+                "secondaryOperatorId": "rpc-operator-b",
+                "primaryBlockHash": "0x" + "a" * 64,
+                "secondaryBlockHash": "0x" + "a" * 64,
+            },
+            "finalityAnchor": {
+                "schema": "p42-prizes/base-sepolia-finality-anchor/v1",
+                "operators": ["rpc-operator-a", "rpc-operator-b"],
+                "rpcEvidence": {"primaryOperatorId": "rpc-operator-a", "secondaryOperatorId": "rpc-operator-b"},
+                "l2": {"finalized": {"number": 200, "hash": "0x" + "a" * 64}},
+            },
+        },
     }
-    dossier_core = {
-        "schema": "p42-prizes/explorer-verification-dossier/v2",
+    block_hash = "0x" + "a" * 64
+    evidence_core = {
+        "schema": "p42-prizes/explorer-verification-evidence/v1",
         "chainId": 84532,
         "releaseBindingDigest": manifest["releaseEvidence"]["releaseBindingDigest"],
         "capsuleDigest": manifest["releaseEvidence"]["capsuleDigest"],
         "deploymentCommit": release_binding["git_commit"],
-        "finalizedAt": 1783500000,
-        "expiresAt": 1784000000,
+        "collectedAt": "2026-07-08T16:00:00Z",
+        "finalityAnchor": {"schema": "p42-prizes/base-sepolia-finality-anchor/v1"},
+        "blockEvidence": {"blockNumber": 200, "blockHash": block_hash},
         "contracts": [
             {
                 "path": path,
@@ -966,7 +1638,7 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
                         "receipt": {
                             "status": 1,
                             "blockNumber": contract["blockNumber"],
-                            "blockHash": "0x" + "a" * 64,
+                            "blockHash": block_hash,
                             "transactionIndex": 0,
                             "logIndex": 0,
                             "logAddress": contract["factoryCreation"]["factoryAddress"],
@@ -976,7 +1648,18 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
                                 contract["factoryCreation"]["salt"],
                             ],
                             "data": "0x",
-                            "configurationResult": contract["factoryCreation"]["configurationHash"],
+                            "primaryOperatorId": "rpc-operator-a",
+                            "secondaryOperatorId": "rpc-operator-b",
+                            "primaryBlockHash": block_hash,
+                            "secondaryBlockHash": block_hash,
+                        },
+                        "snapshotConfiguration": {
+                            "blockNumber": 200,
+                            "blockHash": block_hash,
+                            "primaryOperatorId": "rpc-operator-a",
+                            "secondaryOperatorId": "rpc-operator-b",
+                            "primaryResult": contract["factoryCreation"]["configurationHash"],
+                            "secondaryResult": contract["factoryCreation"]["configurationHash"],
                         },
                     }
                 ),
@@ -984,14 +1667,41 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
             for path, contract, _factory_key in launch_module._canonical_contract_entries(manifest)
         ],
     }
-    dossier = {
-        **dossier_core,
-        "evidenceDigest": sha256_bytes(canonical_json(dossier_core).encode()),
-        "operatorRoster": ["0x" + "a" * 40, "0x" + "b" * 40],
+    evidence = {
+        **evidence_core,
+        "evidenceDigest": sha256_bytes(canonical_json(evidence_core).encode()),
+    }
+    operator_roster = ["0x" + "a" * 40, "0x" + "b" * 40]
+    request_core = {
+        "schema": "p42-prizes/explorer-verification-request/v1",
+        "evidence": evidence,
+        "operatorRoster": operator_roster,
+        "operatorNonces": [
+            {"operator": operator_roster[0], "nonce": "0x" + "1" * 64},
+            {"operator": operator_roster[1], "nonce": "0x" + "2" * 64},
+        ],
+        "createdAt": "2026-07-08T16:30:00Z",
+        "expiresAt": 1783614600,
+    }
+    request = {
+        **request_core,
+        "requestDigest": sha256_bytes(canonical_json(request_core).encode()),
+    }
+    dossier_core = {
+        "schema": "p42-prizes/explorer-verification-dossier/v3",
+        "request": request,
         "attestations": [{}, {}],
     }
-    dossier["dossierDigest"] = sha256_bytes(canonical_json(dossier).encode())
+    dossier = {
+        **dossier_core,
+        "dossierDigest": sha256_bytes(canonical_json(dossier_core).encode()),
+    }
     manifest["sourceVerification"]["dossierDigest"] = dossier["dossierDigest"]
+    launch_module._validate_explorer_dossier(
+        dossier,
+        manifest,
+        datetime.fromtimestamp(manifest["governanceSetup"]["completionBlockTimestamp"], timezone.utc),
+    )
     artifacts["deployment_manifest"] = fixture.artifact("manifest", content=manifest)
     reconciliation = {
         "schema": "p42-prizes/reconciliation-report/v3",
@@ -1020,8 +1730,8 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
         },
     )
     rpc_profiles = [
-        {"operatorId": "operator-primary", "endpointOrigin": "https://primary.example"},
-        {"operatorId": "operator-secondary", "endpointOrigin": "https://secondary.example"},
+        {"operatorId": "rpc-operator-a", "endpointOrigin": "https://primary.example"},
+        {"operatorId": "rpc-operator-b", "endpointOrigin": "https://secondary.example"},
     ]
     rpc_registry = {
         "schema": "p42-activation-rpc-operator-registry/v1",
@@ -1035,6 +1745,24 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
         content=(canonical_json(rpc_registry) + "\n").encode("ascii"),
     )
     (tmp_path / artifacts["activation_rpc_operator_registry"]["local_path"]).chmod(0o444)
+    artifacts["production_timestamp_dossier"] = fixture.artifact(
+        "production-timestamp-dossier",
+        content={
+            "schema": "p42-prizes/production-timestamp-dossier/v1",
+            "manifestDigest": sha256_bytes(canonical_json(manifest).encode("utf-8")),
+            "deploymentConfigHash": manifest["deploymentConfigHash"],
+            "deploymentCommit": manifest["deploymentCommit"],
+            "slateDigest": manifest["releaseEvidence"]["slateDigest"],
+            "capsuleDigest": manifest["releaseEvidence"]["capsuleDigest"],
+            "blocks": [{
+                "blockNumber": 200,
+                "blockHash": block_hash,
+                "timestamp": manifest["governanceSetup"]["completionBlockTimestamp"],
+                "primaryOperatorId": "rpc-operator-a",
+                "secondaryOperatorId": "rpc-operator-b",
+            }],
+        },
+    )
     monkeypatch.setattr(launch_module, "_validate_problem_reviews", lambda *args, **kwargs: None)
     monkeypatch.setattr(launch_module, "_validate_explorer_with_node", lambda **kwargs: None)
     unsigned = {

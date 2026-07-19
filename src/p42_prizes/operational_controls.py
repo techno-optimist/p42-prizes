@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import stat
 from datetime import datetime
 from pathlib import Path
@@ -17,15 +18,37 @@ from p42_prizes.legal import (
     _validate_release_binding,
     _validate_signature,
     build_attestation_context,
+    resolved_artifact_bytes,
 )
-from p42_prizes.verdict import canonical_json, sha256_bytes
+from p42_prizes.governance import validate_production_binding
+from p42_prizes.verdict import canonical_json, sha256_bytes, strict_json_loads
 
 
-OPERATIONAL_CONTROLS_SCHEMA_VERSION = "p42-operational-controls/v1"
+LEGACY_OPERATIONAL_CONTROLS_SCHEMA_VERSION = "p42-operational-controls/v1"
+OPERATIONAL_CONTROLS_SCHEMA_VERSION = "p42-operational-controls/v2"
+OPERATIONAL_CONTROLS_SCHEMA_VERSIONS = {
+    LEGACY_OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+    OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+}
 OWNER_ROLE = "operational-control-owner"
 REPORT_SIGNER_ROLE = "operational-controls-report-signer"
 EXECUTION_RUNNER_ROLE = "operational-control-execution-runner"
 ARTIFACT_ENVELOPE_SCHEMA_VERSION = "p42-operational-control-artifact/v1"
+PRODUCTION_BOARD_SET_PATH = "protocol/production-board-set-v1.json"
+PRODUCTION_BOARD_BINDINGS_PATH = "protocol/production-board-bindings-v1.json"
+RELEASE_BOARD_IDENTITY_FIELDS = (
+    "problemId",
+    "problemSlug",
+    "verifierVersion",
+    "specHash",
+    "verifierSourceDigest",
+    "verifierImageDigest",
+    "admissionMatrixDigest",
+    "objectiveGuestElfPath",
+    "objectiveGuestElfDigest",
+    "objectiveGuestElfSha256",
+    "objectiveProgramVKey",
+)
 REQUIRED_CONTROLS = frozenset(
     {
         "mutation_api_auth",
@@ -62,12 +85,13 @@ def normalize_operational_controls(
     artifact_root: str | Path | None = None,
     chain_reader: ChainReader | None = None,
 ) -> dict[str, Any]:
-    if report.get("schema_version") != OPERATIONAL_CONTROLS_SCHEMA_VERSION:
+    schema_version = report.get("schema_version")
+    if schema_version not in OPERATIONAL_CONTROLS_SCHEMA_VERSIONS:
         raise OperationalControlsError(
-            f"schema_version must be {OPERATIONAL_CONTROLS_SCHEMA_VERSION}"
+            "schema_version must be one of " + ", ".join(sorted(OPERATIONAL_CONTROLS_SCHEMA_VERSIONS))
         )
     context = build_attestation_context(
-        OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        schema_version,
         trust_registry=trust_registry,
         artifact_root=artifact_root,
         chain_reader=chain_reader,
@@ -81,6 +105,7 @@ def normalize_operational_controls(
             "window_started_at_utc",
             "window_completed_at_utc",
             "release_binding",
+            "production_binding",
             "controls",
             "operational_controls_hash",
             "final_gate_claim",
@@ -117,12 +142,25 @@ def normalize_operational_controls(
         "report.release_binding",
         OperationalControlsError,
         context,
+        require_canonical_topology=schema_version == OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        require_legacy_topology=schema_version == LEGACY_OPERATIONAL_CONTROLS_SCHEMA_VERSION,
     )
     if release["network"] not in {"base-sepolia", "base-mainnet"}:
         raise OperationalControlsError("operational controls must bind to a deployed Base environment")
     release_hash = sha256_bytes(canonical_json(release).encode("utf-8"))
     deployment_hash = release["deployment_manifest"]["sha256"]
     configuration_hash = release["configuration_artifact"]["sha256"]
+    if schema_version == OPERATIONAL_CONTROLS_SCHEMA_VERSION:
+        validate_production_binding(
+            normalized.get("production_binding"), release, context, OperationalControlsError
+        )
+        canonical_board_contracts = _canonical_board_contracts(release, context)
+    elif "production_binding" in normalized:
+        raise OperationalControlsError(
+            "historical p42-operational-controls/v1 packets cannot carry production_binding"
+        )
+    else:
+        canonical_board_contracts = None
 
     controls = normalized.get("controls")
     if not isinstance(controls, list):
@@ -162,6 +200,8 @@ def normalize_operational_controls(
             release_hash=release_hash,
             deployment_hash=deployment_hash,
             configuration_hash=configuration_hash,
+            schema_version=schema_version,
+            canonical_board_contracts=canonical_board_contracts,
             context=context,
             seen_artifact_paths=seen_artifact_paths,
             seen_artifact_hashes=seen_artifact_hashes,
@@ -187,7 +227,7 @@ def normalize_operational_controls(
     role_identities[REPORT_SIGNER_ROLE] = [report_signer]
     _validate_role_separation(role_identities)
     report_claim = {
-        "schema_version": OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "evidence_id": normalized["evidence_id"],
         "window_started_at_utc": normalized["window_started_at_utc"],
         "window_completed_at_utc": normalized["window_completed_at_utc"],
@@ -195,6 +235,10 @@ def normalize_operational_controls(
         "ordered_control_hashes": [control["control_hash"] for control in controls],
         "final_gate_claim": normalized["final_gate_claim"],
     }
+    if schema_version == OPERATIONAL_CONTROLS_SCHEMA_VERSION:
+        report_claim["production_binding_hash"] = sha256_bytes(
+            canonical_json(normalized["production_binding"]).encode("utf-8")
+        )
     packet_hash = sha256_bytes(canonical_json(report_claim).encode("utf-8"))
     if provided_hash is not None and provided_hash != packet_hash:
         raise OperationalControlsError(
@@ -204,7 +248,7 @@ def normalize_operational_controls(
     validated_report_signature = _validate_signature(
         report_signature,
         "report.report_signature",
-        schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        schema_version=schema_version,
         artifact_hash=packet_hash,
         identity=report_signer,
         expected_role=REPORT_SIGNER_ROLE,
@@ -236,6 +280,8 @@ def _validate_control(
     release_hash: str,
     deployment_hash: str,
     configuration_hash: str,
+    schema_version: str,
+    canonical_board_contracts: Mapping[str, frozenset[str]] | None,
     context: AttestationValidationContext,
     seen_artifact_paths: set[str],
     seen_artifact_hashes: set[str],
@@ -267,7 +313,8 @@ def _validate_control(
     if executed_at < started_at or executed_at > completed_at:
         raise OperationalControlsError(f"{prefix}.executed_at_utc must fall within the evidence window")
     _validate_environment(
-        value.get("environment"), prefix, name, release, release_hash, deployment_hash, configuration_hash
+        value.get("environment"), prefix, name, release, release_hash, deployment_hash,
+        configuration_hash, canonical_board_contracts,
     )
     artifacts: dict[str, Mapping[str, Any]] = {}
     for field in ("test_artifact", "output_artifact"):
@@ -311,6 +358,7 @@ def _validate_control(
         report_completed_at=completed_at,
         seen_artifact_paths=seen_artifact_paths,
         seen_artifact_hashes=seen_artifact_hashes,
+        schema_version=schema_version,
     )
     test_created_at = _require_utc(
         artifacts["test_artifact"]["created_at_utc"],
@@ -344,7 +392,7 @@ def _validate_control(
     validated_signature = _validate_signature(
         signature,
         prefix + ".owner_signature",
-        schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        schema_version=schema_version,
         artifact_hash=control_hash,
         identity=owner,
         expected_role=OWNER_ROLE,
@@ -377,6 +425,7 @@ def _validate_environment(
     release_hash: str,
     deployment_hash: str,
     configuration_hash: str,
+    canonical_board_contracts: Mapping[str, frozenset[str]] | None,
 ) -> None:
     if not isinstance(value, dict):
         raise OperationalControlsError(f"{prefix}.environment must be an object")
@@ -398,19 +447,149 @@ def _validate_environment(
         session_domain = value.get("session_domain")
         if not isinstance(session_domain, dict):
             raise OperationalControlsError(f"{prefix}.environment.session_domain is required for session controls")
-        contract_addresses = sorted(contract["address"].casefold() for contract in release["contracts"])
+        problem_id = session_domain.get("problem_id")
+        if canonical_board_contracts is None:
+            expected_contracts = frozenset(
+                contract["address"].casefold() for contract in release["contracts"]
+            )
+            canonical_problem = isinstance(problem_id, str) and bool(problem_id.strip())
+        else:
+            canonical_problem = isinstance(problem_id, str) and problem_id in canonical_board_contracts
+            expected_contracts = canonical_board_contracts.get(problem_id, frozenset())
+        supplied_contracts = session_domain.get("contract_addresses")
+        normalized_contracts = (
+            [str(address).casefold() for address in supplied_contracts]
+            if isinstance(supplied_contracts, list)
+            else []
+        )
         if (
             session_domain.get("chain_id") != release["chain_id"]
-            or sorted(str(address).casefold() for address in session_domain.get("contract_addresses", [])) != contract_addresses
-            or not isinstance(session_domain.get("problem_id"), str)
-            or not session_domain["problem_id"].strip()
+            or not canonical_problem
+            or len(normalized_contracts) != len(expected_contracts)
+            or frozenset(normalized_contracts) != expected_contracts
         ):
             raise OperationalControlsError(
-                f"{prefix}.environment.session_domain must bind the release chain, every contract, and a problem_id"
+                f"{prefix}.environment.session_domain must bind the release chain, an exact canonical "
+                "board slug, and that board's registry/pool/ledger/submissions/challenges contracts"
             )
     unknown = sorted(set(value) - allowed)
     if unknown:
         raise OperationalControlsError(f"{prefix}.environment contains unknown field(s): {', '.join(unknown)}")
+
+
+def _canonical_board_contracts(
+    release: Mapping[str, Any],
+    context: AttestationValidationContext,
+) -> dict[str, frozenset[str]]:
+    deployment_bytes = resolved_artifact_bytes(
+        context,
+        release["deployment_manifest"],
+        prefix="report.release_binding.deployment_manifest",
+        error_type=OperationalControlsError,
+    )
+    try:
+        deployment = json.loads(deployment_bytes)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise OperationalControlsError(
+            "report.release_binding.deployment_manifest must contain canonical JSON"
+        ) from exc
+    problems = deployment.get("problems") if isinstance(deployment, dict) else None
+    release_evidence = deployment.get("releaseEvidence") if isinstance(deployment, dict) else None
+    canonical_slugs = _canonical_production_board_slugs()
+    contracts_by_key = {
+        contract["topology_key"]: contract["address"].casefold()
+        for contract in release["contracts"]
+    }
+    if not isinstance(problems, list) or len(problems) != len(canonical_slugs):
+        raise OperationalControlsError(
+            "report.release_binding.deployment_manifest must define the canonical exact-ten boards"
+        )
+    identities: list[dict[str, Any]] = []
+    for board_number, (problem, expected_slug) in enumerate(
+        zip(problems, canonical_slugs, strict=True), start=1
+    ):
+        if (
+            not isinstance(problem, dict)
+            or problem.get("problemId") != str(board_number)
+            or problem.get("problemSlug") != expected_slug
+        ):
+            raise OperationalControlsError(
+                "report.release_binding.deployment_manifest problem IDs and slugs must exactly match "
+                "the ordered canonical production board set"
+            )
+        identities.append({field: problem.get(field) for field in RELEASE_BOARD_IDENTITY_FIELDS})
+    expected_board_set_digest = sha256_bytes(canonical_json(identities).encode("utf-8"))
+    if (
+        not isinstance(release_evidence, dict)
+        or release_evidence.get("boardSetDigest") != expected_board_set_digest
+    ):
+        raise OperationalControlsError(
+            "report.release_binding.deployment_manifest releaseEvidence.boardSetDigest must match "
+            "the canonical ordered deployment board identities"
+        )
+    registry = contracts_by_key.get("shared.registry")
+    result: dict[str, frozenset[str]] = {}
+    for board_number, slug in enumerate(canonical_slugs, start=1):
+        keys = (
+            "shared.registry",
+            f"board.{board_number}.pool",
+            f"board.{board_number}.ledger",
+            f"board.{board_number}.submissions",
+            f"board.{board_number}.challenges",
+        )
+        if (
+            slug in result
+            or registry is None
+            or any(key not in contracts_by_key for key in keys)
+        ):
+            raise OperationalControlsError(
+                "report.release_binding.deployment_manifest must map ten unique canonical board slugs "
+                "to complete release topology slots"
+            )
+        result[slug] = frozenset(contracts_by_key[key] for key in keys)
+    return result
+
+
+def _canonical_production_board_slugs() -> tuple[str, ...]:
+    root = Path(__file__).resolve().parents[2]
+    bindings_path = root / PRODUCTION_BOARD_BINDINGS_PATH
+    board_set_path = root / PRODUCTION_BOARD_SET_PATH
+    try:
+        bindings = strict_json_loads(bindings_path.read_bytes())
+        board_set_bytes = board_set_path.read_bytes()
+        board_set = strict_json_loads(board_set_bytes)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise OperationalControlsError(
+            "canonical production board binding artifacts must be readable strict JSON"
+        ) from exc
+    board_pin = bindings.get("board_set") if isinstance(bindings, dict) else None
+    records = bindings.get("records") if isinstance(bindings, dict) else None
+    slugs = board_set.get("boards") if isinstance(board_set, dict) else None
+    if (
+        not isinstance(bindings, dict)
+        or set(bindings) != {"schema_version", "board_set", "records"}
+        or bindings.get("schema_version") != "p42-prizes/production-board-bindings/v1"
+        or not isinstance(board_pin, dict)
+        or board_pin.get("path") != PRODUCTION_BOARD_SET_PATH
+        or board_pin.get("sha256") != sha256_bytes(board_set_bytes)
+        or not isinstance(board_set, dict)
+        or set(board_set) != {"schema", "status", "evidence", "boards"}
+        or board_set.get("schema") != "p42-prizes/production-board-set/v1"
+        or board_set.get("status") != "frozen-source-cohort"
+        or not isinstance(slugs, list)
+        or len(slugs) != 10
+        or len(set(slugs)) != 10
+        or any(
+            not isinstance(slug, str) or re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug) is None
+            for slug in slugs
+        )
+        or not isinstance(records, list)
+        or [record.get("slug") if isinstance(record, dict) else None for record in records] != slugs
+    ):
+        raise OperationalControlsError(
+            "canonical production board binding artifacts do not define one pinned ordered exact-ten cohort"
+        )
+    return tuple(slugs)
 
 
 def _require_text(value: Any, prefix: str) -> str:
@@ -542,6 +721,7 @@ def _validate_execution_result(
     report_completed_at: datetime,
     seen_artifact_paths: set[str],
     seen_artifact_hashes: set[str],
+    schema_version: str,
 ) -> tuple[datetime, datetime, Mapping[str, Any]]:
     envelope = _parse_artifact_envelope(context, artifact, prefix=prefix)
     runner = _validate_identity(
@@ -613,7 +793,7 @@ def _validate_execution_result(
     validated = _validate_signature(
         runner_signature,
         prefix + ".runner_signature",
-        schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        schema_version=schema_version,
         artifact_hash=expected_hash,
         identity=runner,
         expected_role=EXECUTION_RUNNER_ROLE,

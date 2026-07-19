@@ -59,7 +59,7 @@ import {
   verifySP1RuntimeAttestation,
   validateReleaseCapsule,
 } from "./release-capsule-helper.js";
-import { liveRequeryExplorerVerification, readExplorerDossierExact, validateExplorerVerificationDossier } from "./explorer-verification-helper.js";
+import { readExplorerDossierExact, validateExplorerVerificationAnchor, validateExplorerVerificationDossier } from "./explorer-verification-helper.js";
 import { assertObjectiveVerifierCapsuleBinding } from "./production-release-verifier.js";
 import {
   readContractsArtifactJson,
@@ -76,6 +76,8 @@ import {
   signedDeploymentJournalPath,
 } from "./signed-deployment-journal.js";
 import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
+import { readStrictJsonFileSyncWithBytes } from "../../agent/strict-json.mjs";
+import { readRoleAcceptancePacketExact, roleAcceptanceBytesDigest } from "./role-acceptance-helper.js";
 import { assertExactSetupOperations } from "../../agent/setup-operation-plan.mjs";
 import { BASE_SEPOLIA_FINALITY_POLICY, collectCanonicalFinalizedBlockEvidence, collectFinalityAnchor, recheckFinalityAnchor } from "./finality-anchor.js";
 import {
@@ -90,6 +92,7 @@ import {
   recordGovernanceObservation,
   reserveGovernanceOperationJournal,
 } from "./governance-operation-journal.js";
+import { assertProductionGovernancePolicy, governanceConfigHashFromManifest, governancePolicyView, reserveFinalGovernanceOperationJournal } from "./governance-operation-requests.js";
 import {
   buildCanonicalMultiBoardDeploymentDefinitions,
   materializeCanonicalMultiBoardDeploymentPlan,
@@ -742,6 +745,14 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
 
   const input = await readMultiBoardCeremonyInput();
   let config = readMultiBoardCeremonyConfig(ethers, input.value, { deployerAddress: deployer.address });
+  if (releaseMode === "production") assertProductionGovernancePolicy({
+    signers: config.governance.signers,
+    threshold: config.governance.threshold.toString(),
+    overrideThreshold: config.governance.overrideThreshold.toString(),
+    delaySeconds: config.governance.delaySeconds.toString(),
+    overrideDelaySeconds: config.governance.overrideDelaySeconds.toString(),
+    guardian: config.governance.guardian,
+  });
   if (config.governance.signers.some((signer) => lower(signer) === lower(deployer.address))) {
     throw new Error("phased multi-board deployment requires the deployer account to be distinct from every governance signer");
   }
@@ -863,7 +874,31 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
     reserve: () => ensureManifestReservation(reservationIdentity),
   });
   const predeploymentOperations = multiBoardPredeploymentGovernanceOperations(frozenSetupOperations);
+  let preReservedFinalGovernanceJournal = null;
+  if (release) {
+    const timelockStep = executablePreflight.steps.find(({ id }) => id === "timelock");
+    const timelockCapsule = release.capsule.contracts.find(({ name }) => name === CONTRACT_NAMES.timelock);
+    if (!timelockStep || !timelockCapsule) throw new Error("production preflight is missing the timelock deployment identity");
+    const expectedTimelockCodeHash = ethers.keccak256(reconstructExpectedRuntime(
+      timelockCapsule,
+      immutableValuesFromConstructor(timelockCapsule, timelockStep.args),
+    ));
+    const journal = buildGovernanceOperationJournal({
+      chainId: Number(BASE_SEPOLIA_CHAIN_ID),
+      timelock: executablePreflight.addresses.timelock,
+      deploymentCommit,
+      governance: governancePolicyView(config.governance),
+      deploymentConfigHash: `0x${reservationIdentity.configDigest.slice("sha256:".length)}`,
+      releaseBindingDigest: predeploymentReleaseBindingDigest,
+      expectedTimelockCodeHash,
+      operations: frozenSetupOperations,
+    });
+    const path = governanceOperationJournalPath(output);
+    reserveGovernanceOperationJournal(path, journal);
+    preReservedFinalGovernanceJournal = { path, planDigest: journal.planDigest };
+  }
   console.log(`Reserved multi-board deployment manifest destination: ${reservation.path}`);
+  if (preReservedFinalGovernanceJournal) console.log(`Reserved final governance journal destination: ${preReservedFinalGovernanceJournal.path}`);
 
   const executed = await executeSignedDeploymentPlan(
     ethers, deployer, output, reservationIdentity, definitions,
@@ -906,6 +941,15 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
           timelockAddress: addresses.timelock,
           expectedTimelockCodeHash: deployments.timelock.manifest.runtimeCodeHash,
           deploymentConfigHash: `0x${reservationIdentity.configDigest.slice("sha256:".length)}`,
+          deploymentCommit,
+          governance: {
+            signers: config.governance.signers,
+            threshold: config.governance.threshold.toString(),
+            overrideThreshold: config.governance.overrideThreshold.toString(),
+            delaySeconds: config.governance.delaySeconds.toString(),
+            overrideDelaySeconds: config.governance.overrideDelaySeconds.toString(),
+            guardian: config.governance.guardian,
+          },
           releaseBindingDigest: predeploymentReleaseBindingDigest,
           fromBlock: timelockBlock,
           toBlock: checkedBlock,
@@ -1056,9 +1100,14 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   });
 
   await mkdir(dirname(output), { recursive: true });
+  const finalGovernanceJournal = reserveFinalGovernanceOperationJournal(output, manifest);
+  if (preReservedFinalGovernanceJournal && finalGovernanceJournal.journal.planDigest !== preReservedFinalGovernanceJournal.planDigest) {
+    throw new Error("final governance journal differs from the pre-broadcast reservation");
+  }
   await writeManifestAtomically(output, manifest);
   await completeManifestOutputReservation(reservationIdentity);
   console.log(`Wrote pending multi-board governance ceremony manifest: ${output}`);
+  console.log(`Final governance journal: ${finalGovernanceJournal.path} (${finalGovernanceJournal.sha256})`);
   console.log(`Shared timelock owner: ${rootAddresses.timelock}`);
   console.log(`${setupTransactions.length} setup operations require independent signer action across ${boards.length} boards.`);
   console.log("No setup operation, armFunding, or setAcceptingFunds(true) transaction was sent.");
@@ -1680,7 +1729,8 @@ async function continueMultiBoardCeremony(ethers, path, manifest) {
   const governanceJournalPath = governanceOperationJournalPath(path);
   const expectedGovernanceJournal = buildGovernanceOperationJournal({
     chainId: Number(BASE_SEPOLIA_CHAIN_ID), timelock: manifest.contracts.timelock.address,
-    deploymentConfigHash: manifest.deploymentConfigHash,
+    deploymentCommit: manifest.deploymentCommit, governance: governancePolicyView(manifest.governance),
+    deploymentConfigHash: governanceConfigHashFromManifest(manifest),
     releaseBindingDigest: manifest.releaseEvidence.releaseBindingDigest,
     expectedTimelockCodeHash: manifest.contracts.timelock.runtimeCodeHash,
     operations: manifest.setupTransactions,
@@ -1715,12 +1765,26 @@ async function continueMultiBoardCeremony(ethers, path, manifest) {
     const capsule = await readContractsArtifactJson(requiredEnv("P42_RELEASE_CAPSULE"));
     const trustedOperators = requiredEnv("P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES").split(",");
     const explorerBoundManifest = { ...manifest, sourceVerification: { ...manifest.sourceVerification, status: "verified", dossierDigest: explorerDossier.dossierDigest } };
-    if (explorerDossier.finalizedAt !== completionBlockEvidence.timestamp) throw new Error("explorer dossier validation instant must equal the finalized governance completion block timestamp");
     validateExplorerVerificationDossier(explorerDossier, { manifest: explorerBoundManifest, capsule, trustedOperators, now: completionBlockEvidence.timestamp * 1000 });
-    await liveRequeryExplorerVerification({ dossier: explorerDossier, manifest: explorerBoundManifest, capsule, provider: ethers.provider, apiKey: requiredEnv("ETHERSCAN_API_KEY"), trustedOperators, now: completionBlockEvidence.timestamp * 1000 });
+    const explorerBlock = explorerDossier.request.evidence.blockEvidence.blockNumber;
+    if (explorerBlock < manifest.indexer.startBlock || explorerBlock > checkedBlock) throw new Error("explorer dossier finalized block is outside the deployment-to-completion interval");
+    await validateExplorerVerificationAnchor({ dossier: explorerDossier, endpoints, currentAnchor: anchor });
     const roleAcceptancePath = requiredEnv("P42_ROLE_ACCEPTANCE_PACKET");
-    const roleAcceptancePacket = await readContractsArtifactJson(roleAcceptancePath);
-    const completed = completeSetupManifest(explorerBoundManifest, snapshot, { ethers, roleAcceptancePacket });
+    const pinnedRolePacketDigest = requiredEnv("P42_ROLE_ACCEPTANCE_PACKET_SHA256");
+    const roleAcceptanceExact = readRoleAcceptancePacketExact(roleAcceptancePath, pinnedRolePacketDigest, { privateFile: true });
+    const pendingManifestExact = readStrictJsonFileSyncWithBytes(path, { maxBytes: 32 * 1024 * 1024, maxDepth: 128 });
+    const capsuleExact = readStrictJsonFileSyncWithBytes(requiredEnv("P42_RELEASE_CAPSULE"), { maxBytes: 32 * 1024 * 1024, maxDepth: 128 });
+    const completed = completeSetupManifest(explorerBoundManifest, snapshot, {
+      ethers,
+      roleAcceptancePacket: roleAcceptanceExact.value,
+      roleAcceptancePacketBytesDigest: roleAcceptanceExact.bytesDigest,
+      roleAcceptanceContext: {
+        pendingManifestBytesDigest: roleAcceptanceBytesDigest(pendingManifestExact.bytes),
+        capsuleBytesDigest: roleAcceptanceBytesDigest(capsuleExact.bytes),
+        capsule: capsuleExact.value,
+        expectedExplorerDossierDigest: explorerDossier.dossierDigest,
+      },
+    });
     await writeManifestAtomically(path, completed);
     console.log(`Multi-board governance setup verified through finalized block ${checkedBlock} and marked complete: ${path}`);
   } catch (error) {

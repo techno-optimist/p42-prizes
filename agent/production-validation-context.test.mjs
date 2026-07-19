@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,8 +13,8 @@ const digest = (char) => `sha256:${char.repeat(64)}`;
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "p42-validation-context-"));
-  const slatePath = join(root, "slate.json"); const capsulePath = join(root, "capsule.json");
-  const capsule = { capsuleDigest: digest("a") }; writeFileSync(slatePath, JSON.stringify({ status: "ready" })); writeFileSync(capsulePath, JSON.stringify(capsule));
+  const slatePath = join(root, "slate.json");
+  const capsule = { capsuleDigest: digest("a") }; writeFileSync(slatePath, JSON.stringify({ status: "ready" }));
   const address = (value) => `0x${value.toString(16).padStart(40, "0")}`;
   const topology = canonicalTopologyDescriptors();
   const entries = topology.map(({ name }, index) => ({ address: address(index + 1), name, blockNumber: 42, deploymentBlockTimestamp: 1_800_000_000, blockTimestampEvidence: { timestamp: 1_800_000_000, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b", primaryBlockHash: hash("b"), secondaryBlockHash: hash("b") } }));
@@ -22,11 +22,14 @@ function fixture() {
   const problems = Array.from({ length: 10 }, (_, index) => ({ problemId: index + 1, contracts: Object.fromEntries(topology.slice(7 + index * 4, 11 + index * 4).map(({ key }, offset) => [key, entries[7 + index * 4 + offset]])) }));
   const completionEvidence = { blockNumber: 100, blockHash: hash("c"), timestamp: 1_800_000_100, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b", primaryBlockHash: hash("c"), secondaryBlockHash: hash("c") };
   const manifest = { releaseMode: "production", status: "governance-setup-complete", deploymentCommit: "c".repeat(40), deploymentConfigHash: hash("d"), releaseEvidence: { slateDigest: digest("e"), capsuleDigest: capsule.capsuleDigest }, contracts, problems, governanceSetup: { completionBlock: 100, completionBlockTimestamp: 1_800_000_100, completionBlockHash: hash("c"), completionBlockEvidence: completionEvidence, finalityAnchor: { l2: { finalized: { number: 100, hash: hash("c") } } } } };
+  const archive = join(root, "sha256"); mkdirSync(archive, { mode: 0o700 });
+  const capsuleBytes = Buffer.from(JSON.stringify(capsule)); const capsuleSha = `sha256:${createHash("sha256").update(capsuleBytes).digest("hex")}`; const capsulePath = join(archive, `${capsuleSha.slice(7)}.json`); writeFileSync(capsulePath, capsuleBytes, { mode: 0o444 });
+  const pendingManifest = { ...manifest, status: "pending-governance-setup" }; const pendingBytes = Buffer.from(JSON.stringify(pendingManifest)); const pendingSha = `sha256:${createHash("sha256").update(pendingBytes).digest("hex")}`; const pendingManifestPath = join(archive, `${pendingSha.slice(7)}.json`); writeFileSync(pendingManifestPath, pendingBytes, { mode: 0o444 });
   const canonical = (value) => value === null || typeof value !== "object" ? JSON.stringify(value) : Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
   const dossier = { schema: "p42-prizes/production-timestamp-dossier/v1", manifestDigest: `sha256:${createHash("sha256").update(canonical(manifest)).digest("hex")}`, deploymentConfigHash: manifest.deploymentConfigHash, deploymentCommit: manifest.deploymentCommit, slateDigest: manifest.releaseEvidence.slateDigest, capsuleDigest: manifest.releaseEvidence.capsuleDigest, blocks: [{ blockNumber: 42, blockHash: hash("b"), timestamp: 1_800_000_000, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b" }, { blockNumber: 100, blockHash: hash("c"), timestamp: 1_800_000_100, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b" }] };
   const dossierPath = join(root, "dossier.json"); const dossierBytes = Buffer.from(JSON.stringify(dossier)); writeFileSync(dossierPath, dossierBytes);
   const dossierSha = `sha256:${createHash("sha256").update(dossierBytes).digest("hex")}`;
-  return { root, slatePath, capsulePath, dossierPath, dossierSha, dossier, capsule, manifest, env: { P42_PRODUCTION_SLATE_PATH: slatePath, P42_RELEASE_CAPSULE: capsulePath, P42_PRODUCTION_TIMESTAMP_DOSSIER_PATH: dossierPath, P42_PRODUCTION_TIMESTAMP_DOSSIER_SHA256: dossierSha, P42_PRODUCTION_RPC_OPERATOR_IDS: "operator-a,operator-b" } };
+  return { root, slatePath, capsulePath, dossierPath, dossierSha, dossier, capsule, manifest, env: { P42_PRODUCTION_SLATE_PATH: slatePath, P42_RELEASE_CAPSULE: capsulePath, P42_PRODUCTION_TIMESTAMP_DOSSIER_PATH: dossierPath, P42_PRODUCTION_TIMESTAMP_DOSSIER_SHA256: dossierSha, P42_PRODUCTION_RPC_OPERATOR_IDS: "operator-a,operator-b", P42_ROLE_ACCEPTANCE_CAPSULE_SHA256: capsuleSha, P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_PATH: pendingManifestPath, P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_SHA256: pendingSha } };
 }
 
 test("production context requires explicit strict trust paths and resolves exact capsule/timestamps", () => {
@@ -38,6 +41,7 @@ test("production context requires explicit strict trust paths and resolves exact
     assert.equal(context.capsuleResolver(digest("c")), null);
     assert.equal(context.blockTimestampResolver({ blockNumber: 42 }), 1_800_000_000);
     assert.equal(context.blockTimestampResolver({ blockNumber: 100 }), 1_800_000_100);
+    assert.equal(context.roleAcceptanceEvidence.pendingManifestBytesDigest, value.env.P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_SHA256);
     assert.throws(() => context.blockTimestampResolver({ blockNumber: 43 }), /unavailable/);
   } finally { rmSync(value.root, { recursive: true, force: true }); }
 });
@@ -60,6 +64,16 @@ test("offline context rejects missing, wrong-digest, and self-forged dossiers", 
     assert.throws(() => loadProductionValidationContextSync(value.manifest, { env: { ...value.env, P42_PRODUCTION_TIMESTAMP_DOSSIER_SHA256: digest("f") } }), /exact-bytes digest mismatch/);
     const forged = { ...value.dossier, blocks: [{ ...value.dossier.blocks[0], timestamp: 1_800_000_001 }] }; writeFileSync(value.dossierPath, JSON.stringify(forged));
     assert.throws(() => loadProductionValidationContextSync(value.manifest, { env: value.env }), /exact-bytes digest mismatch/);
+  } finally { rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("completed context rejects manifest/capsule byte substitution and mutable content paths", () => {
+  const value = fixture();
+  try {
+    assert.throws(() => loadProductionValidationContextSync(value.manifest, { env: { ...value.env, P42_ROLE_ACCEPTANCE_CAPSULE_SHA256: digest("f") } }), /content-addressed|digest mismatch/);
+    assert.throws(() => loadProductionValidationContextSync(value.manifest, { env: { ...value.env, P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_SHA256: digest("f") } }), /content-addressed|digest mismatch/);
+    const substituted = Buffer.from(JSON.stringify({ capsuleDigest: digest("b") })); chmodSync(value.capsulePath, 0o644); writeFileSync(value.capsulePath, substituted);
+    assert.throws(() => loadProductionValidationContextSync(value.manifest, { env: value.env }), /immutable|digest mismatch/);
   } finally { rmSync(value.root, { recursive: true, force: true }); }
 });
 

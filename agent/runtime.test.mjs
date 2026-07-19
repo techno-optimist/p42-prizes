@@ -1468,6 +1468,15 @@ test("operator binds enqueue urgency to the policy-finalized block timestamp", (
   assert.doesNotMatch(source, /ingestReveal\(event\);/);
 });
 
+test("operator submits verifier work only through the host executor IPC", () => {
+  const source = readFileSync(join(HERE, "operator.mjs"), "utf8");
+  const worker = source.indexOf("async function runWorkerOnce");
+  const execute = source.indexOf("executeVerifierJob(chainTimestamp)", worker);
+  assert.ok(worker >= 0 && execute > worker);
+  assert.match(source, /production operator requires --executor-socket for the host-global verifier authority/);
+  assert.match(source, /production operators must not receive Docker socket access/);
+});
+
 test("operator durably quarantines an invalid transcript and alerts once", async () => {
   const directory = mkdtempSync(join(tmpdir(), "p42-invalid-transcript-"));
   const repoRoot = join(directory, "repo");

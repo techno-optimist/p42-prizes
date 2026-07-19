@@ -1,39 +1,151 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://projectforty2.ai/prizes/schemas/explorer-verification-dossier.schema.json",
-  "title": "P42 raw-response explorer verification dossier",
-  "type": "object", "additionalProperties": false,
-  "required": ["schema", "chainId", "releaseBindingDigest", "capsuleDigest", "deploymentCommit", "finalizedAt", "expiresAt", "contracts", "evidenceDigest", "operatorRoster", "attestations", "dossierDigest"],
+  "title": "P42 detached explorer verification dossier",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "request", "attestations", "dossierDigest"],
   "properties": {
-    "schema": { "const": "p42-prizes/explorer-verification-dossier/v2" }, "chainId": { "const": 84532 },
-    "releaseBindingDigest": { "$ref": "#/$defs/digest" }, "capsuleDigest": { "$ref": "#/$defs/digest" }, "deploymentCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-    "finalizedAt": { "type": "integer", "minimum": 1 }, "expiresAt": { "type": "integer", "minimum": 1 },
-    "contracts": { "type": "array", "minItems": 47, "maxItems": 47, "items": { "$ref": "#/$defs/contract" } },
-    "evidenceDigest": { "$ref": "#/$defs/digest" },
-    "operatorRoster": { "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": { "$ref": "#/$defs/address" } },
+    "schema": { "const": "p42-prizes/explorer-verification-dossier/v3" },
+    "request": { "$ref": "#/$defs/request" },
     "attestations": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/attestation" } },
     "dossierDigest": { "$ref": "#/$defs/digest" }
   },
   "$defs": {
-    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }, "address": { "type": "string", "pattern": "^0x[0-9a-f]{40}$" }, "bytes32": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
-    "raw": { "type": "object", "additionalProperties": false, "required": ["provider", "url", "host", "httpStatus", "fetchedAt", "responseDigest", "responseBase64"], "properties": {
-      "provider": { "enum": ["etherscan-v2-official", "sourcify-v2-independent"] }, "url": { "type": "string", "format": "uri" }, "host": { "enum": ["api.etherscan.io", "sourcify.dev"] },
-      "httpStatus": { "type": "integer", "minimum": 100, "maximum": 599 }, "fetchedAt": { "type": "string", "format": "date-time" }, "responseDigest": { "$ref": "#/$defs/digest" }, "responseBase64": { "type": "string", "pattern": "^[A-Za-z0-9+/]*={0,2}$", "maxLength": 11184812 }
-    } },
-    "chainCode": { "type": "object", "additionalProperties": false, "required": ["fetchedAt", "blockTag", "responseDigest", "responseBase64"], "properties": { "fetchedAt": { "type": "string", "format": "date-time" }, "blockTag": { "const": "finalized" }, "responseDigest": { "$ref": "#/$defs/digest" }, "responseBase64": { "type": "string", "pattern": "^[A-Za-z0-9+/]*={0,2}$" } } },
-    "deployment": { "oneOf": [
-      { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "direct-create" } } },
-      { "type": "object", "additionalProperties": false, "required": ["kind", "factoryAddress", "transactionHash", "eventTopic", "salt", "configurationHash", "configurationReadCalldata", "createdAddress", "initCodeHash", "receipt"], "properties": {
-        "kind": { "const": "factory-call-create2" }, "factoryAddress": { "$ref": "#/$defs/address" }, "transactionHash": { "$ref": "#/$defs/bytes32" }, "eventTopic": { "$ref": "#/$defs/bytes32" }, "salt": { "$ref": "#/$defs/bytes32" }, "configurationHash": { "$ref": "#/$defs/bytes32" }, "configurationReadCalldata": { "type": "string", "pattern": "^0x(?:[0-9a-fA-F]{2})+$" }, "createdAddress": { "$ref": "#/$defs/address" }, "initCodeHash": { "$ref": "#/$defs/bytes32" }, "receipt": { "$ref": "#/$defs/factoryReceipt" }
-      } }
-    ] },
-    "factoryReceipt": { "type": "object", "additionalProperties": false, "required": ["status", "blockNumber", "blockHash", "transactionIndex", "logIndex", "logAddress", "topics", "data", "configurationResult"], "properties": {
-      "status": { "const": 1 }, "blockNumber": { "type": "integer", "minimum": 0 }, "blockHash": { "$ref": "#/$defs/bytes32" }, "transactionIndex": { "type": "integer", "minimum": 0 }, "logIndex": { "type": "integer", "minimum": 0 }, "logAddress": { "$ref": "#/$defs/address" }, "topics": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/bytes32" } }, "data": { "const": "0x" }, "configurationResult": { "$ref": "#/$defs/bytes32" }
-    } },
-    "contract": { "type": "object", "additionalProperties": false, "required": ["path", "name", "address", "capsuleArtifactDigest", "buildInfoId", "deployment", "providers", "chainCode"], "properties": {
-      "path": { "type": "string", "minLength": 1 }, "name": { "type": "string", "pattern": "^P42" }, "address": { "$ref": "#/$defs/address" }, "capsuleArtifactDigest": { "$ref": "#/$defs/digest" }, "buildInfoId": { "type": "string", "minLength": 1 },
-      "deployment": { "$ref": "#/$defs/deployment" }, "providers": { "type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{ "$ref": "#/$defs/raw" }, { "$ref": "#/$defs/raw" }], "items": false }, "chainCode": { "$ref": "#/$defs/chainCode" }
-    } },
-    "attestation": { "type": "object", "additionalProperties": false, "required": ["operator", "nonce", "signature"], "properties": { "operator": { "$ref": "#/$defs/address" }, "nonce": { "$ref": "#/$defs/bytes32" }, "signature": { "type": "string", "pattern": "^0x[0-9a-fA-F]{130}$" } } }
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "address": { "type": "string", "pattern": "^0x[0-9a-f]{40}$" },
+    "bytes32": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
+    "operatorId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,63}$" },
+    "point": {
+      "type": "object", "additionalProperties": false, "required": ["number", "hash"],
+      "properties": { "number": { "type": "integer", "minimum": 0 }, "hash": { "$ref": "#/$defs/bytes32" } }
+    },
+    "rpcEvidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["primaryOperatorId", "secondaryOperatorId", "primaryOrigin", "secondaryOrigin", "primaryHost", "secondaryHost", "primaryEndpointDigest", "secondaryEndpointDigest"],
+      "properties": {
+        "primaryOperatorId": { "$ref": "#/$defs/operatorId" }, "secondaryOperatorId": { "$ref": "#/$defs/operatorId" },
+        "primaryOrigin": { "type": "string", "format": "uri" }, "secondaryOrigin": { "type": "string", "format": "uri" },
+        "primaryHost": { "type": "string", "minLength": 1 }, "secondaryHost": { "type": "string", "minLength": 1 },
+        "primaryEndpointDigest": { "$ref": "#/$defs/digest" }, "secondaryEndpointDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "anchor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "checkedAt", "l2", "l1", "operators", "rpcEvidence"],
+      "properties": {
+        "schema": { "const": "p42-prizes/base-sepolia-finality-anchor/v1" }, "checkedAt": { "type": "string", "format": "date-time" },
+        "l2": { "type": "object", "additionalProperties": false, "required": ["finalized", "safe"], "properties": { "finalized": { "$ref": "#/$defs/point" }, "safe": { "$ref": "#/$defs/point" } } },
+        "l1": { "type": "object", "additionalProperties": false, "required": ["origin", "finalized"], "properties": { "origin": { "$ref": "#/$defs/point" }, "finalized": { "$ref": "#/$defs/point" } } },
+        "operators": { "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": { "$ref": "#/$defs/operatorId" } },
+        "rpcEvidence": { "$ref": "#/$defs/rpcEvidence" }
+      }
+    },
+    "blockEvidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["blockNumber", "blockHash", "timestamp", "primaryOperatorId", "secondaryOperatorId", "primaryBlockHash", "secondaryBlockHash"],
+      "properties": {
+        "blockNumber": { "type": "integer", "minimum": 0 }, "blockHash": { "$ref": "#/$defs/bytes32" }, "timestamp": { "type": "integer", "minimum": 1 },
+        "primaryOperatorId": { "$ref": "#/$defs/operatorId" }, "secondaryOperatorId": { "$ref": "#/$defs/operatorId" },
+        "primaryBlockHash": { "$ref": "#/$defs/bytes32" }, "secondaryBlockHash": { "$ref": "#/$defs/bytes32" }
+      }
+    },
+    "raw": {
+      "type": "object", "additionalProperties": false,
+      "required": ["provider", "url", "host", "httpStatus", "fetchedAt", "responseDigest", "responseBase64"],
+      "properties": {
+        "provider": { "enum": ["etherscan-v2-official", "sourcify-v2-independent"] }, "url": { "type": "string", "format": "uri" },
+        "host": { "enum": ["api.etherscan.io", "sourcify.dev"] }, "httpStatus": { "type": "integer", "minimum": 100, "maximum": 599 },
+        "fetchedAt": { "type": "string", "format": "date-time" }, "responseDigest": { "$ref": "#/$defs/digest" },
+        "responseBase64": { "type": "string", "pattern": "^[A-Za-z0-9+/]*={0,2}$", "maxLength": 11184812 }
+      }
+    },
+    "chainCode": {
+      "type": "object", "additionalProperties": false,
+      "required": ["fetchedAt", "blockNumber", "blockHash", "responseDigest", "responseBase64"],
+      "properties": {
+        "fetchedAt": { "type": "string", "format": "date-time" }, "blockNumber": { "type": "integer", "minimum": 0 },
+        "blockHash": { "$ref": "#/$defs/bytes32" }, "responseDigest": { "$ref": "#/$defs/digest" },
+        "responseBase64": { "type": "string", "pattern": "^[A-Za-z0-9+/]*={0,2}$" }
+      }
+    },
+    "receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "blockNumber", "blockHash", "transactionIndex", "logIndex", "logAddress", "topics", "data", "primaryOperatorId", "secondaryOperatorId", "primaryBlockHash", "secondaryBlockHash"],
+      "properties": {
+        "status": { "const": 1 }, "blockNumber": { "type": "integer", "minimum": 0 }, "blockHash": { "$ref": "#/$defs/bytes32" },
+        "transactionIndex": { "type": "integer", "minimum": 0 }, "logIndex": { "type": "integer", "minimum": 0 }, "logAddress": { "$ref": "#/$defs/address" },
+        "topics": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/bytes32" } }, "data": { "const": "0x" },
+        "primaryOperatorId": { "$ref": "#/$defs/operatorId" }, "secondaryOperatorId": { "$ref": "#/$defs/operatorId" },
+        "primaryBlockHash": { "$ref": "#/$defs/bytes32" }, "secondaryBlockHash": { "$ref": "#/$defs/bytes32" }
+      }
+    },
+    "snapshotConfiguration": {
+      "type": "object", "additionalProperties": false,
+      "required": ["blockNumber", "blockHash", "primaryOperatorId", "secondaryOperatorId", "primaryResult", "secondaryResult"],
+      "properties": {
+        "blockNumber": { "type": "integer", "minimum": 0 }, "blockHash": { "$ref": "#/$defs/bytes32" },
+        "primaryOperatorId": { "$ref": "#/$defs/operatorId" }, "secondaryOperatorId": { "$ref": "#/$defs/operatorId" },
+        "primaryResult": { "$ref": "#/$defs/bytes32" }, "secondaryResult": { "$ref": "#/$defs/bytes32" }
+      }
+    },
+    "deployment": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "direct-create" } } },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "factoryAddress", "transactionHash", "eventTopic", "salt", "configurationHash", "configurationReadCalldata", "createdAddress", "initCodeHash", "receipt", "snapshotConfiguration"],
+          "properties": {
+            "kind": { "const": "factory-call-create2" }, "factoryAddress": { "$ref": "#/$defs/address" }, "transactionHash": { "$ref": "#/$defs/bytes32" },
+            "eventTopic": { "$ref": "#/$defs/bytes32" }, "salt": { "$ref": "#/$defs/bytes32" }, "configurationHash": { "$ref": "#/$defs/bytes32" },
+            "configurationReadCalldata": { "type": "string", "pattern": "^0x(?:[0-9a-fA-F]{2})+$" }, "createdAddress": { "$ref": "#/$defs/address" },
+            "initCodeHash": { "$ref": "#/$defs/bytes32" }, "receipt": { "$ref": "#/$defs/receipt" }, "snapshotConfiguration": { "$ref": "#/$defs/snapshotConfiguration" }
+          }
+        }
+      ]
+    },
+    "contract": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "name", "address", "capsuleArtifactDigest", "buildInfoId", "deployment", "providers", "chainCode"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 }, "name": { "type": "string", "pattern": "^P42" }, "address": { "$ref": "#/$defs/address" },
+        "capsuleArtifactDigest": { "$ref": "#/$defs/digest" }, "buildInfoId": { "type": "string", "minLength": 1 }, "deployment": { "$ref": "#/$defs/deployment" },
+        "providers": { "type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{ "$ref": "#/$defs/raw" }, { "$ref": "#/$defs/raw" }], "items": false },
+        "chainCode": { "$ref": "#/$defs/chainCode" }
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "chainId", "releaseBindingDigest", "capsuleDigest", "deploymentCommit", "collectedAt", "finalityAnchor", "blockEvidence", "contracts", "evidenceDigest"],
+      "properties": {
+        "schema": { "const": "p42-prizes/explorer-verification-evidence/v1" }, "chainId": { "const": 84532 },
+        "releaseBindingDigest": { "$ref": "#/$defs/digest" }, "capsuleDigest": { "$ref": "#/$defs/digest" },
+        "deploymentCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" }, "collectedAt": { "type": "string", "format": "date-time" },
+        "finalityAnchor": { "$ref": "#/$defs/anchor" }, "blockEvidence": { "$ref": "#/$defs/blockEvidence" },
+        "contracts": { "type": "array", "minItems": 47, "maxItems": 47, "items": { "$ref": "#/$defs/contract" } }, "evidenceDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "operatorNonce": {
+      "type": "object", "additionalProperties": false, "required": ["operator", "nonce"],
+      "properties": { "operator": { "$ref": "#/$defs/address" }, "nonce": { "$ref": "#/$defs/bytes32" } }
+    },
+    "request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "evidence", "operatorRoster", "operatorNonces", "createdAt", "expiresAt", "requestDigest"],
+      "properties": {
+        "schema": { "const": "p42-prizes/explorer-verification-request/v1" }, "evidence": { "$ref": "#/$defs/evidence" },
+        "operatorRoster": { "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": { "$ref": "#/$defs/address" } },
+        "operatorNonces": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/operatorNonce" } },
+        "createdAt": { "type": "string", "format": "date-time" }, "expiresAt": { "type": "integer", "minimum": 1 }, "requestDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "attestation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "requestDigest", "operator", "nonce", "signature"],
+      "properties": {
+        "schema": { "const": "p42-prizes/explorer-verification-attestation/v1" }, "requestDigest": { "$ref": "#/$defs/digest" },
+        "operator": { "$ref": "#/$defs/address" }, "nonce": { "$ref": "#/$defs/bytes32" }, "signature": { "type": "string", "pattern": "^0x[0-9a-fA-F]{130}$" }
+      }
+    }
   }
 }

@@ -35,7 +35,7 @@ def _reader_for(monkeypatch: pytest.MonkeyPatch, responses: list[bytes | Excepti
 def test_http_chain_reader_preserves_valid_json_rpc(monkeypatch: pytest.MonkeyPatch) -> None:
     responses = [
         {"jsonrpc": "2.0", "id": 1, "result": "0x1"},
-        {"jsonrpc": "2.0", "id": 2, "result": {"hash": "0xabc"}},
+        {"jsonrpc": "2.0", "id": 2, "result": {"hash": "0xabc", "number": "0x10"}},
         {"jsonrpc": "2.0", "id": 3, "result": "0x6000"},
     ]
     reader = _reader_for(monkeypatch, [json.dumps(item).encode() for item in responses])

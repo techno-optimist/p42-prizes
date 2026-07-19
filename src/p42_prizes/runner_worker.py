@@ -23,6 +23,7 @@ from p42_prizes.admission import (
     load_evidence_file,
     validate_report_identity,
     validate_report_shape,
+    compute_source_hash,
 )
 from p42_prizes.bounded_process import (
     OutputLimitExceeded,
@@ -86,14 +87,119 @@ class LeaseHeartbeatError(RunnerWorkerError):
     """Raised when a worker can no longer prove exclusive queue ownership."""
 
 
-def _load_job_manifest(job: Mapping[str, Any]) -> dict[str, Any]:
+def _load_job_manifest(
+    job: Mapping[str, Any], *, require_board_identity: bool = False,
+    allow_test_identity_derivation: bool = False,
+) -> dict[str, Any]:
     problem_value = job.get("problem")
     if not isinstance(problem_value, str) or not problem_value:
         raise RunnerWorkerError("job.problem must be a non-empty string")
     try:
-        return load_manifest(Path(problem_value).resolve())
+        manifest = load_manifest(Path(problem_value).resolve())
+        _validate_board_identity(
+            job,
+            manifest,
+            required=require_board_identity,
+            allow_test_derivation=allow_test_identity_derivation,
+        )
+        return manifest
+    except RunnerWorkerError:
+        raise
     except (OSError, TypeError, ValueError) as exc:
         raise RunnerWorkerError("could not load verifier manifest before leasing") from exc
+
+
+BOARD_IDENTITY_KEYS = {
+    "problem_slug", "problem_path", "verifier_command", "verifier_image",
+    "verifier_source_sha256", "resource_identity", "memory_mb", "wall_seconds",
+}
+
+
+def _derive_test_board_identity(
+    job: Mapping[str, Any], manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    problem = Path(_require_string(job, "problem")).resolve()
+    slug = manifest.get("problem_id")
+    verifier = manifest.get("verifier")
+    limits = verifier.get("max_compute") if isinstance(verifier, Mapping) else None
+    command = verifier.get("command") if isinstance(verifier, Mapping) else None
+    if (
+        not isinstance(slug, str) or not slug
+        or not isinstance(command, str) or not command
+        or not isinstance(limits, Mapping)
+    ):
+        raise RunnerWorkerError("test fixture manifest cannot derive a closed board identity")
+    resource = {"memory_mb": limits.get("memory_mb"), "wall_seconds": limits.get("wall_seconds")}
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 1 for value in resource.values()):
+        raise RunnerWorkerError("test fixture manifest resources cannot derive a closed board identity")
+    try:
+        source_hash = compute_source_hash(problem)
+    except AdmissionError:
+        records = []
+        for path in sorted(problem.rglob("*")):
+            if path.is_symlink():
+                raise RunnerWorkerError("test fixture source identity forbids symlinks")
+            if path.is_file():
+                records.append({"path": path.relative_to(problem).as_posix(), "sha256": sha256_file(path)})
+        if not records:
+            raise RunnerWorkerError("test fixture source identity has no regular files")
+        source_hash = sha256_bytes(canonical_json(records).encode("utf-8"))
+    return {
+        "problem_slug": slug,
+        "problem_path": str(problem),
+        "verifier_command": command,
+        "verifier_image": f"fixture.invalid/p42/{slug}@{source_hash}",
+        "verifier_source_sha256": source_hash,
+        "resource_identity": sha256_bytes(canonical_json(resource).encode("utf-8")),
+        **resource,
+    }
+
+
+def _validate_board_identity(
+    job: Mapping[str, Any], manifest: Mapping[str, Any], *, required: bool = False,
+    allow_test_derivation: bool = False,
+) -> dict[str, Any]:
+    identity = job.get("board_identity")
+    if identity is None:
+        if required:
+            raise RunnerWorkerError("production job lacks the executor-forced closed board identity")
+        if allow_test_derivation:
+            return _derive_test_board_identity(job, manifest)
+        raise RunnerWorkerError(
+            "job lacks the closed board identity required for transcript production"
+        )
+    if not isinstance(identity, dict) or set(identity) != BOARD_IDENTITY_KEYS:
+        raise RunnerWorkerError("job lacks the executor-forced closed board identity")
+    problem = Path(_require_string(job, "problem")).resolve()
+    if str(problem) != identity.get("problem_path") or manifest.get("problem_id") != identity.get("problem_slug"):
+        raise RunnerWorkerError("job problem slug/path differs from its board identity")
+    verifier = manifest.get("verifier")
+    if not isinstance(verifier, Mapping):
+        raise RunnerWorkerError("board verifier manifest is unavailable")
+    try:
+        image = compose_immutable_image_ref(verifier.get("image_repository"), verifier.get("image"))
+    except RunnerSandboxError as exc:
+        raise RunnerWorkerError("board verifier image is not an immutable reference") from exc
+    if image != identity.get("verifier_image"):
+        raise RunnerWorkerError("board verifier image differs from its executor identity")
+    if verifier.get("command") != identity.get("verifier_command"):
+        raise RunnerWorkerError("board verifier command differs from its executor identity")
+    limits = verifier.get("max_compute")
+    resource = {
+        "memory_mb": limits.get("memory_mb") if isinstance(limits, Mapping) else None,
+        "wall_seconds": limits.get("wall_seconds") if isinstance(limits, Mapping) else None,
+    }
+    expected_resource_hash = sha256_bytes(canonical_json(resource).encode("utf-8"))
+    if (
+        resource["memory_mb"] != identity.get("memory_mb")
+        or resource["wall_seconds"] != identity.get("wall_seconds")
+        or job.get("required_memory_mb") != identity.get("memory_mb")
+        or expected_resource_hash != identity.get("resource_identity")
+    ):
+        raise RunnerWorkerError("board verifier resource identity differs from executor identity")
+    if compute_source_hash(problem) != identity.get("verifier_source_sha256"):
+        raise RunnerWorkerError("board verifier source differs from executor identity")
+    return dict(identity)
 
 
 def _minimum_lease_seconds(manifest: Mapping[str, Any]) -> int:
@@ -116,6 +222,8 @@ def run_next_job_once(
     lease_seconds: int = 3600,
     sandbox_staging_root: str | Path | None = None,
     docker_host: str | None = None,
+    require_board_identity: bool = False,
+    allow_test_identity_derivation: bool = False,
 ) -> dict[str, Any]:
     if lease_seconds < 60:
         raise RunnerWorkerError("lease_seconds must be at least 60")
@@ -160,7 +268,11 @@ def run_next_job_once(
         job_id = plan["selected_job_id"]
         job = _find_job(queue, job_id)
         try:
-            job_manifest = _load_job_manifest(job)
+            job_manifest = _load_job_manifest(
+                job,
+                require_board_identity=require_board_identity,
+                allow_test_identity_derivation=allow_test_identity_derivation,
+            )
         except RunnerWorkerError as exc:
             detail = (str(exc) or "runner manifest load failed")[:512]
             result = set_runner_local_disposition(
@@ -231,6 +343,8 @@ def run_next_job_once(
                 lease_failed=heartbeat_failed,
                 sandbox_staging_root=sandbox_staging_root,
                 docker_host=docker_host,
+                require_board_identity=require_board_identity,
+                allow_test_identity_derivation=allow_test_identity_derivation,
             )
         run_error = None
         retryable_storage_error = False
@@ -416,6 +530,7 @@ def drain_runner_queue(
     sleep: Callable[[float], None] = time.sleep,
     sandbox_staging_root: str | Path | None = None,
     docker_host: str | None = None,
+    allow_test_identity_derivation: bool = False,
 ) -> dict[str, Any]:
     if poll_seconds < 0:
         raise RunnerWorkerError("poll_seconds must be >= 0")
@@ -442,6 +557,7 @@ def drain_runner_queue(
             lease_seconds=lease_seconds,
             sandbox_staging_root=sandbox_staging_root,
             docker_host=docker_host,
+            allow_test_identity_derivation=allow_test_identity_derivation,
         )
         iterations += 1
         event = _loop_event_from_result(result)
@@ -612,6 +728,8 @@ def _run_job(
     lease_failed: threading.Event | None = None,
     sandbox_staging_root: str | Path | None = None,
     docker_host: str | None = None,
+    require_board_identity: bool = False,
+    allow_test_identity_derivation: bool = False,
 ) -> dict[str, Any]:
     job_id = _require_string(job, "job_id")
     problem = Path(_require_string(job, "problem")).resolve()
@@ -626,6 +744,12 @@ def _run_job(
                 "chain job problem path must match the canonical source checkout for its problem_id"
             )
     pinned_manifest = copy.deepcopy(manifest) if manifest is not None else load_manifest(problem)
+    board_identity = _validate_board_identity(
+        job,
+        pinned_manifest,
+        required=require_board_identity,
+        allow_test_derivation=allow_test_identity_derivation,
+    )
     solution_value = job.get("solution")
     if not isinstance(solution_value, str) or not solution_value:
         if _is_explicit_retryable_da_failure(job.get("da_failure")):
@@ -734,6 +858,7 @@ def _run_job(
         "resource_limits": resource_limits,
         "verifier": verifier,
     }
+    transcript["board_identity"] = board_identity
     transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
     transcript_path = _publish_transcript(transcript_dir, transcript)
     transcript["transcript_path"] = str(transcript_path)

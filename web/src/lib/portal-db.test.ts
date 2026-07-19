@@ -40,8 +40,11 @@ describe("shared PostgreSQL portal state", () => {
     expect(portalDatabaseSchema()).toBe("p42_portal");
 
     process.env.P42_PORTAL_DATABASE_URL = "postgresql://runtime@example.invalid/portal";
-    const pool = portalDatabasePool() as PortalDatabasePool & { options: { options?: string } };
+    const pool = portalDatabasePool() as PortalDatabasePool & {
+      options: { options?: string; statement_timeout?: number };
+    };
     expect(pool.options.options).toBe("-c search_path=p42_portal,pg_catalog,pg_temp");
+    expect(pool.options.statement_timeout).toBe(15_000);
   });
   it("fails closed when the configured singleton is absent", async () => {
     setPortalDatabasePoolForTests({

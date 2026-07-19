@@ -11,6 +11,7 @@ import {
   bindActivationRpcAuthority,
   canonicalActivationRpcEndpoint,
   loadActivationRpcOperatorRegistry,
+  loadPinnedActivationRpcRegistryDigest,
   observeActivationRpcChainId,
   rejectActivationRpcRedirects,
   validateActivationRpcEndpointPair,
@@ -144,6 +145,24 @@ test("protected registry loader requires immutable canonical bytes and trusted p
   assert.throws(() => loadActivationRpcOperatorRegistry(symlink, linked.digest, linked.root));
   const substituted = make();
   assert.throws(() => loadActivationRpcOperatorRegistry(substituted.path, `sha256:${"0".repeat(64)}`, substituted.root), /digest/);
+});
+
+test("reconciliation registry digest comes from one protected out-of-band pin", () => {
+  const make = (value = REGISTRY_DIGEST, mode = 0o444) => {
+    const root = mkdtempSync(join(tmpdir(), "p42-rpc-digest-pin-")); chmodSync(root, 0o700);
+    const path = join(root, "registry.sha256");
+    writeFileSync(path, `${value}\n`); chmodSync(path, mode);
+    return { root, path };
+  };
+  const good = make();
+  assert.equal(loadPinnedActivationRpcRegistryDigest(good.path, { allowTestPath: true }), REGISTRY_DIGEST);
+  assert.throws(() => loadPinnedActivationRpcRegistryDigest(good.path), /path is fixed out of band/);
+  const writable = make(REGISTRY_DIGEST, 0o644);
+  assert.throws(() => loadPinnedActivationRpcRegistryDigest(writable.path, { allowTestPath: true }), /immutable protected file/);
+  const malformed = make(`sha256:${"A".repeat(64)}`);
+  assert.throws(() => loadPinnedActivationRpcRegistryDigest(malformed.path, { allowTestPath: true }), /canonical/);
+  const linked = make(); linkSync(linked.path, join(linked.root, "alias.sha256"));
+  assert.throws(() => loadPinnedActivationRpcRegistryDigest(linked.path, { allowTestPath: true }), /immutable protected file/);
 });
 
 test("authorization-bound profiles reject same operators, endpoint substitution, and registry substitution", () => {

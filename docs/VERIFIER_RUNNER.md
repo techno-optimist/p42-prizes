@@ -103,7 +103,7 @@ After the all-ten image release dossier exists, every production runner host
 must prove that it can execute the published bytes without rebuilding or using
 a mutable tag. The published mode of `scripts/rehearse_verifier_image.py`:
 
-- requires canonical, schema-valid `p42-verifier-image-release/v2` dossier
+- requires canonical, schema-valid `p42-verifier-image-release/v3` dossier
   bytes, an independently supplied digest of those bytes, and the exact fully
   clean release-config commit named by that dossier, while OCI labels bind the
   distinct verifier-source commit;
@@ -149,7 +149,7 @@ Each admission host then runs the all-ten collector locally. The command has no
 offline-report mode: it launches both pull-only rehearsals itself, binds a fresh
 collector challenge into each report, signs each board artifact and the complete
 ordered host-set index with the same host key, and publishes through an atomic
-no-replace directory operation. The v3 bundle contains all 20 canonical raw
+no-replace directory operation. The v4 bundle contains all 20 canonical raw
 runtime rehearsals as well as the ten signed board summaries. Each raw receipt
 is indexed by its path, exact canonical-file SHA-256, and rehearsal self-hash;
 reconciliation independently reruns the semantic validator and rejects missing,
@@ -163,10 +163,14 @@ PYTHONPATH=src python3 scripts/collect_verifier_host_set.py \
   --fixtures protocol/production-verifier-fixtures-v1.json \
   --fixtures-sha256 sha256:<independent-fixture-pin> \
   --signing-key /secure/keys/<host>.ed25519 \
+  --operator-id <pre-registered-operator-id> \
   --host-label <stable-host-label> \
   --output-dir /secure/evidence/<host>-all-ten
 ```
 
+The v4 host-set signature binds the operator ID, canonical trusted-host profile
+digest, and all ten exact-`R` registry paths. Portable release admission
+compares those fields to the externally supplied `trusted_hosts` profiles.
 This is signed host-operator evidence, not a trustless proof that the operator
 owns independent hardware. Matrix admission still requires four distinct
 trusted keys and the architecture/glibc coverage policy; key custody and host
@@ -222,6 +226,21 @@ not memory pressure. Queue, plan, and transcript schemas live at
   then gets raised to observed peak RSS after dry runs.
 - Queue depth/bytes, archive count, oldest queued age/deadline, active lease,
   reserved admission/memory headroom, and swap usage are alerting metrics.
+
+Per-board queues do not authorize execution. Every production operator submits
+only a board ID, request ID, and canonical chain timestamp to the private
+`p42-verifier-executor` Unix socket. One FIFO executor daemon holds the host
+singleton `flock`, owns the only Docker socket, and resolves all queue paths and
+limits from its administrator-owned board allowlist. Operators cannot read or
+write executor state and have no Docker environment, socket path, or group.
+Before and after every worker, the executor forcibly reconciles all
+`p42-verify-*` containers. An outer process-group deadline bounds the worker in
+addition to the verifier's manifest deadline; successful orphan reconciliation
+must complete before the next FIFO request can lease work. Capacity is checked
+again at that boundary. OOM counter changes and reboot changes fail closed.
+Persisted holder deadlines use `CLOCK_MONOTONIC` nanoseconds bound to the kernel
+boot ID, never adjustable wall time. Reboot recovery establishes a new OOM
+baseline only after Docker reconciliation.
 
 The canonical queue admits ordinary work only through 896 active entries and
 deadline-bearing chain work through 960, leaving 64 operational slots plus 64 KiB of
@@ -497,10 +516,11 @@ startup reject it before scanning. A current deployment must produce a new
 manifest and reconciliation report; agents must not rewrite stale addresses or
 tx hashes into a fake current release.
 
-## Operator And Resolver Systemd Templates
+## Operator, Resolver, And Indexer Systemd Templates
 
-The source templates are `deployments/p42-operator@.service.example` and
-`deployments/p42-resolver@.service.example`. Install them only after replacing
+The source templates are `deployments/p42-operator@.service.example`,
+`deployments/p42-resolver@.service.example`, and
+`deployments/p42-indexer.service.example`. Install them only after replacing
 the example configuration with a deployment-specific manifest, immutable
 challenge provisioning, accepted session keys, runner-health identities, and
 publisher credentials. The per-instance environment files are private files at
@@ -520,14 +540,19 @@ matching private configuration directory. `--sandbox-staging-root` points the
 worker at the writable `/var/lib/p42/operator/<instance>/sandbox-staging`
 directory.
 
-Production verifier execution has one Docker authority: the same unprivileged
-`p42-operator` account runs `p42-docker-rootless@<instance>.service`, with
-`DOCKER_HOST=unix:///run/p42-docker-<instance>/docker.sock`. The operator
-requires that unit and checks the socket before its first poll. The rootless
+All operator instances on one verifier host connect to
+`/run/p42-verifier-executor/executor.sock`. The socket is writable only by the
+executor and connectable by the submitters group; `/var/lib/p42/verifier-executor`
+and `/run/p42-verifier-docker` remain executor-only.
+
+Production verifier execution has one Docker authority: the dedicated
+`p42-verifier-executor` account runs `p42-verifier-docker.service`, with
+`DOCKER_HOST=unix:///run/p42-verifier-docker/docker.sock`. Only
+`p42-verifier-executor.service` receives that endpoint. The rootless
 unit conflicts with `docker.service`/`docker.socket`, rejects a rootful socket,
 uses no `docker` group, and requires `newuidmap`/`newgidmap` plus 65,536-entry
 `/etc/subuid` and `/etc/subgid` ranges, enabled unprivileged user namespaces,
-and cgroup v2 for `p42-operator`. Its preflight parses every subordinate-ID
+and cgroup v2 for `p42-verifier-executor`. Its preflight parses every subordinate-ID
 file entry and rejects interval overlap, then runs `unshare --user
 --map-root-user --mount --pid --fork /usr/bin/true` as the service user;
 it does not merely grep for a matching row. Install
@@ -541,8 +566,8 @@ requires structured Docker identity, the explicit `name=rootless` security
 option, and `CgroupDriver=systemd` before dependents can start.
 Install `scripts/p42_rootless_docker_launch.py` as
 `/usr/local/libexec/p42_rootless_docker_launch.py`. Before first startup, run
-`loginctl enable-linger p42-operator` and prove `user@$(id -u
-p42-operator).service` is active. The launcher resolves that dynamic UID,
+`loginctl enable-linger p42-verifier-executor` and prove `user@$(id -u
+p42-verifier-executor).service` is active. The launcher resolves that dynamic UID,
 rejects a missing, misowned, or broadly accessible `/run/user/<uid>` and user
 bus, then binds Docker to that exact user manager. This is required for the
 systemd cgroup driver to enforce each verifier container's memory and PID
@@ -552,7 +577,7 @@ Ubuntu 24.04 hosts with
 `deployments/p42-rootless-runtime.apparmor.example` as
 `/etc/apparmor.d/p42-rootless-runtime` and load it with
 `apparmor_parser -r /etc/apparmor.d/p42-rootless-runtime`. Systemd applies the
-named profile only to `p42-docker-rootless@.service`; it grants that bounded
+named profile only to `p42-verifier-docker.service`; it grants that bounded
 service process tree the `userns` permission needed by both the same-user
 preflight and rootlesskit. Do not disable the host restriction globally or
 grant it to generic `/usr/bin/unshare`.
@@ -603,6 +628,20 @@ the explicit publisher and endpoint CLI options. The units also remove those
 legacy variables from the service environment. This makes an old environment
 file fail closed rather than silently adding a second publisher or retrieval
 set to the production command.
+
+The indexer unit runs one multi-board service, not one instance per board. It
+loads the primary RPC URL through `LoadCredential`, regenerates a private
+candidate every 30 seconds, and promotes only complete, reconstruction-green,
+same-deployment checkpoints whose finalized height does not regress. Equal
+height requires the same finalized hash and byte-identical deterministic
+checkpoint; schema changes require an explicit cutover. Candidate, public
+checkpoint, archive, and `health.json` live below `/var/lib/p42/indexer` and are
+published with file fsync, atomic rename, and parent-directory fsync. Health
+reports startup, healthy, degraded, or stale using the last successful
+publication; five consecutive cycle failures exit for systemd restart and the
+account-separated failure recorder. The original one-shot
+`node agent/indexer.mjs ...` command remains available for ceremonies and
+rehearsals.
 
 For shared DGX operation, the operator unit uses `MemoryHigh=2G`,
 `MemoryMax=3G`, `MemorySwapMax=0`, and `TasksMax=256`; the resolver uses 1G, 2G,

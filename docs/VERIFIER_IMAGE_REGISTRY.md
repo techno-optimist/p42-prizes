@@ -10,7 +10,7 @@ ordered ten-board slate in `protocol/production-board-set-v1.json`. The release
 script and contract ceremony both load that authority, while schema and portal
 copies are checked against it in CI. It refuses a dirty tree or a
 symbolic/abbreviated commit and accepts only a canonical lowercase registry
-repository base such as `ghcr.io/projectforty2/verifier-images`. It never edits
+repository base `ghcr.io/techno-optimist/p42-prizes-verifiers`. It never edits
 `problem.yaml`; applying reviewed immutable digests remains a separate human
 change with its own review.
 
@@ -21,11 +21,26 @@ other network operation:
 
 ```bash
 PYTHONPATH=src python3 scripts/release_verifier_images.py \
-  --registry-base ghcr.io/projectforty2/verifier-images \
+  --registry-base ghcr.io/techno-optimist/p42-prizes-verifiers \
   --verifier-source-commit "$S"
 ```
 
-Publication is deliberately explicit and all-ten. It performs one
+Publication is deliberately explicit and all-ten. It is disabled on candidate
+branches: before any registry mutation, the tool replays a canonical v3
+current-main CI receipt, requires the externally ratified v3 source-release
+authority for the same source commit and run, and then uses authenticated
+GitHub API reads to prove that the clean authority checkout is current
+canonical `main`. `S` is the authority's `observedBranchHead`; current main may
+be a later evidence-publication head `E`, but the signed source-release validator
+permits only its closed evidence-only tail paths. Images are always archived
+and built from `S`, never from `E`. The journal binds both identities, and
+finalization plus portable admission require canonical ancestry `S <= E <= R`.
+Live job IDs and all
+ten artifact IDs, names, sizes, digests, expiry states, and workflow bindings
+must exactly match the retained receipt. The source PR must have merged to that
+commit, and a distinct current write/maintain/admin collaborator must have
+approved its exact final head before merge. Caller-supplied capture bytes alone
+are not treated as GitHub authentication. It then performs one
 `docker buildx build --platform linux/amd64,linux/arm64 --push` per board with
 implicit provenance descriptors disabled, records Buildx's authoritative
 `containerimage.digest`, cryptographically walks the raw registry index through
@@ -35,22 +50,24 @@ passes. It does not claim a final release configuration:
 
 ```bash
 PYTHONPATH=src python3 scripts/release_verifier_images.py \
-  --registry-base ghcr.io/projectforty2/verifier-images \
+  --registry-base ghcr.io/techno-optimist/p42-prizes-verifiers \
   --verifier-source-commit "$S" \
-  --publish --journal verifier-image-publication.journal.json
+  --publish \
+  --exact-main-ci-receipt /secure/receipts/exact-main-ci-replay-v3.json \
+  --journal verifier-image-publication.journal.json
 ```
 
 After publication, commit only the resulting immutable repository/digest pairs
 to all ten `problem.yaml` manifests. Let that clean commit be `R`. Finalization
 replays both commits, proves `S` is an ancestor of `R`, requires every
 normalized verifier source hash to remain identical, re-inspects every OCI
-graph by immutable digest, and writes the non-overwriting v2 dossier:
+graph by immutable digest, and writes the non-overwriting v3 dossier:
 
 ```bash
 PYTHONPATH=src python3 scripts/release_verifier_images.py \
   --finalize-journal verifier-image-publication.journal.json \
   --release-config-commit "$R" \
-  --output verifier-image-release-v2.json
+  --output verifier-image-release-v3.json
 ```
 
 The dossier conforms to `schemas/verifier-image-release.schema.json`. It binds
@@ -58,8 +75,11 @@ the distinct `verifier_source_commit` (`S`) and `release_config_commit` (`R`),
 both durable Git-archive digests, each final raw `problem.yaml` digest,
 `p42-source-tree-sha256/v2` source hash, verifier problem ID
 and version, immutable OCI index digest, unique child manifest digest and size,
-and checked config/runtime assumptions for exactly `linux/amd64` and
-`linux/arm64`. `dossier_hash` is SHA-256 of canonical dossier JSON with that
+checked config/runtime assumptions, and canonical base64 raw index, child
+manifest, and config bytes for exactly `linux/amd64` and `linux/arm64`. Offline
+validation re-derives every child, config, and layer descriptor from those raw
+bytes before accepting the summarized descriptor fields. `dossier_hash` is
+SHA-256 of canonical dossier JSON with that
 field omitted. Registry credentials are obtained only through Docker's normal
 credential store/helper; the tool has no username, password, or token option,
 does not put credentials in argv, and suppresses command output on failures.
@@ -71,7 +91,9 @@ raw-body` command using the operator's normal registry credential store; they
 are not inferred from an `imagetools` projection.
 
 Before the first push, publish mode durably reserves the exact ten-board plan
-in the requested journal. Each board transitions from `planned` to `building`
+and the complete authority snapshot in the requested v3 journal. Authority is
+revalidated immediately before each canonical board mutation and must remain
+byte-identical to the frozen snapshot. Each board transitions from `planned` to `building`
 before Buildx starts, retains its exact metadata in a private 0700 work
 directory, and reaches `verified` only after registry digest-chain validation.
 Journal updates are canonical, fsynced, generation-hashed, and serialized with
@@ -82,9 +104,9 @@ mutable source-commit tag; explicit operator recovery is required. Finalization
 binds the completed journal hash and creates the dossier privately without
 overwriting an existing file. It never invokes a build or accepts a tag.
 
-`p42-verifier-image-release/v1` remains historical evidence only. Consumers
-fail closed on v1 instead of reinterpreting its single `source_commit` as one
-of the two v2 authorities.
+`p42-verifier-image-release/v1` and `/v2` remain historical evidence only.
+Consumers fail closed rather than treating an older dossier without the raw OCI
+receipt chain as portable release admission.
 
 This dossier is release evidence, not independent-host admission evidence. A
 registry operator with valid push credentials must provision the repository
@@ -148,7 +170,7 @@ snapshots before accepting any individual board:
 PYTHONPATH=src python3 -m p42_prizes.cli admit-release-ready \
   --problem problems/<slug> \
   --matrix admission-matrix.json \
-  --image-dossier verifier-image-release-v2.json \
+  --image-dossier verifier-image-release-v3.json \
   --image-dossier-sha256 sha256:<independent-dossier-file-digest> \
   --publication-journal verifier-image-publication.journal.json \
   --publication-journal-sha256 sha256:<independent-journal-file-digest> \
@@ -202,9 +224,11 @@ installed dependencies. Every signed host record carries the resolved child
 `image_id`; matrix construction rejects two hosts that resolve different child
 IDs for the same OS/architecture. Different architectures may have different
 child IDs while remaining cryptographically contained by the same approved
-index digest. The image digest is normalized only in the explanatory source
-hash to avoid a source/image fixed point; readiness and the on-chain registry
-bind it separately.
+index digest. The normalized source manifest excludes only release-config
+fields `verifier.image`, `verifier.image_repository`, and
+`verifier.admission`. This avoids both the source/image fixed point and the
+`S` to `R` contradiction. The complete `R` manifest SHA-256, exact repository,
+immutable image digest, and registered host profiles remain separately bound.
 
 Admission also rejects image-controlled `ENTRYPOINT`/`CMD`, unexpected inherited
 environment, a wrong working directory, or an inherited user. The sandbox

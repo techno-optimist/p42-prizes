@@ -1,0 +1,194 @@
+{
+  "schema_version": "p42-verifier-executor-config/test-only-v1",
+  "test_only": true,
+  "board_bindings": {
+    "path": "protocol/production-board-bindings-v1.json",
+    "sha256": "sha256:311df150a00dba4570ef4b22de0e8295fc43a40594cba9c27f9159b0d6b3781c"
+  },
+  "board_set": {
+    "path": "protocol/production-board-set-v1.json",
+    "sha256": "sha256:1519ea83e14b780a3b0818890a5be45cc72a71b62cf1ed7b4b4d9582702b6cc8"
+  },
+  "boards": [
+    {
+      "alerts": "/var/lib/p42/verifier-executor/boards/11/ALERTS.log",
+      "board_id": "84532:11:q6-intersecting-hypergraph",
+      "deadline_seconds": 65,
+      "identity": {
+        "memory_mb": 128,
+        "slug": "q6-intersecting-hypergraph",
+        "verifier_command": "python3 verifier/verify.py --solution {solution}",
+        "verifier_image": "sha256:local-dev",
+        "verifier_source_sha256": "sha256:1bd5beb41abd6355221ebeba2fc46b435b3a4f519d19bea4ed70a79aeb781220",
+        "verifier_version": "0.1.0",
+        "wall_seconds": 5
+      },
+      "queue": "/var/lib/p42/verifier-executor/boards/11/runner-queue.json",
+      "required_memory_mb": 4096,
+      "staging": "/var/lib/p42/verifier-executor/boards/11/sandbox-staging",
+      "transcripts": "/var/lib/p42/verifier-executor/boards/11/transcripts"
+    },
+    {
+      "alerts": "/var/lib/p42/verifier-executor/boards/2/ALERTS.log",
+      "board_id": "84532:2:erdos-min-overlap",
+      "deadline_seconds": 70,
+      "identity": {
+        "memory_mb": 256,
+        "slug": "erdos-min-overlap",
+        "verifier_command": "python3 verifier/verify.py --solution {solution}",
+        "verifier_image": "sha256:local-dev",
+        "verifier_source_sha256": "sha256:269dc59afd88a10a533c91206ff9cda300b129bac4a8412a5e4c7402e7fb86ab",
+        "verifier_version": "0.1.1",
+        "wall_seconds": 10
+      },
+      "queue": "/var/lib/p42/verifier-executor/boards/2/runner-queue.json",
+      "required_memory_mb": 4096,
+      "staging": "/var/lib/p42/verifier-executor/boards/2/sandbox-staging",
+      "transcripts": "/var/lib/p42/verifier-executor/boards/2/transcripts"
+    },
+    {
+      "alerts": "/var/lib/p42/verifier-executor/boards/3/ALERTS.log",
+      "board_id": "84532:3:edges-vs-triangles",
+      "deadline_seconds": 70,
+      "identity": {
+        "memory_mb": 256,
+        "slug": "edges-vs-triangles",
+        "verifier_command": "python3 verifier/verify.py --solution {solution}",
+        "verifier_image": "sha256:local-dev",
+        "verifier_source_sha256": "sha256:a85ba8ca63534390fbd90b45670adcb43b228272db77e21a18d0c149f53133d8",
+        "verifier_version": "0.1.2",
+        "wall_seconds": 10
+      },
+      "queue": "/var/lib/p42/verifier-executor/boards/3/runner-queue.json",
+      "required_memory_mb": 4096,
+      "staging": "/var/lib/p42/verifier-executor/boards/3/sandbox-staging",
+      "transcripts": "/var/lib/p42/verifier-executor/boards/3/transcripts"
+    },
+    {
+      "alerts": "/var/lib/p42/verifier-executor/boards/4/ALERTS.log",
+      "board_id": "84532:4:arithmetic-kakeya",
+      "deadline_seconds": 70,
+      "identity": {
+        "memory_mb": 128,
+        "slug": "arithmetic-kakeya",
+        "verifier_command": "python3 verifier/verify.py --solution {solution}",
+        "verifier_image": "sha256:local-dev",
+        "verifier_source_sha256": "sha256:b5ace35155666de2992f5f94eaed0cf0aaf9b8a7484f39073eb56323e6db94a0",
+        "verifier_version": "0.2.0",
+        "wall_seconds": 10
+      },
+      "queue": "/var/lib/p42/verifier-executor/boards/4/runner-queue.json",
+      "required_memory_mb": 4096,
+      "staging": "/var/lib/p42/verifier-executor/boards/4/sandbox-staging",
+      "transcripts": "/var/lib/p42/verifier-executor/boards/4/transcripts"
+    },
+    {
+      "alerts": "/var/lib/p42/verifier-executor/boards/5/ALERTS.log",
+      "board_id": "84532:5:autoconvolution-c1-upper",
+      "deadline_seconds": 90,
+      "identity": {
+        "memory_mb": 512,
+        "slug": "autoconvolution-c1-upper",
+        "verifier_command": "python3 verifier/verify.py --solution {solution}",
+        "verifier_image": "sha256:local-dev",
+        "verifier_source_sha256": "sha256:fdfb3a06a02b63c7785ef470f531161375d581eeba4ea4fd970408bae15fbfd5",
+        "verifier_version": "0.1.1",
+        "wall_seconds": 30
+      },
+      "queue": "/var/lib/p42/verifier-executor/boards/5/runner-queue.json",
+      "required_memory_mb": 4096,
+      "staging": "/var/lib/p42/verifier-executor/boards/5/sandbox-staging",
+      "transcripts": "/var/lib/p42/verifier-executor/boards/5/transcripts"
+    },
+    {
+      "alerts": "/var/lib/p42/verifier-executor/boards/6/ALERTS.log",
+      "board_id": "84532:6:autoconvolution-c2-lower",
+      "deadline_seconds": 120,
+      "identity": {
+        "memory_mb": 768,
+        "slug": "autoconvolution-c2-lower",
+        "verifier_command": "python3 verifier/verify.py --solution {solution}",
+        "verifier_image": "sha256:local-dev",
+        "verifier_source_sha256": "sha256:958761303ab996af62f374413b1c1ce51761e626819b05251e48ce9eb54e7532",
+        "verifier_version": "0.1.1",
+        "wall_seconds": 60
+      },
+      "queue": "/var/lib/p42/verifier-executor/boards/6/runner-queue.json",
+      "required_memory_mb": 4096,
+      "staging": "/var/lib/p42/verifier-executor/boards/6/sandbox-staging",
+      "transcripts": "/var/lib/p42/verifier-executor/boards/6/transcripts"
+    },
+    {
+      "alerts": "/var/lib/p42/verifier-executor/boards/12/ALERTS.log",
+      "board_id": "84532:12:distinct-subset-sums-a11",
+      "deadline_seconds": 65,
+      "identity": {
+        "memory_mb": 128,
+        "slug": "distinct-subset-sums-a11",
+        "verifier_command": "python3 verifier/verify.py --solution {solution}",
+        "verifier_image": "sha256:local-dev",
+        "verifier_source_sha256": "sha256:7591f761600b3cbe7994e5375a823a90290f4557f4bedcb4b57da830c5dcf639",
+        "verifier_version": "0.1.0",
+        "wall_seconds": 5
+      },
+      "queue": "/var/lib/p42/verifier-executor/boards/12/runner-queue.json",
+      "required_memory_mb": 4096,
+      "staging": "/var/lib/p42/verifier-executor/boards/12/sandbox-staging",
+      "transcripts": "/var/lib/p42/verifier-executor/boards/12/transcripts"
+    },
+    {
+      "alerts": "/var/lib/p42/verifier-executor/boards/8/ALERTS.log",
+      "board_id": "84532:8:mertens-lp-ceiling-k12000",
+      "deadline_seconds": 150,
+      "identity": {
+        "memory_mb": 768,
+        "slug": "mertens-lp-ceiling-k12000",
+        "verifier_command": "python3 verifier/verify.py --solution {solution}",
+        "verifier_image": "sha256:local-dev",
+        "verifier_source_sha256": "sha256:3c6bdf618080d94f6d501c93ff2e829fb981cb038ef575667f9243a93fdf48e3",
+        "verifier_version": "0.1.1",
+        "wall_seconds": 90
+      },
+      "queue": "/var/lib/p42/verifier-executor/boards/8/runner-queue.json",
+      "required_memory_mb": 4096,
+      "staging": "/var/lib/p42/verifier-executor/boards/8/sandbox-staging",
+      "transcripts": "/var/lib/p42/verifier-executor/boards/8/transcripts"
+    },
+    {
+      "alerts": "/var/lib/p42/verifier-executor/boards/9/ALERTS.log",
+      "board_id": "84532:9:pnt-sparse-mertens-construction",
+      "deadline_seconds": 80,
+      "identity": {
+        "memory_mb": 512,
+        "slug": "pnt-sparse-mertens-construction",
+        "verifier_command": "python3 verifier/verify.py --solution {solution}",
+        "verifier_image": "sha256:local-dev",
+        "verifier_source_sha256": "sha256:9f7f500e67345561b3df76893c412565d6202dd14f141ad53f792787aa11cbae",
+        "verifier_version": "0.1.2",
+        "wall_seconds": 20
+      },
+      "queue": "/var/lib/p42/verifier-executor/boards/9/runner-queue.json",
+      "required_memory_mb": 4096,
+      "staging": "/var/lib/p42/verifier-executor/boards/9/sandbox-staging",
+      "transcripts": "/var/lib/p42/verifier-executor/boards/9/transcripts"
+    },
+    {
+      "alerts": "/var/lib/p42/verifier-executor/boards/10/ALERTS.log",
+      "board_id": "84532:10:hadamard-668-defect",
+      "deadline_seconds": 70,
+      "identity": {
+        "memory_mb": 256,
+        "slug": "hadamard-668-defect",
+        "verifier_command": "python3 verifier/verify.py --solution {solution}",
+        "verifier_image": "sha256:local-dev",
+        "verifier_source_sha256": "sha256:266457c77eb16199da9d23256fa7faaf41d7b756207d4cd9c43b4ff072f9afd9",
+        "verifier_version": "0.1.2",
+        "wall_seconds": 10
+      },
+      "queue": "/var/lib/p42/verifier-executor/boards/10/runner-queue.json",
+      "required_memory_mb": 4096,
+      "staging": "/var/lib/p42/verifier-executor/boards/10/sandbox-staging",
+      "transcripts": "/var/lib/p42/verifier-executor/boards/10/transcripts"
+    }
+  ]
+}

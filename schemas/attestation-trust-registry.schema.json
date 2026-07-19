@@ -53,14 +53,20 @@
             "p42-legal-memo/v1",
             "p42-legal-memo/v2",
             "p42-governance-signoff/v1",
+            "p42-governance-signoff/v2",
             "p42-incident-drill/v1",
+            "p42-incident-drill/v2",
             "p42-adversarial-testnet/v1",
             "p42-adversarial-testnet/v2",
             "p42-operational-controls/v1",
+            "p42-operational-controls/v2",
             "p42-security-audit/v1",
+            "p42-security-audit/v2",
             "p42-runner-burst/v1",
             "p42-math-review/v1",
             "p42-math-review/v2",
+            "p42-math-review/v3",
+            "p42-math-review/v4",
             "p42-production-launch-authorization/v1",
             "p42-capsule-rebuild-attestation/v1",
             "p42-indexer-checkpoint-attestation/v1",
@@ -78,6 +84,91 @@
         "valid_until_utc": { "type": "string", "format": "date-time" }
       },
       "allOf": [
+        {
+          "if": {
+            "properties": {
+              "attestation_class": { "const": "p42-governance-signoff/v2" }
+            },
+            "required": ["attestation_class"]
+          },
+          "then": {
+            "properties": {
+              "signer_role": {
+                "anyOf": [
+                  { "enum": ["governance-owner", "security-owner", "pause-guardian"] },
+                  { "pattern": "^multisig-signer:0x[a-f0-9]{40}$" }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "attestation_class": { "const": "p42-operational-controls/v2" }
+            },
+            "required": ["attestation_class"]
+          },
+          "then": {
+            "properties": {
+              "signer_role": {
+                "enum": [
+                  "operational-control-owner",
+                  "operational-controls-report-signer",
+                  "operational-control-execution-runner"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "attestation_class": { "const": "p42-security-audit/v2" }
+            },
+            "required": ["attestation_class"]
+          },
+          "then": {
+            "properties": {
+              "signer_role": {
+                "enum": ["external-security-auditor", "security-owner"]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "attestation_class": { "const": "p42-incident-drill/v2" }
+            },
+            "required": ["attestation_class"]
+          },
+          "then": {
+            "properties": {
+              "signer_role": {
+                "enum": [
+                  "security-owner",
+                  "facilitator",
+                  "external-counsel",
+                  "external-disclosure-probe-operator"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "attestation_class": { "enum": ["p42-math-review/v3", "p42-math-review/v4"] }
+            },
+            "required": ["attestation_class"]
+          },
+          "then": {
+            "properties": {
+              "signer_role": { "enum": ["independent-math-reviewer", "problem-owner"] }
+            }
+          }
+        },
         {
           "if": {
             "properties": {

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import ctypes
 import errno
+import hashlib
 import importlib.util
 import json
 import os
@@ -13,7 +15,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 import jsonschema
 
@@ -35,7 +37,7 @@ from p42_prizes.verdict import canonical_json, sha256_bytes, sha256_file
 
 
 FIXTURE_SCHEMA_VERSION = "p42-production-verifier-fixtures/v1"
-HOST_SET_SCHEMA_VERSION = "p42-admission-host-set/v3"
+HOST_SET_SCHEMA_VERSION = "p42-admission-host-set/v4"
 REPORTS_PER_BOARD = 2
 MAX_JSON_BYTES = 8 * 1024 * 1024
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -199,13 +201,154 @@ def _git(root: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
+def _git_bytes(root: Path, *args: str) -> bytes:
+    completed = subprocess.run(
+        ["git", "-C", str(root), *args], capture_output=True, check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeAdmissionError(
+            f"git {' '.join(args)} failed: {completed.stderr.decode(errors='replace').strip()}"
+        )
+    return completed.stdout
+
+
+def _git_blob_hash(payload: bytes, algorithm: str) -> str:
+    digest = hashlib.new(algorithm)
+    digest.update(f"blob {len(payload)}\0".encode("ascii"))
+    digest.update(payload)
+    return digest.hexdigest()
+
+
+def _read_exact_tracked_blob(path: Path, expected_mode: str) -> bytes:
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        raise RuntimeAdmissionError(f"tracked path is unavailable: {path}") from exc
+    if expected_mode == "120000":
+        if not stat.S_ISLNK(before.st_mode):
+            raise RuntimeAdmissionError(f"tracked path mode differs from release commit: {path}")
+        try:
+            payload = os.fsencode(os.readlink(path))
+            after = path.lstat()
+        except OSError as exc:
+            raise RuntimeAdmissionError(f"tracked symlink is unavailable: {path}") from exc
+        if (before.st_dev, before.st_ino, before.st_mode, before.st_size) != (
+            after.st_dev, after.st_ino, after.st_mode, after.st_size,
+        ):
+            raise RuntimeAdmissionError(f"tracked symlink changed while reading: {path}")
+        return payload
+    if expected_mode not in {"100644", "100755"} or not stat.S_ISREG(before.st_mode):
+        raise RuntimeAdmissionError(f"tracked path mode differs from release commit: {path}")
+    expected_permissions = 0o755 if expected_mode == "100755" else 0o644
+    if before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != expected_permissions:
+        raise RuntimeAdmissionError(f"tracked file mode differs from release commit: {path}")
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise RuntimeAdmissionError("exact checkout validation requires O_NOFOLLOW")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0))
+    except OSError as exc:
+        raise RuntimeAdmissionError(f"could not open tracked path without following links: {path}") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            raise RuntimeAdmissionError(f"tracked path changed while opening: {path}")
+        payload = bytearray()
+        while len(payload) < opened.st_size:
+            chunk = os.read(descriptor, opened.st_size - len(payload))
+            if not chunk:
+                raise RuntimeAdmissionError(f"tracked path was truncated while reading: {path}")
+            payload.extend(chunk)
+        final_fd = os.fstat(descriptor)
+        final_path = path.lstat()
+        identity = (
+            opened.st_dev, opened.st_ino, opened.st_mode, opened.st_size,
+            opened.st_mtime_ns, opened.st_ctime_ns,
+        )
+        if identity != (
+            final_fd.st_dev, final_fd.st_ino, final_fd.st_mode, final_fd.st_size,
+            final_fd.st_mtime_ns, final_fd.st_ctime_ns,
+        ) or identity != (
+            final_path.st_dev, final_path.st_ino, final_path.st_mode, final_path.st_size,
+            final_path.st_mtime_ns, final_path.st_ctime_ns,
+        ):
+            raise RuntimeAdmissionError(f"tracked path changed while reading: {path}")
+        return bytes(payload)
+    finally:
+        os.close(descriptor)
+
+
 def validate_clean_checkout(root: Path) -> str:
-    """Return HEAD only after proving that no tracked or untracked path is dirty."""
+    """Prove index and working-tree bytes are exactly the checked-out commit."""
 
     head = _git(root, "rev-parse", "HEAD")
-    if _git(root, "status", "--porcelain", "--untracked-files=all"):
+    object_format = _git(root, "rev-parse", "--show-object-format")
+    if object_format not in {"sha1", "sha256"}:
+        raise RuntimeAdmissionError("production evidence requires a supported Git object format")
+    tree_records: dict[bytes, tuple[str, str]] = {}
+    for record in _git_bytes(root, "ls-tree", "-rz", "--full-tree", head).split(b"\0"):
+        if not record:
+            continue
+        metadata, path = record.split(b"\t", 1)
+        mode, object_type, object_id = metadata.decode("ascii").split()
+        if object_type != "blob" or path in tree_records:
+            raise RuntimeAdmissionError("production release commit contains unsupported or duplicate entries")
+        tree_records[path] = (mode, object_id)
+    index_records: dict[bytes, tuple[str, str]] = {}
+    for record in _git_bytes(root, "ls-files", "-s", "-z").split(b"\0"):
+        if not record:
+            continue
+        metadata, path = record.split(b"\t", 1)
+        mode, object_id, stage = metadata.decode("ascii").split()
+        if stage != "0" or path in index_records:
+            raise RuntimeAdmissionError("production checkout index contains unmerged or duplicate entries")
+        index_records[path] = (mode, object_id)
+    if index_records != tree_records:
+        raise RuntimeAdmissionError("production checkout index does not exactly match the release commit")
+    flag_records = [record for record in _git_bytes(root, "ls-files", "-v", "-z").split(b"\0") if record]
+    if len(flag_records) != len(tree_records) or any(record[:2] != b"H " for record in flag_records):
+        raise RuntimeAdmissionError("production checkout index contains assume-unchanged or skip-worktree flags")
+    if _git_bytes(root, "ls-files", "--others", "--exclude-standard", "-z"):
         raise RuntimeAdmissionError("production evidence requires an entirely clean checkout")
+    for relative, (mode, object_id) in tree_records.items():
+        logical = os.fsdecode(relative)
+        if Path(logical).is_absolute() or ".." in Path(logical).parts:
+            raise RuntimeAdmissionError("release commit contains an unsafe tracked path")
+        payload = _read_exact_tracked_blob(root / logical, mode)
+        if _git_blob_hash(payload, object_format) != object_id:
+            raise RuntimeAdmissionError(f"tracked working-tree bytes differ from release commit: {logical}")
+    if _git(root, "rev-parse", "HEAD") != head:
+        raise RuntimeAdmissionError("production checkout HEAD changed during exact-tree validation")
     return head
+
+
+@contextmanager
+def exact_commit_snapshot(root: Path, commit: str) -> Iterator[Path]:
+    """Materialize local validation inputs solely from one immutable Git commit."""
+
+    if re.fullmatch(r"[0-9a-f]{40,64}", commit) is None:
+        raise RuntimeAdmissionError("exact snapshot commit is invalid")
+    with tempfile.TemporaryDirectory(prefix="p42-exact-release-") as directory:
+        archive_path = Path(directory) / "release.tar"
+        completed = subprocess.run(
+            ["git", "-C", str(root), "archive", "--format=tar", "-o", str(archive_path), commit],
+            text=True, capture_output=True, check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeAdmissionError(
+                f"could not materialize exact release snapshot: {completed.stderr.strip()}"
+            )
+        snapshot = Path(directory) / "checkout"
+        snapshot.mkdir(mode=0o700)
+        try:
+            with tarfile.open(archive_path, mode="r:") as archive:
+                archive.extractall(snapshot, filter="data")
+        except (OSError, tarfile.TarError) as exc:
+            raise RuntimeAdmissionError("could not extract exact release snapshot") from exc
+        yield snapshot
 
 
 def validate_clean_source(root: Path, dossier: Mapping[str, Any]) -> None:
@@ -313,6 +456,61 @@ def host_signing_key_fingerprint(path: str | Path) -> str:
     return ssh_public_key_fingerprint(completed.stdout)
 
 
+def _operator_profile_hash(profile: Mapping[str, Any]) -> str:
+    return sha256_bytes(canonical_json(dict(profile)).encode("utf-8"))
+
+
+def registered_operator_identity(
+    root: Path,
+    dossier: Mapping[str, Any],
+    *,
+    operator_id: str,
+    key_fingerprint: str,
+    host: Mapping[str, str],
+) -> dict[str, Any]:
+    """Resolve one operator profile from every exact-R board manifest."""
+
+    if not isinstance(operator_id, str) or re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,127}", operator_id) is None:
+        raise RuntimeAdmissionError("operator ID must be an externally registered canonical identifier")
+    profile_hash: str | None = None
+    paths: list[str] = []
+    for board in dossier.get("boards", []):
+        relative = board.get("release_manifest_path") if isinstance(board, Mapping) else None
+        if not isinstance(relative, str):
+            raise RuntimeAdmissionError("release dossier lacks an exact-R operator registry path")
+        manifest_path = _safe_repo_path(root, relative, "operator registry manifest")
+        manifest = load_manifest(manifest_path.parent)
+        verifier = manifest.get("verifier")
+        admission = verifier.get("admission") if isinstance(verifier, Mapping) else None
+        profiles = admission.get("trusted_hosts") if isinstance(admission, Mapping) else None
+        matches = [
+            profile for profile in profiles or []
+            if isinstance(profile, Mapping) and profile.get("operator_id") == operator_id
+        ]
+        if len(matches) != 1:
+            raise RuntimeAdmissionError("operator ID is not uniquely registered in every exact-R manifest")
+        profile = matches[0]
+        public_key = profile.get("public_key")
+        if not isinstance(public_key, str) or ssh_public_key_fingerprint(public_key) != key_fingerprint:
+            raise RuntimeAdmissionError("registered operator key does not match the host-set signing key")
+        for field in ("label", "architecture", "os", "libc_name", "libc_version"):
+            if profile.get(field) != host.get(field):
+                raise RuntimeAdmissionError("registered operator host profile does not match observed host metadata")
+        observed_hash = _operator_profile_hash(profile)
+        if profile_hash is None:
+            profile_hash = observed_hash
+        elif profile_hash != observed_hash:
+            raise RuntimeAdmissionError("operator registration differs across exact-R manifests")
+        paths.append(relative)
+    if not paths or profile_hash is None:
+        raise RuntimeAdmissionError("operator registration has no exact-R manifest coverage")
+    return {
+        "operator_id": operator_id,
+        "profile_sha256": profile_hash,
+        "registry_paths": paths,
+    }
+
+
 def build_host_evidence_from_pair(
     fixture: Mapping[str, Any],
     reports: Sequence[Mapping[str, Any]],
@@ -401,6 +599,7 @@ def build_host_set(
     fixture_sha256: str,
     report_paths: Sequence[Path],
     signing_key: str | Path,
+    operator_id: str,
     host: Mapping[str, str] | None = None,
     runtime: str = "docker",
     generated_at_utc: str | None = None,
@@ -425,6 +624,14 @@ def build_host_set(
         raise RuntimeAdmissionError("collector requires exactly two runtime reports for each all-ten board")
     timestamp = generated_at_utc or _utc_now()
     host_info = dict(host or detect_host())
+    key_fingerprint = host_signing_key_fingerprint(signing_key)
+    operator = registered_operator_identity(
+        root,
+        dossier,
+        operator_id=operator_id,
+        key_fingerprint=key_fingerprint,
+        host=host_info,
+    )
     artifacts: list[tuple[str, dict[str, Any]]] = []
     board_index: list[dict[str, Any]] = []
     for fixture in fixtures["fixtures"]:
@@ -475,10 +682,13 @@ def build_host_set(
             "board_set_sha256": fixtures["board_set"]["sha256"],
         },
         "host": host_info,
+        "operator": operator,
         "boards": board_index,
     }
     host_set["host_set_hash"] = sha256_bytes(canonical_json(host_set).encode("utf-8"))
     public_key, fingerprint, signature = _sign_hash(host_set["host_set_hash"], signing_key)
+    if fingerprint != key_fingerprint:
+        raise RuntimeAdmissionError("host signing key changed during host-set construction")
     host_set["attestation"] = {
         "type": "ssh-ed25519",
         "namespace": HOST_SIGNATURE_NAMESPACE,
@@ -499,6 +709,7 @@ def build_host_set(
         expected_host=host_info,
         expected_key_fingerprint=fingerprint,
         expected_runtime=runtime,
+        expected_operator=operator,
     )
     return artifacts, host_set
 
@@ -515,6 +726,7 @@ def validate_host_set(
     expected_host: Mapping[str, str],
     expected_key_fingerprint: str,
     expected_runtime: str,
+    expected_operator: Mapping[str, Any] | None = None,
     runtime_report_validator: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> None:
     """Validate a host set against independently pinned release and fixture inputs."""
@@ -560,6 +772,19 @@ def validate_host_set(
         raise RuntimeAdmissionError("host-set fixture binding does not match the independent fixture input")
     if index.get("host") != expected_host:
         raise RuntimeAdmissionError("host-set identity does not match the requested admission host")
+    operator = index.get("operator")
+    if (
+        not isinstance(operator, Mapping)
+        or set(operator) != {"operator_id", "profile_sha256", "registry_paths"}
+        or not isinstance(operator.get("operator_id"), str)
+        or not DIGEST_RE.fullmatch(operator.get("profile_sha256") or "")
+        or not isinstance(operator.get("registry_paths"), list)
+        or len(operator["registry_paths"]) != 10
+        or len(set(operator["registry_paths"])) != 10
+    ):
+        raise RuntimeAdmissionError("host-set operator registration binding is invalid")
+    if expected_operator is not None and canonical_json(operator) != canonical_json(expected_operator):
+        raise RuntimeAdmissionError("host-set operator does not match the external registration")
     if attestation.get("key_fingerprint") != expected_key_fingerprint:
         raise RuntimeAdmissionError("host-set signer does not match the requested admission key")
 
@@ -734,6 +959,7 @@ def reconcile_published_host_set(
     expected_host: Mapping[str, str],
     expected_key_fingerprint: str,
     expected_runtime: str,
+    expected_operator: Mapping[str, Any] | None = None,
     runtime_report_validator: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Accept an existing bundle only after complete independent revalidation."""
@@ -845,6 +1071,7 @@ def reconcile_published_host_set(
             expected_host=expected_host,
             expected_key_fingerprint=expected_key_fingerprint,
             expected_runtime=expected_runtime,
+            expected_operator=expected_operator,
             runtime_report_validator=runtime_report_validator,
         )
         for name, descriptor, opened_generation in held_children:
@@ -880,6 +1107,7 @@ def validate_matrix_host_set_bundles(
     fixtures: Mapping[str, Any],
     dossier_sha256: str,
     fixture_sha256: str,
+    trusted_operator_profiles: Mapping[str, Mapping[str, Any]],
     runtime_report_validator: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> None:
     """Bind every matrix host to one independently pinned signed all-ten bundle."""
@@ -915,6 +1143,15 @@ def validate_matrix_host_set_bundles(
         execution = evidence.get("execution")
         if not isinstance(expected_host, Mapping) or not isinstance(attestation, Mapping) or not isinstance(execution, Mapping):
             raise RuntimeAdmissionError("host-set binding matrix evidence is incomplete")
+        fingerprint = str(attestation.get("key_fingerprint"))
+        profile = trusted_operator_profiles.get(fingerprint)
+        if not isinstance(profile, Mapping):
+            raise RuntimeAdmissionError("matrix host signer has no external operator registration")
+        expected_operator = {
+            "operator_id": profile.get("operator_id"),
+            "profile_sha256": _operator_profile_hash(profile),
+            "registry_paths": [board["release_manifest_path"] for board in dossier["boards"]],
+        }
         index = reconcile_published_host_set(
             bundle_path,
             root=root,
@@ -923,8 +1160,9 @@ def validate_matrix_host_set_bundles(
             dossier_sha256=dossier_sha256,
             fixture_sha256=fixture_sha256,
             expected_host={key: str(value) for key, value in expected_host.items()},
-            expected_key_fingerprint=str(attestation.get("key_fingerprint")),
+            expected_key_fingerprint=fingerprint,
             expected_runtime=str(execution.get("runtime")),
+            expected_operator=expected_operator,
             runtime_report_validator=runtime_report_validator,
         )
         if index.get("host_set_hash") != expected_hash:

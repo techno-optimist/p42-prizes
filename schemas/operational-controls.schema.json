@@ -1,16 +1,24 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://p42.xyz/schemas/operational-controls-v1.json",
-  "title": "P42 Gate 2 Operational Controls Evidence v1",
+  "$id": "https://p42.xyz/schemas/operational-controls-v2.json",
+  "title": "P42 Gate 2 Operational Controls Evidence v1 historical or v2 production",
   "type": "object",
   "required": ["schema_version", "evidence_id", "window_started_at_utc", "window_completed_at_utc", "release_binding", "controls", "report_signer", "final_gate_claim", "operational_controls_hash", "report_signature"],
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "schema_version": { "const": "p42-operational-controls/v2" } } },
+      "then": { "required": ["production_binding"] },
+      "else": { "not": { "required": ["production_binding"] } }
+    }
+  ],
   "properties": {
-    "schema_version": { "const": "p42-operational-controls/v1" },
+    "schema_version": { "enum": ["p42-operational-controls/v1", "p42-operational-controls/v2"] },
     "evidence_id": { "type": "string", "minLength": 1 },
     "window_started_at_utc": { "type": "string", "format": "date-time" },
     "window_completed_at_utc": { "type": "string", "format": "date-time" },
     "release_binding": { "$ref": "#/$defs/releaseBinding" },
+    "production_binding": { "$ref": "#/$defs/productionBinding" },
     "controls": {
       "type": "array",
       "minItems": 11,
@@ -95,7 +103,7 @@
       "additionalProperties": false,
       "properties": {
         "chain_id": { "type": "integer", "minimum": 1 },
-        "contract_addresses": { "type": "array", "minItems": 5, "uniqueItems": true, "items": { "$ref": "#/$defs/address" } },
+        "contract_addresses": { "type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true, "items": { "$ref": "#/$defs/address" } },
         "problem_id": { "type": "string", "minLength": 1 }
       }
     },
@@ -148,7 +156,7 @@
         "chain_bytecode_artifact": { "$ref": "#/$defs/artifact" }
       }
     },
-    "releaseBinding": {
+    "legacyReleaseBinding": {
       "type": "object",
       "required": ["repository_uri", "git_commit", "network", "chain_id", "deployment_manifest", "configuration_artifact", "contracts"],
       "additionalProperties": false,
@@ -160,6 +168,72 @@
         "deployment_manifest": { "$ref": "#/$defs/artifact" },
         "configuration_artifact": { "$ref": "#/$defs/artifact" },
         "contracts": { "type": "array", "minItems": 5, "maxItems": 5, "items": { "$ref": "#/$defs/contract" } }
+      }
+    },
+    "canonicalContract": {
+      "type": "object",
+      "required": ["topology_key", "name", "address", "runtime_bytecode_hash", "manifest_runtime_code_hash", "source_artifact", "runtime_bytecode_artifact", "chain_bytecode_artifact"],
+      "additionalProperties": false,
+      "properties": {
+        "topology_key": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "address": { "$ref": "#/$defs/address" },
+        "runtime_bytecode_hash": { "$ref": "#/$defs/hash" },
+        "manifest_runtime_code_hash": { "type": "string", "pattern": "^0x[a-fA-F0-9]{64}$" },
+        "source_artifact": { "$ref": "#/$defs/artifact" },
+        "runtime_bytecode_artifact": { "$ref": "#/$defs/artifact" },
+        "chain_bytecode_artifact": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "canonicalReleaseBinding": {
+      "type": "object",
+      "required": ["binding_version", "repository_uri", "deployment_commit", "git_commit", "network", "chain_id", "canonical_topology", "release_capsule", "capsule_rebuild_attestation", "deployment_manifest", "configuration_artifact", "contracts"],
+      "additionalProperties": false,
+      "properties": {
+        "binding_version": { "const": "p42-release-binding/v2" },
+        "repository_uri": { "const": "https://github.com/techno-optimist/p42-prizes" },
+        "deployment_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "git_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "network": { "const": "base-sepolia" },
+        "chain_id": { "const": 84532 },
+        "canonical_topology": { "$ref": "#/$defs/artifact" },
+        "release_capsule": { "$ref": "#/$defs/artifact" },
+        "capsule_rebuild_attestation": { "$ref": "#/$defs/artifact" },
+        "deployment_manifest": { "$ref": "#/$defs/artifact" },
+        "configuration_artifact": { "$ref": "#/$defs/artifact" },
+        "contracts": { "type": "array", "minItems": 47, "maxItems": 47, "items": { "$ref": "#/$defs/canonicalContract" } }
+      }
+    },
+    "releaseBinding": {
+      "oneOf": [{ "$ref": "#/$defs/legacyReleaseBinding" }, { "$ref": "#/$defs/canonicalReleaseBinding" }]
+    },
+    "productionContractIdentity": {
+      "type": "object",
+      "required": ["topology_key", "name", "address", "runtime_bytecode_hash", "manifest_runtime_code_hash"],
+      "additionalProperties": false,
+      "properties": {
+        "topology_key": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "address": { "$ref": "#/$defs/address" },
+        "runtime_bytecode_hash": { "$ref": "#/$defs/hash" },
+        "manifest_runtime_code_hash": { "type": "string", "pattern": "^0x[a-fA-F0-9]{64}$" }
+      }
+    },
+    "productionBinding": {
+      "type": "object",
+      "required": ["deployment_commit", "capsule_digest", "slate_digest", "config_digest", "release_binding_digest", "board_set_digest", "timelock_address", "treasury_address", "resolver_quorum_address", "contracts"],
+      "additionalProperties": false,
+      "properties": {
+        "deployment_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "capsule_digest": { "$ref": "#/$defs/hash" },
+        "slate_digest": { "$ref": "#/$defs/hash" },
+        "config_digest": { "$ref": "#/$defs/hash" },
+        "release_binding_digest": { "$ref": "#/$defs/hash" },
+        "board_set_digest": { "$ref": "#/$defs/hash" },
+        "timelock_address": { "$ref": "#/$defs/address" },
+        "treasury_address": { "$ref": "#/$defs/address" },
+        "resolver_quorum_address": { "$ref": "#/$defs/address" },
+        "contracts": { "type": "array", "minItems": 47, "maxItems": 47, "items": { "$ref": "#/$defs/productionContractIdentity" } }
       }
     }
   }

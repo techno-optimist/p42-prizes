@@ -79,8 +79,13 @@ const ADMISSION_MATRIX_DIGEST = `sha256:${"c".repeat(64)}`;
 
 describe("production deployment runbook command contract", () => {
   it("documents the exact executable multi-board production mode", () => {
+    const packageJson = JSON.parse(readFileSync(resolve(REPO_ROOT, "contracts/package.json"), "utf8"));
     const executable = readFileSync(
       resolve(REPO_ROOT, "contracts/scripts/deploy-base-sepolia.js"),
+      "utf8",
+    );
+    const phasedDeployment = readFileSync(
+      resolve(REPO_ROOT, "contracts/scripts/multiboard-deployment-plan.js"),
       "utf8",
     );
     const runbooks = ["docs/DEPLOYMENT.md", "docs/MULTIBOARD_CEREMONY.md"].map((path) => ({
@@ -92,6 +97,11 @@ describe("production deployment runbook command contract", () => {
     assert.match(executable, /assertObjectiveVerifierCapsuleBinding\(ethersLibrary, capsule, slate, objectiveVerifierArtifact\)/);
     assert.doesNotMatch(executable, /productionReleaseInputs\(ethers,/);
     assert.match(executable, /P42_EXPECTED_DEPLOYER_ADDRESS/);
+    assert.equal(
+      packageJson.scripts["reconcile:base-sepolia"],
+      "hardhat compile && node scripts/reconcile-base-sepolia.js",
+      "reconciliation must compile exact checkout artifacts before loading them",
+    );
     assert.match(executable, /readManifestOutputReservation\(reservationIdentity\)/);
     assert.match(executable, /factoryCreation:\s*\{/);
     assert.match(executable, /transactionHash:\s*durable\.expectedHash/);
@@ -99,6 +109,13 @@ describe("production deployment runbook command contract", () => {
     assert.match(executable, /primaryOperatorId:\s*rpcEvidence\.primaryOperatorId/);
     assert.match(executable, /secondaryOperatorId:\s*rpcEvidence\.secondaryOperatorId/);
     assert.doesNotMatch(executable, /^\s+primaryOperatorId,\s*$/m);
+    const finalJournalReservation = executable.indexOf("reserveGovernanceOperationJournal(path, journal);");
+    const firstDeploymentExecution = executable.indexOf("const executed = await executeSignedDeploymentPlan(");
+    assert.ok(finalJournalReservation > 0, "production path must reserve the exact final governance journal");
+    assert.ok(finalJournalReservation < firstDeploymentExecution, "final governance journal must be reserved before the first deployment transaction");
+    const incompleteFailure = phasedDeployment.indexOf("if (incomplete.length > 0)");
+    const reportedJournalDigest = phasedDeployment.indexOf("const journalSha256 = governanceOperationJournalFileDigest(journalPath);", incompleteFailure);
+    assert.ok(reportedJournalDigest > incompleteFailure, "partial governance progress must be hashed after every journal mutation");
     for (const journal of [
       "deployments/base-sepolia/p42-prizes.json.deployment-reservation.json",
       "deployments/base-sepolia/p42-prizes.json.deployment-reservation.json.lock",
@@ -150,11 +167,17 @@ describe("production deployment runbook command contract", () => {
       "P42_PRODUCTION_SLATE_PATH",
       "P42_SECONDARY_BASE_SEPOLIA_RPC_URL",
       "P42_SECONDARY_RPC_OPERATOR_ID",
+      "P42_ACTIVATION_RPC_OPERATOR_REGISTRY_PATH",
+      "P42_ACTIVATION_RPC_REGISTRY_TRUSTED_ROOT",
       "P42_EXPLORER_DOSSIER_PATH",
       "P42_EXPLORER_DOSSIER_SHA256",
       "P42_RELEASE_CAPSULE",
+      "P42_ROLE_ACCEPTANCE_CAPSULE_SHA256",
+      "P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_PATH",
+      "P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_SHA256",
       "P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES",
       "P42_ROLE_ACCEPTANCE_PACKET",
+      "P42_ROLE_ACCEPTANCE_PACKET_SHA256",
       "ETHERSCAN_API_KEY",
     ]) {
       assert.match(deploymentRunbook, new RegExp(requiredInput));

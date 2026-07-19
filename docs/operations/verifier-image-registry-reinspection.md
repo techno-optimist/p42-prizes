@@ -51,7 +51,7 @@ For an authenticated registry, set `P42_REINSPECTION_CREDENTIAL_FILE` to an
 owner-only (`0600`) canonical JSON file. Its exact closed shape is:
 
 ```json
-{"password":"...","registry_base":"ghcr.io/projectforty2/verifiers","username":"..."}
+{"password":"...","registry_base":"ghcr.io/techno-optimist/p42-prizes-verifiers","username":"..."}
 ```
 
 The credential file path and values are never passed to registry subprocesses.

@@ -109,7 +109,6 @@ export async function fundingActivationRunMain() {
     const manifest = loadManifestExact(manifestPath);
     const validatedAuthorization = runProductionAuthorizationValidator({
       python, repoRoot, authorizationPath, trustRegistryPath, artifactRoot, sp1SecurityReportPath,
-      chainRpcUrl: secondaryUrl,
     });
     const registryDigest = validatedAuthorization.value.artifacts?.activation_rpc_operator_registry?.sha256;
     const rpcRegistry = loadActivationRpcOperatorRegistry(
