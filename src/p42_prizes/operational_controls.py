@@ -17,6 +17,7 @@ from p42_prizes.legal import (
     _validate_release_binding,
     _validate_signature,
     build_attestation_context,
+    resolved_artifact_bytes,
 )
 from p42_prizes.governance import validate_production_binding
 from p42_prizes.verdict import canonical_json, sha256_bytes
@@ -137,10 +138,13 @@ def normalize_operational_controls(
         validate_production_binding(
             normalized.get("production_binding"), release, context, OperationalControlsError
         )
+        canonical_board_contracts = _canonical_board_contracts(release, context)
     elif "production_binding" in normalized:
         raise OperationalControlsError(
             "historical p42-operational-controls/v1 packets cannot carry production_binding"
         )
+    else:
+        canonical_board_contracts = None
 
     controls = normalized.get("controls")
     if not isinstance(controls, list):
@@ -181,6 +185,7 @@ def normalize_operational_controls(
             deployment_hash=deployment_hash,
             configuration_hash=configuration_hash,
             schema_version=schema_version,
+            canonical_board_contracts=canonical_board_contracts,
             context=context,
             seen_artifact_paths=seen_artifact_paths,
             seen_artifact_hashes=seen_artifact_hashes,
@@ -260,6 +265,7 @@ def _validate_control(
     deployment_hash: str,
     configuration_hash: str,
     schema_version: str,
+    canonical_board_contracts: Mapping[str, frozenset[str]] | None,
     context: AttestationValidationContext,
     seen_artifact_paths: set[str],
     seen_artifact_hashes: set[str],
@@ -291,7 +297,8 @@ def _validate_control(
     if executed_at < started_at or executed_at > completed_at:
         raise OperationalControlsError(f"{prefix}.executed_at_utc must fall within the evidence window")
     _validate_environment(
-        value.get("environment"), prefix, name, release, release_hash, deployment_hash, configuration_hash
+        value.get("environment"), prefix, name, release, release_hash, deployment_hash,
+        configuration_hash, canonical_board_contracts,
     )
     artifacts: dict[str, Mapping[str, Any]] = {}
     for field in ("test_artifact", "output_artifact"):
@@ -402,6 +409,7 @@ def _validate_environment(
     release_hash: str,
     deployment_hash: str,
     configuration_hash: str,
+    canonical_board_contracts: Mapping[str, frozenset[str]] | None,
 ) -> None:
     if not isinstance(value, dict):
         raise OperationalControlsError(f"{prefix}.environment must be an object")
@@ -423,19 +431,85 @@ def _validate_environment(
         session_domain = value.get("session_domain")
         if not isinstance(session_domain, dict):
             raise OperationalControlsError(f"{prefix}.environment.session_domain is required for session controls")
-        contract_addresses = sorted(contract["address"].casefold() for contract in release["contracts"])
+        problem_id = session_domain.get("problem_id")
+        if canonical_board_contracts is None:
+            expected_contracts = frozenset(
+                contract["address"].casefold() for contract in release["contracts"]
+            )
+            canonical_problem = isinstance(problem_id, str) and bool(problem_id.strip())
+        else:
+            canonical_problem = isinstance(problem_id, str) and problem_id in canonical_board_contracts
+            expected_contracts = canonical_board_contracts.get(problem_id, frozenset())
+        supplied_contracts = session_domain.get("contract_addresses")
+        normalized_contracts = (
+            [str(address).casefold() for address in supplied_contracts]
+            if isinstance(supplied_contracts, list)
+            else []
+        )
         if (
             session_domain.get("chain_id") != release["chain_id"]
-            or sorted(str(address).casefold() for address in session_domain.get("contract_addresses", [])) != contract_addresses
-            or not isinstance(session_domain.get("problem_id"), str)
-            or not session_domain["problem_id"].strip()
+            or not canonical_problem
+            or len(normalized_contracts) != len(expected_contracts)
+            or frozenset(normalized_contracts) != expected_contracts
         ):
             raise OperationalControlsError(
-                f"{prefix}.environment.session_domain must bind the release chain, every contract, and a problem_id"
+                f"{prefix}.environment.session_domain must bind the release chain, an exact canonical "
+                "board slug, and that board's registry/pool/ledger/submissions/challenges contracts"
             )
     unknown = sorted(set(value) - allowed)
     if unknown:
         raise OperationalControlsError(f"{prefix}.environment contains unknown field(s): {', '.join(unknown)}")
+
+
+def _canonical_board_contracts(
+    release: Mapping[str, Any],
+    context: AttestationValidationContext,
+) -> dict[str, frozenset[str]]:
+    deployment_bytes = resolved_artifact_bytes(
+        context,
+        release["deployment_manifest"],
+        prefix="report.release_binding.deployment_manifest",
+        error_type=OperationalControlsError,
+    )
+    try:
+        deployment = json.loads(deployment_bytes)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise OperationalControlsError(
+            "report.release_binding.deployment_manifest must contain canonical JSON"
+        ) from exc
+    problems = deployment.get("problems") if isinstance(deployment, dict) else None
+    contracts_by_key = {
+        contract["topology_key"]: contract["address"].casefold()
+        for contract in release["contracts"]
+    }
+    if not isinstance(problems, list) or len(problems) != 10:
+        raise OperationalControlsError(
+            "report.release_binding.deployment_manifest must define the canonical exact-ten boards"
+        )
+    registry = contracts_by_key.get("shared.registry")
+    result: dict[str, frozenset[str]] = {}
+    for board_number, problem in enumerate(problems, start=1):
+        slug = problem.get("problemSlug") if isinstance(problem, dict) else None
+        keys = (
+            "shared.registry",
+            f"board.{board_number}.pool",
+            f"board.{board_number}.ledger",
+            f"board.{board_number}.submissions",
+            f"board.{board_number}.challenges",
+        )
+        if (
+            not isinstance(slug, str)
+            or not slug
+            or slug in result
+            or registry is None
+            or any(key not in contracts_by_key for key in keys)
+        ):
+            raise OperationalControlsError(
+                "report.release_binding.deployment_manifest must map ten unique canonical board slugs "
+                "to complete release topology slots"
+            )
+        result[slug] = frozenset(contracts_by_key[key] for key in keys)
+    return result
 
 
 def _require_text(value: Any, prefix: str) -> str:

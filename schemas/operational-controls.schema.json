@@ -103,7 +103,7 @@
       "additionalProperties": false,
       "properties": {
         "chain_id": { "type": "integer", "minimum": 1 },
-        "contract_addresses": { "type": "array", "minItems": 5, "uniqueItems": true, "items": { "$ref": "#/$defs/address" } },
+        "contract_addresses": { "type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true, "items": { "$ref": "#/$defs/address" } },
         "problem_id": { "type": "string", "minLength": 1 }
       }
     },

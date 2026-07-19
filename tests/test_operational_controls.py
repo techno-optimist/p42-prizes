@@ -4,11 +4,13 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import jsonschema
 import pytest
 
-from attestation_helpers import AttestationFixture, attach_signatures
+from attestation_helpers import AttestationFixture, address, attach_signatures
+from legal_release_fixture import schema_valid_manifest_shell
 from p42_prizes.operational_controls import (
     ARTIFACT_ENVELOPE_SCHEMA_VERSION,
     EXECUTION_RUNNER_ROLE,
@@ -27,6 +29,18 @@ ROOT = Path(__file__).resolve().parents[1]
 SIGNED_AT = "2026-07-08T17:30:00Z"
 REPORT_SIGNED_AT = "2026-07-08T17:45:00Z"
 RUNNER_SIGNED_AT = "2026-07-08T17:00:00Z"
+CANONICAL_BOARD_SLUGS = (
+    "q6-intersecting-hypergraph",
+    "erdos-min-overlap",
+    "edges-vs-triangles",
+    "arithmetic-kakeya",
+    "autoconvolution-c1-upper",
+    "autoconvolution-c2-lower",
+    "distinct-subset-sums-a11",
+    "mertens-lp-ceiling-k12000",
+    "pnt-sparse-mertens-construction",
+    "hadamard-668-defect",
+)
 
 
 def _production_binding(fixture: AttestationFixture, release: dict) -> dict:
@@ -54,7 +68,23 @@ def valid_report(tmp_path: Path, *, legacy: bool = False) -> tuple[dict, Attesta
     schema_version = (
         LEGACY_OPERATIONAL_CONTROLS_SCHEMA_VERSION if legacy else OPERATIONAL_CONTROLS_SCHEMA_VERSION
     )
-    release = fixture.release_binding("base-mainnet") if legacy else fixture.canonical_release_binding()
+    if legacy:
+        release = fixture.release_binding("base-mainnet")
+    else:
+        def canonical_manifest() -> dict:
+            manifest = schema_valid_manifest_shell()
+            manifest["governance"]["timelock"] = address(
+                "base-sepolia-shared.timelock-P42MultisigTimelock"
+            )
+            return manifest
+
+        with patch("attestation_helpers.schema_valid_manifest_shell", side_effect=canonical_manifest):
+            release = fixture.canonical_release_binding(
+                problem_overrides={
+                    str(index): {"problemSlug": slug}
+                    for index, slug in enumerate(CANONICAL_BOARD_SLUGS, start=1)
+                }
+            )
     owner = fixture.identity(
         "operations-owner", "Avery Nakamura", "operational-control-owner"
     )
@@ -65,7 +95,20 @@ def valid_report(tmp_path: Path, *, legacy: bool = False) -> tuple[dict, Attesta
         "operations-execution-runner", "Jordan Mensah", EXECUTION_RUNNER_ROLE
     )
     release_hash = sha256_bytes(canonical_json(release).encode("utf-8"))
-    contracts = sorted(contract["address"].casefold() for contract in release["contracts"])
+    if legacy:
+        contracts = sorted(contract["address"].casefold() for contract in release["contracts"])
+        problem_id = "erdos-minimum-overlap"
+    else:
+        board_keys = {
+            "shared.registry", "board.2.pool", "board.2.ledger",
+            "board.2.submissions", "board.2.challenges",
+        }
+        contracts = sorted(
+            contract["address"].casefold()
+            for contract in release["contracts"]
+            if contract["topology_key"] in board_keys
+        )
+        problem_id = "erdos-min-overlap"
     controls = []
     for index, name in enumerate(sorted(REQUIRED_CONTROLS)):
         environment = {
@@ -81,7 +124,7 @@ def valid_report(tmp_path: Path, *, legacy: bool = False) -> tuple[dict, Attesta
             environment["session_domain"] = {
                 "chain_id": release["chain_id"],
                 "contract_addresses": contracts,
-                "problem_id": "erdos-minimum-overlap",
+                "problem_id": problem_id,
             }
         executed_at = f"2026-07-08T16:{20 + index:02d}:00Z"
         started_at = f"2026-07-08T16:{19 + index:02d}:00Z"
@@ -485,10 +528,52 @@ def test_default_production_registry_cannot_claim_gate_passed(tmp_path: Path) ->
 def test_rejects_different_problem_ids_across_session_controls(tmp_path: Path) -> None:
     report, fixture, registry = valid_report(tmp_path)
     control = next(item for item in report["controls"] if item["control"] == "session_revocation")
-    control["environment"]["session_domain"]["problem_id"] = "different-problem"
+    domain = control["environment"]["session_domain"]
+    domain["problem_id"] = "q6-intersecting-hypergraph"
+    board_one_keys = {
+        "shared.registry", "board.1.pool", "board.1.ledger",
+        "board.1.submissions", "board.1.challenges",
+    }
+    domain["contract_addresses"] = sorted(
+        contract["address"].casefold()
+        for contract in report["release_binding"]["contracts"]
+        if contract["topology_key"] in board_one_keys
+    )
     _resign(control)
     _resign_report(report)
     with pytest.raises(OperationalControlsError, match="one identical problem_id"):
+        normalize(report, fixture, registry)
+
+
+@pytest.mark.parametrize("attack", ["typo", "cross_board_slug", "cross_board_contract"])
+def test_rejects_noncanonical_or_cross_board_session_scope(
+    tmp_path: Path, attack: str
+) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    control = next(
+        item for item in report["controls"]
+        if item["control"] == "chain_contract_problem_scope_binding"
+    )
+    domain = control["environment"]["session_domain"]
+    release = report["release_binding"]
+    if attack == "typo":
+        domain["problem_id"] = "erdos-min-overlapp"
+    elif attack == "cross_board_slug":
+        domain["problem_id"] = "q6-intersecting-hypergraph"
+    else:
+        board_one_pool = next(
+            contract["address"] for contract in release["contracts"]
+            if contract["topology_key"] == "board.1.pool"
+        )
+        board_two_pool = next(
+            contract["address"] for contract in release["contracts"]
+            if contract["topology_key"] == "board.2.pool"
+        )
+        domain["contract_addresses"].remove(board_two_pool.casefold())
+        domain["contract_addresses"].append(board_one_pool)
+    _resign(control)
+    _resign_report(report)
+    with pytest.raises(OperationalControlsError, match="exact canonical board slug"):
         normalize(report, fixture, registry)
 
 
