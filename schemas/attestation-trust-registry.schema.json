@@ -55,11 +55,13 @@
             "p42-governance-signoff/v1",
             "p42-governance-signoff/v2",
             "p42-incident-drill/v1",
+            "p42-incident-drill/v2",
             "p42-adversarial-testnet/v1",
             "p42-adversarial-testnet/v2",
             "p42-operational-controls/v1",
             "p42-operational-controls/v2",
             "p42-security-audit/v1",
+            "p42-security-audit/v2",
             "p42-runner-burst/v1",
             "p42-math-review/v1",
             "p42-math-review/v2",
@@ -113,6 +115,41 @@
                   "operational-control-owner",
                   "operational-controls-report-signer",
                   "operational-control-execution-runner"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "attestation_class": { "const": "p42-security-audit/v2" }
+            },
+            "required": ["attestation_class"]
+          },
+          "then": {
+            "properties": {
+              "signer_role": {
+                "enum": ["external-security-auditor", "security-owner"]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "attestation_class": { "const": "p42-incident-drill/v2" }
+            },
+            "required": ["attestation_class"]
+          },
+          "then": {
+            "properties": {
+              "signer_role": {
+                "enum": [
+                  "security-owner",
+                  "facilitator",
+                  "external-counsel",
+                  "external-disclosure-probe-operator"
                 ]
               }
             }

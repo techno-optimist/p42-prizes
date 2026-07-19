@@ -54,9 +54,33 @@ def _registry(attestation_class: str, signer_role: str) -> dict[str, object]:
             "p42-operational-controls/v2",
             "operational-control-execution-runner",
         ),
+        ("p42-security-audit/v2", "external-security-auditor"),
+        ("p42-security-audit/v2", "security-owner"),
+        ("p42-incident-drill/v2", "security-owner"),
+        ("p42-incident-drill/v2", "facilitator"),
+        ("p42-incident-drill/v2", "external-counsel"),
+        (
+            "p42-incident-drill/v2",
+            "external-disclosure-probe-operator",
+        ),
     ],
 )
 def test_current_gate_attestation_registrations_are_admissible(
+    attestation_class: str, signer_role: str
+) -> None:
+    jsonschema.Draft202012Validator(SCHEMA).validate(
+        _registry(attestation_class, signer_role)
+    )
+
+
+@pytest.mark.parametrize(
+    ("attestation_class", "signer_role"),
+    [
+        ("p42-security-audit/v1", "external-security-auditor"),
+        ("p42-incident-drill/v1", "facilitator"),
+    ],
+)
+def test_historical_v1_registrations_remain_admissible(
     attestation_class: str, signer_role: str
 ) -> None:
     jsonschema.Draft202012Validator(SCHEMA).validate(
@@ -71,6 +95,10 @@ def test_current_gate_attestation_registrations_are_admissible(
         ("p42-governance-signoff/v2", "multisig-signer:0x" + "A" * 40),
         ("p42-operational-controls/v2", "operations"),
         ("p42-operational-controls/v3", "operational-control-owner"),
+        ("p42-security-audit/v2", "auditor"),
+        ("p42-security-audit/v2", "facilitator"),
+        ("p42-incident-drill/v2", "incident-lead"),
+        ("p42-incident-drill/v2", "external-security-auditor"),
     ],
 )
 def test_current_gate_attestation_registrations_reject_substitution(

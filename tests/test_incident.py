@@ -19,6 +19,9 @@ from p42_prizes.incident import (
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
+LEGACY_INCIDENT_DRILL_ATTESTATION_CLASS = "p42-incident-drill/v1"
+
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -259,6 +262,67 @@ def test_incident_drill_rejects_unregistered_signer(tmp_path: Path) -> None:
     registry["registrations"] = registry["registrations"][:2]
 
     with pytest.raises(IncidentDrillError, match="not pre-registered"):
+        normalize(report, fixture, registry)
+
+
+def test_incident_drill_rejects_v1_authority_substitution_for_v2_report(
+    tmp_path: Path,
+) -> None:
+    report, fixture, _ = valid_drill_report(tmp_path)
+    identities = {
+        "security-owner": report["security_owner"],
+        "facilitator": report["facilitator"],
+        "external-counsel": report["external_counsel"],
+    }
+    for attestation in report["attestations"]:
+        role = attestation["signer_role"]
+        attestation.update(
+            _sign(
+                identities[role],
+                role,
+                LEGACY_INCIDENT_DRILL_ATTESTATION_CLASS,
+                report["drill_hash"],
+                attestation["signed_at_utc"],
+            )
+        )
+
+    probe_operator = report["disclosure_probe_operator"]
+    for receipt in report["bug_bounty"]["external_probe_receipts"]:
+        signature = receipt["operator_signature"]
+        receipt["operator_signature"] = _sign(
+            probe_operator,
+            DISCLOSURE_PROBE_ROLE,
+            LEGACY_INCIDENT_DRILL_ATTESTATION_CLASS,
+            receipt["receipt_hash"],
+            signature["signed_at_utc"],
+        )
+
+    signed_at_by_role = {
+        attestation["signer_role"]: attestation["signed_at_utc"]
+        for attestation in report["attestations"]
+    }
+    signers = [
+        (role, identity, signed_at_by_role[role])
+        for role, identity in identities.items()
+    ]
+    signers.append(
+        (
+            DISCLOSURE_PROBE_ROLE,
+            probe_operator,
+            report["bug_bounty"]["external_probe_receipts"][0]["operator_signature"][
+                "signed_at_utc"
+            ],
+        )
+    )
+    registry = fixture.trust_registry(
+        LEGACY_INCIDENT_DRILL_ATTESTATION_CLASS,
+        signers,
+    )
+
+    with pytest.raises(
+        IncidentDrillError,
+        match="not pre-registered for p42-incident-drill/v2",
+    ):
         normalize(report, fixture, registry)
 
 

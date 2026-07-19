@@ -20,7 +20,7 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 SECURITY_AUDIT_SCHEMA_VERSION = "p42-security-audit/v2"
-SECURITY_AUDIT_ATTESTATION_CLASS = "p42-security-audit/v1"
+SECURITY_AUDIT_ATTESTATION_CLASS = "p42-security-audit/v2"
 AUDITOR_ROLE = "external-security-auditor"
 SECURITY_OWNER_ROLE = "security-owner"
 REQUIRED_SCOPE = {

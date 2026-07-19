@@ -18,6 +18,7 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 
 AUDITOR_ROLE = "external-security-auditor"
 SECURITY_OWNER_ROLE = "security-owner"
+LEGACY_SECURITY_AUDIT_ATTESTATION_CLASS = "p42-security-audit/v1"
 
 
 def finding(finding_id: str, title: str, severity: str, disposition: str) -> dict:
@@ -170,6 +171,41 @@ def test_security_audit_rejects_untrusted_auditor(tmp_path: Path) -> None:
     registry["registrations"] = []
 
     with pytest.raises(SecurityAuditError, match="not pre-registered"):
+        normalize(report, fixture, registry)
+
+
+def test_security_audit_rejects_v1_authority_substitution_for_v2_report(
+    tmp_path: Path,
+) -> None:
+    report, fixture, _ = valid_security_audit(tmp_path)
+    auditor = report["auditor"]
+    security_owner = report["security_owner"]
+    report["auditor_signature"] = _sign(
+        auditor,
+        AUDITOR_ROLE,
+        LEGACY_SECURITY_AUDIT_ATTESTATION_CLASS,
+        report["audit_hash"],
+        auditor["signed_at_utc"],
+    )
+    report["security_owner_signature"] = _sign(
+        security_owner,
+        SECURITY_OWNER_ROLE,
+        LEGACY_SECURITY_AUDIT_ATTESTATION_CLASS,
+        report["audit_hash"],
+        security_owner["signed_at_utc"],
+    )
+    registry = fixture.trust_registry(
+        LEGACY_SECURITY_AUDIT_ATTESTATION_CLASS,
+        [
+            (AUDITOR_ROLE, auditor, auditor["signed_at_utc"]),
+            (SECURITY_OWNER_ROLE, security_owner, security_owner["signed_at_utc"]),
+        ],
+    )
+
+    with pytest.raises(
+        SecurityAuditError,
+        match="not pre-registered for p42-security-audit/v2",
+    ):
         normalize(report, fixture, registry)
 
 

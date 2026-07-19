@@ -22,7 +22,7 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 INCIDENT_DRILL_SCHEMA_VERSION = "p42-incident-drill/v2"
-INCIDENT_DRILL_ATTESTATION_CLASS = "p42-incident-drill/v1"
+INCIDENT_DRILL_ATTESTATION_CLASS = "p42-incident-drill/v2"
 DISCLOSURE_PROBE_ROLE = "external-disclosure-probe-operator"
 
 SEVERITIES = {"critical", "high", "medium", "low"}
