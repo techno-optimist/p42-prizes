@@ -55,9 +55,9 @@ const clone = structuredClone;
 const imageDossier = (slate) => {
   const verifierSourceCommit = "a".repeat(40);
   const body = {
-    schema_version: "p42-verifier-image-release/v2",
+    schema_version: "p42-verifier-image-release/v3",
     published_at_utc: "2026-07-11T00:00:00Z",
-    identity_model: "p42-verifier-source-release-config/v1",
+    identity_model: "p42-verifier-source-release-config/v2",
     verifier_source_commit: verifierSourceCommit,
     verifier_source_archive_digest: digest("source-archive"),
     release_config_commit: slate.sourceCommit,
@@ -247,6 +247,10 @@ describe("exact-ten production release slate", () => {
       () => validateVerifierImageReleaseDossier({ schema_version: "p42-verifier-image-release/v1" }),
       /keys mismatch|schema is invalid/,
     );
+    const legacy = clone(dossier);
+    legacy.schema_version = "p42-verifier-image-release/v2";
+    legacy.identity_model = "p42-verifier-source-release-config/v1";
+    assert.throws(() => validateVerifierImageReleaseDossier(legacy), /schema is invalid/);
     for (const mutate of [
       (value) => { value.release_config_commit = "c".repeat(40); },
       (value) => { value.boards[0].platform_manifests[0].labels["org.opencontainers.image.revision"] = value.release_config_commit; },

@@ -505,7 +505,7 @@ def test_finalize_adopts_digest_only_release_commit_without_rebuilding(monkeypat
             return completed(argv, RELEASE_COMMIT + "\n")
         return completed(argv, "")
 
-    output = tmp_path / "release-v2.json"
+    output = tmp_path / "release-v3.json"
     dossier = release.finalize_release_dossier(
         root=ROOT, journal_path=journal_path,
         release_config_commit=RELEASE_COMMIT, output=output, runner=runner,

@@ -275,9 +275,9 @@ def _validate_runtime_release_snapshot(
         "schema_version", "file_sha256", "dossier_hash", "verifier_source_commit",
         "release_config_commit", "publication_journal_hash",
     }:
-        raise ProductionRuntimeConfigError("runtime release lacks an exact verifier-image v2 binding")
-    if image_release.get("schema_version") != "p42-verifier-image-release/v2":
-        raise ProductionRuntimeConfigError("production runtime requires verifier image release v2")
+        raise ProductionRuntimeConfigError("runtime release lacks an exact verifier-image v3 binding")
+    if image_release.get("schema_version") != "p42-verifier-image-release/v3":
+        raise ProductionRuntimeConfigError("production runtime requires verifier image release v3")
     for field in ("file_sha256", "dossier_hash", "publication_journal_hash"):
         _require_digest(image_release.get(field), f"verifier image release {field}")
     for field in ("verifier_source_commit", "release_config_commit"):

@@ -136,7 +136,7 @@ validator accepts it.
 
 The canonical contract preparation, offline verification, and production
 deployment paths reject the historical `p42-verifier-image-release/v1` shape.
-They consume the exact canonical `p42-verifier-image-release/v2` dossier and
+They consume the exact canonical `p42-verifier-image-release/v3` dossier and
 invoke `admit-release-ready`, binding its independently pinned raw
 bytes, `dossier_hash`, verifier-source commit, release-config commit, final
 manifest hashes, ten-board order, OCI labels, and immutable index digests. It

@@ -116,7 +116,7 @@ def _artifact(evidence_root: Path, *, release_commit: str = COMMIT_R) -> dict:
         "status": "finalized",
         "release_ready": True,
         "verifier_image_release": {
-            "schema_version": "p42-verifier-image-release/v2",
+            "schema_version": "p42-verifier-image-release/v3",
             "file_sha256": dossier_file_sha256,
             "dossier_hash": DIGEST_B,
             "verifier_source_commit": COMMIT_S,
@@ -225,6 +225,7 @@ def test_executor_config_does_not_reread_manifests_after_release_validation(
     "mutation, message",
     [
         (lambda value: value.update(release_ready=False), "not finalized and release-ready"),
+        (lambda value: value["verifier_image_release"].update(schema_version="p42-verifier-image-release/v2"), "requires verifier image release v3"),
         (lambda value: value["boards"].pop(), "ordered canonical exact-ten"),
         (lambda value: value["boards"].reverse(), "ordered canonical exact-ten"),
         (lambda value: value["boards"][0].update(slug=value["boards"][1]["slug"]), "ordered canonical exact-ten"),

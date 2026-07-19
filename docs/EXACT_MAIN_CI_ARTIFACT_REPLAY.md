@@ -1,5 +1,79 @@
 # Exact-main CI artifact replay
 
+## Current successful `main` runs (v2)
+
+`scripts/replay_current_main_ci_artifacts.py` is the bounded current-run path.
+It does not modify or regenerate the historical v1 generator or receipt. The
+operator supplies an explicit GitHub `owner/name`, successful push run ID,
+exact lowercase 40-hex `main` SHA, extracted artifact root, local source Git
+checkout containing that SHA, and an offline GitHub REST capture.
+
+The capture is a JSON object with exactly `capturedAt`, `run`, `jobs`, and
+`artifacts`. `run` is the REST workflow-run object. `jobs` and `artifacts` are
+the fully paginated REST response objects, including their `total_count`
+fields. Capture can be performed separately with authenticated tooling, but
+the replay CLI itself makes no network calls and tests use fixtures only. The
+run must use pinned workflow ID `310385148`, and the jobs page must contain
+exactly the four application gates, two SP1 producers, and the reproducibility
+comparator, all successful.
+
+Capture all three fully paginated REST records before downloading or extracting
+artifacts:
+
+```bash
+RUN_ID=30000000001
+CAPTURE_DIR=/secure/capture
+install -d -m 700 "$CAPTURE_DIR"
+gh api "repos/techno-optimist/p42-prizes/actions/runs/$RUN_ID" > "$CAPTURE_DIR/run.json"
+gh api --paginate "repos/techno-optimist/p42-prizes/actions/runs/$RUN_ID/jobs?per_page=100" > "$CAPTURE_DIR/jobs-pages.json"
+gh api --paginate "repos/techno-optimist/p42-prizes/actions/runs/$RUN_ID/artifacts?per_page=100" > "$CAPTURE_DIR/artifact-pages.json"
+jq -n \
+  --arg capturedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --slurpfile run "$CAPTURE_DIR/run.json" \
+  --slurpfile jobPages "$CAPTURE_DIR/jobs-pages.json" \
+  --slurpfile artifactPages "$CAPTURE_DIR/artifact-pages.json" \
+  '{capturedAt:$capturedAt,run:$run[0],jobs:{total_count:($jobPages|map(.total_count)|max),jobs:($jobPages|map(.jobs)|add)},artifacts:{total_count:($artifactPages|map(.total_count)|max),artifacts:($artifactPages|map(.artifacts)|add)}}' \
+  > "$CAPTURE_DIR/github-api.json"
+chmod 600 "$CAPTURE_DIR"/*.json
+```
+
+The tool rejects pull-request and non-`main` runs, foreign/fork heads, SHA or
+run-ID drift, non-successful or incomplete runs, partial jobs/artifact pages,
+unfinished or failed jobs, expired artifacts, duplicate IDs, and artifact
+records attributed to another run. It derives the expected names from the five
+published validated artifact prefixes, the two fixed Ubuntu runner images, and
+the requested run ID. Caller-supplied artifact names and IDs become receipt
+data only after that derivation and API-record cross-check. The extracted root
+must contain exactly those ten directories and each directory must have its
+fixed file inventory.
+
+Replay uses the historical tool's hostile no-follow snapshots, stable reads,
+pairwise byte comparison, semantic verifier launcher, and non-overwriting
+publication helper. Verifier and candidate-source bytes are materialized from
+the exact requested commit with `git show`. The output validates against the
+closed v2 schema and `receiptHash` covers canonical JSON with that field
+removed.
+
+```bash
+python3 scripts/replay_current_main_ci_artifacts.py \
+  --repository techno-optimist/p42-prizes \
+  --run-id 30000000001 \
+  --main-sha 0123456789abcdef0123456789abcdef01234567 \
+  --artifact-root /secure/capture/extracted \
+  --github-capture /secure/capture/github-api.json \
+  --source-repo /path/to/p42-prizes \
+  --output /secure/receipts/exact-main-ci-artifact-replay-30000000001-v2.json
+```
+
+The retained GitHub artifact digest describes the downloaded ZIP archive.
+Because this interface accepts an extracted root rather than retained ZIP
+bytes, v2 does not claim to recompute that archive digest. It binds the capture
+file hash and independently hashes every extracted file and directory. It also
+does not claim a GitHub signature, independent operator, non-x86 execution,
+candidate promotion, or any protocol/gate mutation.
+
+## Historical fixed run (v1)
+
 `scripts/replay_exact_main_ci_artifacts.py` productizes the offline replay of the
 ten validated SP1 artifact directories downloaded from GitHub Actions run
 [`29645758684`](https://github.com/techno-optimist/p42-prizes/actions/runs/29645758684).

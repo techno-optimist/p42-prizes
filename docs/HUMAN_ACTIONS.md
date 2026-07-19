@@ -91,21 +91,25 @@ problem requirement.
 
 ## Exact Blockers At This Snapshot
 
-- Portal checkpoint database upgrade: source now requires a durably pinned
+- Portal checkpoint database upgrade: the live unfunded Render portal completed
+  the PostgreSQL 18.4 schema/runtime-role cutover recorded in
+  `docs/evidence/portal-db-cutover-2026-07-18.json`. Source requires a durably pinned
   schema, migration-owner-controlled exact-read and transition functions, and a
   runtime role with no direct authority writes, `TRUNCATE`, or dangerous
   `SET ROLE` path. Local PostgreSQL 18.4 evidence includes 26 migration/tamper
   cases plus a 10,000-row, six-reader exact-read rehearsal with zero blocking
   PIDs observed while all readers are in flight, a serialized transition
   observably blocked only by held-reader PIDs, and a 2,000 ms post-barrier
-  completion ceiling; this is not production evidence. An operator must
-  run the reviewed fail-closed Render schema/runtime-role provisioning ceremony,
+  completion ceiling, and the retained live receipt binds the completed cutover
+  for that exact deploy. After any relevant source, provider, role, schema, or
+  restore change, an operator must rerun the reviewed fail-closed Render
+  schema/runtime-role provisioning ceremony,
   retain its non-secret self-hashed JSON receipt, inspect the complete
   membership graph,
   apply migration 002, run the production OID/function/ACL/privilege and
   concurrent-lock rehearsal, retain the redacted evidence tail, and confirm the
-  web child cannot read `P42_PORTAL_MIGRATION_DATABASE_URL`. This has not been
-  performed live; local PostgreSQL evidence authorizes no funding activation.
+  web child cannot read `P42_PORTAL_MIGRATION_DATABASE_URL`. The completed
+  unfunded cutover authorizes no funding activation.
 
 - Source control: the CI workflow is published, and the checked-in
   [`source-release receipt`](evidence/source-release-current.json) remains valid
@@ -117,8 +121,9 @@ problem requirement.
   reporting is also still unverified.
 - External audit: no commissioned auditor identity/engagement, signed report,
   remediation retest, or residual-risk acceptance for the frozen current source.
-- SP1 external runtime: the read-only source verifier and current 24-hour evidence
-  bind the pinned Succinct v6.1 descriptors and finalized runtime observations,
+- SP1 external runtime: the read-only source verifier and expired 24-hour evidence
+  bind a historical observation of the pinned Succinct v6.1 descriptors and
+  finalized runtime,
   but no independent audit has reviewed that upstream runtime or its deployment
   assumptions. A fresh dual-operator recapture must be bound at activation time;
   the checked-in observation cannot authorize future activation after expiry.

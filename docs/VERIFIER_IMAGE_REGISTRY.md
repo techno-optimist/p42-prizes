@@ -151,7 +151,7 @@ snapshots before accepting any individual board:
 PYTHONPATH=src python3 -m p42_prizes.cli admit-release-ready \
   --problem problems/<slug> \
   --matrix admission-matrix.json \
-  --image-dossier verifier-image-release-v2.json \
+  --image-dossier verifier-image-release-v3.json \
   --image-dossier-sha256 sha256:<independent-dossier-file-digest> \
   --publication-journal verifier-image-publication.journal.json \
   --publication-journal-sha256 sha256:<independent-journal-file-digest> \
