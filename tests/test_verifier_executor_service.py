@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 from pathlib import Path
 import socket
 import subprocess
 import sys
+import threading
 import time
 from types import SimpleNamespace
 
 import pytest
 
 from p42_prizes.runner_queue import MemorySnapshot
-from p42_prizes.verifier_executor import HostCapacity
+from p42_prizes.verifier_executor import BoardExecution, ExecutorPolicy, HostCapacity, VerifierExecutor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +23,96 @@ assert SPEC and SPEC.loader
 SERVICE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = SERVICE
 SPEC.loader.exec_module(SERVICE)
+
+
+class NoopDocker:
+    docker_host = "unix:///private/docker.sock"
+
+    def reconcile(self) -> None:
+        pass
+
+
+def test_resolver_request_id_passes_real_client_and_executor_validator(tmp_path: Path) -> None:
+    request_hash = "sha256:" + "7" * 64
+    script = (
+        "import {resolverRerunExecutorRequestId as id} from "
+        f"{json.dumps((ROOT / 'agent/resolver-rerun-executor.mjs').as_uri())};"
+        f"process.stdout.write(id({json.dumps(request_hash)},3));"
+    )
+    request_id = subprocess.check_output(["node", "--input-type=module", "--eval", script], text=True)
+    assert len(request_id) == 71 and request_id.startswith("sha256:")
+
+    board_id = "84532:2:hadamard-mini"
+    board = BoardExecution(
+        board_id, tmp_path / "queue.json", tmp_path / "transcripts", tmp_path / "stage",
+        tmp_path / "alerts", 4096, 60, {},
+    )
+    capacity = HostCapacity(MemorySnapshot(8192, 0, 0), 0, "boot", 0, 0)
+    executor = VerifierExecutor(
+        boards={board_id: board}, state_path=tmp_path / "state" / "executor.json",
+        docker=NoopDocker(), bridge_path=ROOT / "agent/runtime_bridge.py", python=sys.executable,
+        policy=ExecutorPolicy(reserve_memory_mb=0, max_swap_used_mb=0, memory_safety_factor=2),
+        boot_id_reader=lambda: "boot", capacity_reader=lambda: capacity,
+    )
+    socket_path = Path("/tmp") / f"p42-executor-{os.getpid()}-{time.time_ns()}.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(socket_path)); listener.listen(1)
+    errors: list[BaseException] = []
+
+    def serve_once() -> None:
+        try:
+            connection, _ = listener.accept()
+            with connection:
+                request = json.loads(connection.makefile("rb").readline())
+                result = executor.execute({
+                    "schema_version": request["schema_version"], "request_id": request["request_id"],
+                    "board_id": request["board_id"], "chain_timestamp": request["chain_timestamp"],
+                })
+                SERVICE.send_response(connection, {"ok": True, "result": result})
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            listener.close()
+            socket_path.unlink(missing_ok=True)
+
+    thread = threading.Thread(target=serve_once)
+    thread.start()
+    completed = subprocess.run([
+        sys.executable, str(ROOT / "agent/verifier-executor-client.py"),
+        "--socket", str(socket_path), "--board-id", board_id,
+        "--transcript-dir", str(tmp_path / "client-transcripts"), "--execute",
+        "--request-id", request_id, "--chain-timestamp", "1800000000",
+    ], text=True, capture_output=True, timeout=5, check=False)
+    thread.join(timeout=5)
+    assert not thread.is_alive() and not errors
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {"reason": "memory_guard_tripped", "selected_job_id": None}
+
+
+def test_real_client_emits_only_exact_request_bound_rerun_attestation_shape(tmp_path: Path) -> None:
+    socket_path = Path("/tmp") / f"p42-rerun-client-{os.getpid()}-{time.time_ns()}.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); listener.bind(str(socket_path)); listener.listen(1)
+    captured = []
+
+    def serve_once() -> None:
+        connection, _ = listener.accept()
+        with connection:
+            captured.append(json.loads(connection.makefile("rb").readline()))
+            SERVICE.send_response(connection, {"ok": True, "result": {"status": "pending"}})
+        listener.close(); socket_path.unlink(missing_ok=True)
+
+    thread = threading.Thread(target=serve_once); thread.start()
+    request_hash = "sha256:" + "a" * 64
+    completed = subprocess.run([
+        sys.executable, str(ROOT / "agent/verifier-executor-client.py"), "--socket", str(socket_path),
+        "--board-id", "84532:2:hadamard-mini", "--transcript-dir", str(tmp_path / "transcripts"),
+        "--rerun-attest", "--request-hash", request_hash,
+    ], text=True, capture_output=True, timeout=5, check=False)
+    thread.join(timeout=5)
+    assert completed.returncode == 0, completed.stderr
+    assert captured == [{"schema_version": "p42-verifier-executor-request/v1",
+                         "operation": "rerun-attest", "board_id": "84532:2:hadamard-mini",
+                         "request_hash": request_hash}]
 
 
 class FailingConnection:
@@ -33,6 +126,93 @@ class FailingConnection:
 @pytest.mark.parametrize("error", [BrokenPipeError("gone"), OSError("gone")])
 def test_disconnected_client_response_is_contained(error: OSError) -> None:
     assert SERVICE.send_response(FailingConnection(error), {"ok": True}) is False
+
+
+@pytest.mark.parametrize("operation", [
+    "bridge", "execute", "fence", "record-action", "terminalize-local",
+    "quarantine-canonical", "reconcile-terminal-alert",
+])
+def test_rerun_role_cannot_reach_operator_or_generic_queue_mutations(operation: str) -> None:
+    with pytest.raises(SERVICE.VerifierExecutorError, match="rerun executor IPC peer cannot invoke"):
+        SERVICE.authorize_peer_operation("rerun", {"operation": operation})
+
+
+@pytest.mark.parametrize("operation", sorted(SERVICE.RERUN_OPERATIONS))
+def test_operator_role_cannot_invoke_rerun_authority(operation: str) -> None:
+    with pytest.raises(SERVICE.VerifierExecutorError, match="operator executor IPC peer cannot invoke"):
+        SERVICE.authorize_peer_operation("operator", {"operation": operation})
+
+
+def test_rerun_role_accepts_only_exact_request_bound_shapes() -> None:
+    base = {"schema_version": "p42-verifier-executor-request/v1", "operation": "rerun-attest",
+            "board_id": "84532:2:hadamard-mini", "request_hash": "sha256:" + "a" * 64}
+    SERVICE.authorize_peer_operation("rerun", base)
+    for changed in ({**base, "receipt": {}}, {**base, "transcript": {}},
+                    {**base, "operation": "rerun-enqueue"}):
+        with pytest.raises(SERVICE.VerifierExecutorError, match="unexpected fields"):
+            SERVICE.authorize_peer_operation("rerun", changed)
+
+
+class FakeRerunAuthority:
+    def __init__(self, *, expiry="2100-01-01T00:00:00Z", status="queued", location="queue"):
+        self.expiry, self.status, self.location = expiry, status, location
+
+    def build_job(self, _board, request_hash, _uid):
+        return ({"expires_at_utc": self.expiry}, {
+            "job_id": "resolver-rerun:" + "1" * 64 + ":" + "2" * 64,
+            "source_event_hash": "sha256:" + "3" * 64,
+        })
+
+    def read_job(self, board, request_hash, uid):
+        signed, expected = self.build_job(board, request_hash, uid)
+        return signed, {**expected, "status": self.status}, self.location
+
+
+def rerun_execution_request(*, attempt=0, chain_timestamp="1800000000", request_hash=None):
+    return {
+        "schema_version": "p42-verifier-executor-request/v1", "operation": "rerun-execute",
+        "board_id": "84532:2:hadamard-mini", "request_hash": request_hash or "sha256:" + "a" * 64,
+        "attempt": attempt, "chain_timestamp": chain_timestamp,
+    }
+
+
+def test_rerun_admission_rejects_attempt_flood_expiry_and_terminal_state(tmp_path: Path) -> None:
+    board = BoardExecution(
+        "84532:2:hadamard-mini", tmp_path / "queue", tmp_path / "transcripts",
+        tmp_path / "stage", tmp_path / "alerts", 1024, 60, {},
+    )
+    valid = rerun_execution_request()
+    assert SERVICE.validate_rerun_execution_admission(
+        FakeRerunAuthority(), board, valid, 1001, now_epoch=1_800_000_000,
+    ) == ("resolver-rerun:" + "1" * 64 + ":" + "2" * 64, "sha256:" + "3" * 64)
+    for authority, request, message in (
+        (FakeRerunAuthority(), rerun_execution_request(attempt=SERVICE.MAX_RERUN_EXECUTION_ATTEMPTS), "ceiling"),
+        (FakeRerunAuthority(expiry="2020-01-01T00:00:00Z"), valid, "expired"),
+        (FakeRerunAuthority(expiry="2100-01-01T00:00:00Z"),
+         rerun_execution_request(chain_timestamp="4102444800"), "expired"),
+        (FakeRerunAuthority(status="succeeded"), valid, "terminal"),
+        (FakeRerunAuthority(status="queued", location="archive"), valid, "terminal"),
+    ):
+        with pytest.raises(SERVICE.VerifierExecutorError, match=message):
+            SERVICE.validate_rerun_execution_admission(
+                authority, board, request, 1001, now_epoch=1_800_000_000,
+            )
+
+
+def test_active_rerun_identity_collapses_attempts_but_not_boards_or_requests(tmp_path: Path) -> None:
+    first = BoardExecution("84532:2:hadamard-mini", tmp_path / "q1", tmp_path / "t1",
+                           tmp_path / "s1", tmp_path / "a1", 1024, 60, {})
+    second = BoardExecution("84532:3:other", tmp_path / "q2", tmp_path / "t2",
+                            tmp_path / "s2", tmp_path / "a2", 1024, 60, {})
+    attempt_zero = rerun_execution_request(attempt=0)
+    attempt_fifteen = rerun_execution_request(attempt=15)
+    key = SERVICE.active_execution_key("rerun", first, attempt_zero)
+    pending = {key}
+    assert SERVICE.active_execution_key("rerun", first, attempt_fifteen) in pending
+    assert SERVICE.active_execution_key(
+        "rerun", first, rerun_execution_request(request_hash="sha256:" + "b" * 64),
+    ) not in pending
+    assert SERVICE.active_execution_key("rerun", second, attempt_fifteen) not in pending
 
 
 class PartialFrameConnection:
@@ -241,12 +421,19 @@ def test_peer_board_map_requires_distinct_per_board_os_principals(tmp_path: Path
     )
 
     assert mapping == {2002: first, 2003: second}
+    users.update({"p42-resolver-rerun-2": 3002, "p42-resolver-rerun-3": 3003})
+    dual_mapping = SERVICE.build_peer_board_map(
+        {first.board_id: first, second.board_id: second}, "p42-operator-",
+        resolver_rerun_user_prefix="p42-resolver-rerun-",
+        user_lookup=lambda name: SimpleNamespace(pw_uid=users[name]),
+    )
+    assert dual_mapping == {2002: first, 2003: second, 3002: first, 3003: second}
     with pytest.raises(SERVICE.VerifierExecutorError, match="distinct non-root UIDs"):
         SERVICE.build_peer_board_map(
             {first.board_id: first, second.board_id: second}, "p42-operator-",
             user_lookup=lambda _name: SimpleNamespace(pw_uid=2002),
         )
-    with pytest.raises(SERVICE.VerifierExecutorError, match="missing per-board operator user"):
+    with pytest.raises(SERVICE.VerifierExecutorError, match="missing per-board executor client user"):
         SERVICE.build_peer_board_map(
             {first.board_id: first}, "p42-operator-", user_lookup=lambda _name: (_ for _ in ()).throw(KeyError()),
         )

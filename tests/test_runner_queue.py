@@ -23,6 +23,7 @@ from p42_prizes.runner_queue import (
     locked_runner_queue,
     plan_runner_queue,
     read_runner_queue,
+    read_runner_job_or_archive,
     reap_stale_leases,
     record_runner_action,
     record_runner_local_disposition,
@@ -302,6 +303,19 @@ def test_archive_validation_fault_is_durable_and_reported(tmp_path) -> None:
     runner_queue._write_archive_fault(queue_path, "injected_failure")
     snapshot = build_runner_health_snapshot(queue_path, chain_time=100, warning_slack_seconds=60, critical_slack_seconds=30)
     assert snapshot["archive_fault"]["reason"] == "injected_failure"
+
+
+def test_authenticated_archive_recovery_returns_only_exact_dual_index_identity(tmp_path) -> None:
+    queue_path = tmp_path / "queue.json"
+    archived = _persisted_job(1, settled=True)
+    runner_queue._persist_archived_job(queue_path, archived)
+    recovered, location = read_runner_job_or_archive(
+        queue_path, archived["job_id"], archived["source_event_hash"],
+    )
+    assert location == "archive"
+    assert recovered == archived
+    with pytest.raises(RunnerQueueError, match="incomplete|inconsistent|mismatch|collision"):
+        read_runner_job_or_archive(queue_path, archived["job_id"], "sha256:" + "f" * 64)
 
 
 def test_valid_old_archive_cannot_clear_fault_for_missing_attempt_target(tmp_path) -> None:

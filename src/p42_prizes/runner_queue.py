@@ -2152,6 +2152,49 @@ def _find_tombstone(queue_path: Path, job_id: Any, source_event_hash: str) -> di
     return by_job
 
 
+def recover_archived_runner_job(
+    queue_path: str | Path, job_id: str, source_event_hash: str,
+) -> dict[str, Any] | None:
+    """Return one fully validated archived job through its dual tombstone index."""
+    queue_file = Path(queue_path)
+    tombstone = _find_tombstone(queue_file, job_id, source_event_hash)
+    if tombstone is None:
+        return None
+    records, _ = _archive_paths(queue_file)
+    record = records / f"{tombstone['archive_hash'].removeprefix('sha256:')}.json"
+    payload = _read_private_regular_bytes(record)
+    try:
+        archive = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RunnerQueueError("corrupt runner archive record") from exc
+    if (not isinstance(archive, dict) or archive.get("schema_version") != ARCHIVE_SCHEMA_VERSION
+            or set(archive) != {"schema_version", "job"} or not isinstance(archive.get("job"), dict)):
+        raise RunnerQueueError("invalid runner archive record")
+    archived_job = dict(archive["job"])
+    if (archived_job.get("job_id") != job_id
+            or archived_job.get("source_event_hash") != source_event_hash
+            or _terminal_archive_identity(archived_job) != _tombstone_identity(tombstone)):
+        raise RunnerQueueError("runner archive recovery binding mismatch")
+    return archived_job
+
+
+def read_runner_job_or_archive(
+    queue_path: str | Path, job_id: str, source_event_hash: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Read one exact live job, otherwise its authenticated immutable archive."""
+    queue = read_runner_queue(queue_path)
+    matches = [job for job in queue["jobs"] if job.get("job_id") == job_id]
+    if len(matches) > 1:
+        raise RunnerQueueError("duplicate live runner job identity")
+    if matches:
+        job = dict(matches[0])
+        if job.get("source_event_hash") != source_event_hash:
+            raise RunnerQueueError("live runner job source event mismatch")
+        return job, "live"
+    archived = recover_archived_runner_job(queue_path, job_id, source_event_hash)
+    return (archived, "archive") if archived is not None else (None, None)
+
+
 def _reconcile_archived_duplicates(queue_path: Path, queue: dict[str, Any]) -> None:
     """Finish archive transactions interrupted before canonical queue removal."""
     jobs = queue.get("jobs")

@@ -1,0 +1,39 @@
+[Unit]
+Description=P42 root resolver rerun dispatcher
+After=local-fs.target
+OnFailure=p42-runtime-failure@%n.service
+
+[Service]
+Type=oneshot
+LoadCredential=resolver-rerun-dispatch-map:/etc/p42/resolver-rerun/dispatch-map.json
+ExecStart=/usr/bin/node /opt/p42/agent/resolver-rerun-dispatcher.mjs \
+  --source-root /var/lib/p42/resolver-quorum-signatures/rerun-requests \
+  --request-root /var/lib/p42/resolver-rerun-requests \
+  --journal-root /var/lib/p42/resolver-rerun-dispatcher \
+  --result-root /var/lib/p42/resolver-rerun-results \
+  --dispatch-map ${CREDENTIALS_DIRECTORY}/resolver-rerun-dispatch-map
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+UMask=0027
+ReadOnlyPaths=/opt/p42 /etc/p42/resolver-rerun /var/lib/p42/resolver-quorum-signatures/rerun-requests /var/lib/p42/resolver-rerun-results
+ReadWritePaths=/var/lib/p42/resolver-rerun-requests /var/lib/p42/resolver-rerun-dispatcher
+InaccessiblePaths=/var/lib/p42/operator /etc/p42/operator /etc/p42/resolver
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+TimeoutStartSec=2min
+
+[Install]
+WantedBy=multi-user.target

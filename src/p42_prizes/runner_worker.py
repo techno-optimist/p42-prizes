@@ -224,6 +224,8 @@ def run_next_job_once(
     docker_host: str | None = None,
     require_board_identity: bool = False,
     allow_test_identity_derivation: bool = False,
+    exact_job_id: str | None = None,
+    exact_source_event_hash: str | None = None,
 ) -> dict[str, Any]:
     if lease_seconds < 60:
         raise RunnerWorkerError("lease_seconds must be at least 60")
@@ -244,8 +246,28 @@ def run_next_job_once(
         # stale_lease_reap_required. _locked_queue persists the reap even when
         # the plan below decides to wait.
         reap_stale_leases(queue, now_utc=_format_utc(now))
+        planning_queue = queue
+        if exact_job_id is not None:
+            if not isinstance(exact_source_event_hash, str):
+                raise RunnerWorkerError("exact runner execution requires a source event hash")
+            exact_job = _find_job(queue, exact_job_id)
+            if exact_job.get("source_event_hash") != exact_source_event_hash:
+                raise RunnerWorkerError("exact runner job source event binding mismatch")
+            if exact_job.get("status") != "queued":
+                return {
+                    "schema_version": "p42-runner-plan/v1", "decision": "wait",
+                    "reason": "exact_job_not_queued", "selected_job_id": exact_job_id,
+                }
+            # Preserve every running lease so global concurrency and stale-lease
+            # fencing remain authoritative, but queued operator work cannot be
+            # selected in place of this request-bound rerun.
+            planning_queue = {
+                **queue,
+                "jobs": [job for job in queue.get("jobs", [])
+                         if job is exact_job or job.get("status") == "running"],
+            }
         plan = plan_runner_queue(
-            queue,
+            planning_queue,
             memory=memory,
             policy=effective_policy,
             now_utc=_format_utc(now),

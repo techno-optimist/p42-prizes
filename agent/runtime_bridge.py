@@ -154,6 +154,13 @@ def _parser() -> argparse.ArgumentParser:
     work.add_argument("--available-memory-mb", type=int)
     work.add_argument("--swap-used-mb", type=int)
 
+    exact = commands.add_parser("work-exact")
+    for action in work._actions:
+        if action.dest not in {"help"}:
+            exact._add_action(action)
+    exact.add_argument("--job-id", required=True)
+    exact.add_argument("--source-event-hash", required=True)
+
     action = commands.add_parser("record-action")
     action.add_argument("--queue", required=True)
     action.add_argument("--job-id", required=True)
@@ -245,6 +252,8 @@ def main() -> int:
             sandbox_staging_root=args.sandbox_staging_root,
             docker_host=args.docker_host,
             require_board_identity=True,
+            exact_job_id=args.job_id if args.command == "work-exact" else None,
+            exact_source_event_hash=args.source_event_hash if args.command == "work-exact" else None,
         )
     print(canonical_json(result))
     return 0

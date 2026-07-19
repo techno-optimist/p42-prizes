@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/resolver-rerun-v1.json",
+  "title": "P42 independently attested resolver rerun receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "executor_key_id", "algorithm", "packet_hash", "decision_digest",
+    "chain_id", "quorum", "manager", "submission_id", "challenge_instance_hash",
+    "reveal_instance_hash", "published_transcript_hash", "solution_hash", "da_expected_hash",
+    "da_observed_hash", "verifier_image", "verifier_source_digest", "resource_identity",
+    "orchestrator_nonce", "local_transcript_hash", "receipt_hash", "signature"
+  ],
+  "properties": {
+    "schema_version": { "const": "p42-resolver-rerun/v1" },
+    "executor_key_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,63}$" },
+    "algorithm": { "const": "ed25519" },
+    "packet_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "decision_digest": { "type": "string", "pattern": "^0x[a-f0-9]{64}$" },
+    "chain_id": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "quorum": { "type": "string", "pattern": "^0x[a-f0-9]{40}$" },
+    "manager": { "type": "string", "pattern": "^0x[a-f0-9]{40}$" },
+    "submission_id": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "challenge_instance_hash": { "type": "string", "pattern": "^0x[a-f0-9]{64}$" },
+    "reveal_instance_hash": { "type": "string", "pattern": "^0x[a-f0-9]{64}$" },
+    "published_transcript_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "solution_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "da_expected_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "da_observed_hash": { "type": ["string", "null"], "pattern": "^sha256:[a-f0-9]{64}$" },
+    "verifier_image": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "verifier_source_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "resource_identity": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "orchestrator_nonce": { "type": "string", "pattern": "^0x[a-f0-9]{64}$" },
+    "local_transcript_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "receipt_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "key_id", "signature"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "key_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,63}$" },
+        "signature": { "type": "string", "pattern": "^ed25519:[a-f0-9]{128}$" }
+      }
+    }
+  }
+}

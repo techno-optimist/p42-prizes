@@ -1,0 +1,12 @@
+[Unit]
+Description=Resume resolver rerun dispatch after missed events or crashes
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=30s
+AccuracySec=1s
+Unit=p42-resolver-rerun-dispatcher.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

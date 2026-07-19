@@ -140,6 +140,22 @@ def test_executor_reconciles_before_lease_and_after_intrinsic_deadline_scope(tmp
     assert json.loads((tmp_path / "private/state.json").read_text())["holder"] is None
 
 
+def test_exact_rerun_execution_uses_request_bound_bridge_operation(tmp_path: Path, monkeypatch) -> None:
+    events = []
+    commands = []
+    monkeypatch.setattr(
+        subprocess, "Popen",
+        lambda command, **kwargs: (commands.append(command) or FakeProcess(events)),
+    )
+    service = executor(tmp_path, FakeDocker(events))
+    job_id = "resolver-rerun:" + "1" * 64 + ":" + "2" * 64
+    source = "sha256:" + "3" * 64
+    service.execute_exact_job(request(), job_id=job_id, source_event_hash=source)
+    assert commands[0][2] == "work-exact"
+    assert commands[0][-4:] == ["--job-id", job_id, "--source-event-hash", source]
+    assert "work-once" not in commands[0]
+
+
 def test_zero_cleanup_oom_delta_is_persisted_and_next_admission_runs(tmp_path: Path, monkeypatch) -> None:
     events = []
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess(events))
