@@ -142,6 +142,7 @@ def normalize_governance_signoff(
         normalized.get("treasury_multisig"), context
     )
     timelock_address = _validate_timelock(normalized.get("timelock"))
+    guardian, guardian_signed_at = _validate_guardian(normalized.get("pause_guardian"), context)
     if schema_version == GOVERNANCE_SIGNOFF_SCHEMA_VERSION:
         validate_production_binding(
             normalized.get("production_binding"),
@@ -149,12 +150,15 @@ def normalize_governance_signoff(
             context,
             GovernanceSignoffError,
             timelock_address=timelock_address,
+            treasury_multisig_address=normalized["treasury_multisig"]["address"],
+            treasury_multisig_threshold=normalized["treasury_multisig"]["threshold"],
+            treasury_multisig_signers=[signer["address"] for signer in signers],
+            pause_guardian_address=guardian["address"],
         )
     elif "production_binding" in normalized:
         raise GovernanceSignoffError(
             "historical p42-governance-signoff/v1 packets cannot carry production_binding"
         )
-    guardian, guardian_signed_at = _validate_guardian(normalized.get("pause_guardian"), context)
     _validate_custody_limits(normalized.get("custody_limits"))
     rotation_times = _validate_key_rotation(normalized.get("key_rotation"), context)
     _validate_recusal_policy(normalized.get("recusal_policy"), context)
@@ -482,6 +486,10 @@ def validate_production_binding(
     error_type: type[ValueError],
     *,
     timelock_address: str | None = None,
+    treasury_multisig_address: str | None = None,
+    treasury_multisig_threshold: int | None = None,
+    treasury_multisig_signers: list[str] | None = None,
+    pause_guardian_address: str | None = None,
 ) -> Mapping[str, Any]:
     prefix = "report.production_binding"
     if not isinstance(value, dict):
@@ -505,10 +513,19 @@ def validate_production_binding(
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise error_type("production deployment manifest must contain JSON") from exc
     release_evidence = manifest.get("releaseEvidence")
+    governance = manifest.get("governance")
     roles = manifest.get("roles")
     shared = manifest.get("contracts")
-    if not isinstance(release_evidence, dict) or not isinstance(roles, dict) or not isinstance(shared, dict):
+    if (
+        not isinstance(release_evidence, dict)
+        or not isinstance(governance, dict)
+        or not isinstance(roles, dict)
+        or not isinstance(shared, dict)
+    ):
         raise error_type("production deployment manifest is missing release authority fields")
+    canonical_timelock = _require_manifest_address(
+        _manifest_address(shared, "timelock"), "contracts.timelock.address", error_type
+    )
     expected_scalars = {
         "deployment_commit": release.get("deployment_commit"),
         "capsule_digest": release_evidence.get("capsuleDigest"),
@@ -516,7 +533,7 @@ def validate_production_binding(
         "config_digest": release_evidence.get("configDigest"),
         "release_binding_digest": release_evidence.get("releaseBindingDigest"),
         "board_set_digest": release_evidence.get("boardSetDigest"),
-        "timelock_address": _manifest_address(shared, "timelock"),
+        "timelock_address": canonical_timelock,
         "treasury_address": roles.get("treasury"),
         "resolver_quorum_address": _manifest_address(shared, "resolverQuorum"),
     }
@@ -530,6 +547,46 @@ def validate_production_binding(
             raise error_type(f"{prefix}.{field} must match the canonical deployment authority")
     if timelock_address is not None and value["timelock_address"].casefold() != timelock_address.casefold():
         raise error_type("report.timelock.address must match production_binding.timelock_address")
+    if treasury_multisig_address is not None:
+        canonical_treasury = _require_manifest_address(
+            roles.get("treasury"), "roles.treasury", error_type
+        )
+        if treasury_multisig_address.casefold() != canonical_treasury.casefold():
+            raise error_type("report.treasury_multisig.address must match canonical roles.treasury")
+    if treasury_multisig_threshold is not None:
+        manifest_threshold = governance.get("threshold")
+        if (
+            not isinstance(manifest_threshold, str)
+            or str(treasury_multisig_threshold) != manifest_threshold
+        ):
+            raise error_type("report.treasury_multisig.threshold must match canonical governance.threshold")
+    if treasury_multisig_signers is not None:
+        manifest_signers = governance.get("signers")
+        if not isinstance(manifest_signers, list):
+            raise error_type("production deployment manifest governance.signers must be an array")
+        canonical_signers = [
+            _require_manifest_address(signer, f"governance.signers[{index}]", error_type)
+            for index, signer in enumerate(manifest_signers)
+        ]
+        lowered_signers = [signer.casefold() for signer in canonical_signers]
+        if len(set(lowered_signers)) != len(lowered_signers):
+            raise error_type("production deployment manifest governance.signers must be unique")
+        report_signers = [signer.casefold() for signer in treasury_multisig_signers]
+        if len(report_signers) != len(lowered_signers) or set(report_signers) != set(
+            lowered_signers
+        ):
+            raise error_type("report.treasury_multisig.signers must match canonical governance.signers")
+    if pause_guardian_address is not None:
+        governance_guardian = _require_manifest_address(
+            governance.get("guardian"), "governance.guardian", error_type
+        )
+        roles_guardian = _require_manifest_address(
+            roles.get("guardian"), "roles.guardian", error_type
+        )
+        if governance_guardian.casefold() != roles_guardian.casefold():
+            raise error_type("production deployment manifest guardian authorities must match")
+        if pause_guardian_address.casefold() != governance_guardian.casefold():
+            raise error_type("report.pause_guardian.address must match canonical governance guardian")
     contracts = value.get("contracts")
     release_contracts = release.get("contracts")
     if not isinstance(contracts, list) or len(contracts) != len(CANONICAL_TOPOLOGY):
@@ -557,6 +614,10 @@ def validate_production_binding(
 def _manifest_address(shared: Mapping[str, Any], key: str) -> Any:
     contract = shared.get(key)
     return contract.get("address") if isinstance(contract, dict) else None
+
+
+def _require_manifest_address(value: Any, field: str, error_type: type[ValueError]) -> str:
+    return _require_address(value, f"production deployment manifest {field}", error_type)
 
 
 def _require_distinct_identities(

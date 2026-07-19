@@ -4,11 +4,13 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from unittest.mock import patch
 
 import jsonschema
 import pytest
 
 from attestation_helpers import AttestationFixture, address, attach_signatures, unsigned_hash
+from legal_release_fixture import schema_valid_manifest_shell
 from p42_prizes.governance import (
     GOVERNANCE_SIGNOFF_SCHEMA_VERSION,
     LEGACY_GOVERNANCE_SIGNOFF_SCHEMA_VERSION,
@@ -61,8 +63,6 @@ def valid_governance_report(
     schema_version = (
         LEGACY_GOVERNANCE_SIGNOFF_SCHEMA_VERSION if legacy else GOVERNANCE_SIGNOFF_SCHEMA_VERSION
     )
-    release = fixture.release_binding("base-mainnet") if legacy else fixture.canonical_release_binding()
-    production_binding = None if legacy else _production_binding(fixture, release)
     governance_owner = fixture.identity("governance-owner", "Morgan Rivera", "governance-owner")
     security_owner = fixture.identity("security-owner", "Riley Chen", "security-owner")
     signer_specs = [
@@ -93,6 +93,27 @@ def valid_governance_report(
             "signed_at_utc": "2026-07-08T20:10:00Z",
         }
     )
+    treasury_multisig_address = address("treasury-multisig")
+    if legacy:
+        release = fixture.release_binding("base-mainnet")
+        production_binding = None
+    else:
+
+        def canonical_manifest() -> dict:
+            manifest = schema_valid_manifest_shell()
+            manifest["governance"]["timelock"] = address(
+                "base-sepolia-shared.timelock-P42MultisigTimelock"
+            )
+            manifest["governance"]["signers"] = [signer["address"] for signer in signers]
+            manifest["governance"]["threshold"] = "3"
+            manifest["governance"]["guardian"] = guardian["address"]
+            manifest["roles"]["treasury"] = treasury_multisig_address
+            manifest["roles"]["guardian"] = guardian["address"]
+            return manifest
+
+        with patch("attestation_helpers.schema_valid_manifest_shell", side_effect=canonical_manifest):
+            release = fixture.canonical_release_binding()
+        production_binding = _production_binding(fixture, release)
     report = {
         "schema_version": schema_version,
         "signoff_id": "base-mainnet-gate2-governance-2026-07",
@@ -102,7 +123,7 @@ def valid_governance_report(
         "governance_owner": governance_owner,
         "security_owner": security_owner,
         "treasury_multisig": {
-            "address": address("treasury-multisig"),
+            "address": treasury_multisig_address,
             "threshold": 3,
             "signers": signers,
         },
@@ -225,6 +246,24 @@ def test_production_governance_rejects_topology_and_authority_mutations(
     else:
         binding["resolver_quorum_address"] = address("substituted-resolver")
     with pytest.raises(GovernanceSignoffError, match="production|canonical|ordered 47|authority"):
+        normalize(report, fixture, registry)
+
+
+@pytest.mark.parametrize("control", ["address", "threshold", "signer", "guardian"])
+def test_production_governance_rejects_canonical_control_substitution(
+    tmp_path: Path, control: str
+) -> None:
+    report, fixture, registry = valid_governance_report(tmp_path)
+    if control == "address":
+        report["treasury_multisig"]["address"] = address("hostile-treasury-multisig")
+    elif control == "threshold":
+        report["treasury_multisig"]["threshold"] = 4
+    elif control == "signer":
+        report["treasury_multisig"]["signers"][2]["address"] = address("hostile-signer")
+    else:
+        report["pause_guardian"]["address"] = address("hostile-guardian")
+
+    with pytest.raises(GovernanceSignoffError, match="canonical|governance"):
         normalize(report, fixture, registry)
 
 
