@@ -463,6 +463,7 @@ p42-funding-authorization-request \
   --authorization /srv/p42/production-launch-authorization.json \
   --trust-registry /srv/p42/trust-registry.json \
   --artifact-root /srv/p42/release \
+  --sp1-security-report /opt/p42-prizes/docs/evidence/sp1-dependency-security-current.json \
   --python /opt/p42/bin/python \
   --repo-root /opt/p42-prizes \
   --trusted-root /srv/p42 \
@@ -483,6 +484,7 @@ p42-funding-authorization-assemble \
   --authorization /srv/p42/production-launch-authorization.json \
   --trust-registry /srv/p42/trust-registry.json \
   --artifact-root /srv/p42/release \
+  --sp1-security-report /opt/p42-prizes/docs/evidence/sp1-dependency-security-current.json \
   --python /opt/p42/bin/python \
   --repo-root /opt/p42-prizes \
   --trusted-root /srv/p42 \
@@ -502,7 +504,8 @@ named trusted root.
 
 `p42-funding-activation-plan` is the non-signing production activation
 preflight. It re-runs `production-launch-authorization-validate`, consumes the
-exact validated bytes, and writes a private immutable 30-operation plan for the
+exact validated bytes, regenerates the activation-bound SP1 dependency
+security report, and writes a private immutable 30-operation plan for the
 ten launch boards. Treasury authorization, timelock arming, and pool opening
 are separated by global barriers. This command deliberately does not sign or
 broadcast; the durable multi-signer executor remains a launch gate.
@@ -525,6 +528,10 @@ Before reading either RPC, the run command revalidates the authorization,
 rechecks the activation signature bundle, reconstructs the canonical ordered
 30-operation plan, and requires the supplied private plan artifact to match its
 exact serialized bytes and digest.
+Immediately before the sole broadcast callback, including restart from an
+already journaled signed transaction, the runner repeats that validation and
+requires the Python interpreter, scanner, versioned policy, committed report,
+and seven-lock roster to remain byte-identical and passing.
 
 RPC endpoints come from `P42_PRIMARY_BASE_RPC_URL` and
 `P42_SECONDARY_BASE_RPC_URL`; both must be credential-free root HTTPS endpoints

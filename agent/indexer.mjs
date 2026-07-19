@@ -5012,7 +5012,7 @@ export async function runIndexer(options) {
     "manifestPath", "rpcUrl", "outPath", "archivePath", "transcriptEndpoints",
     "transcriptFetchClient", "activationPlanPath", "activationCompletionPath", "activationAuthorizationPath",
     "activationTrustRegistryPath", "activationArtifactRoot", "activationPython", "activationRepoRoot",
-    "activationRpcRegistryPath", "activationRpcRegistryTrustedRoot", "secondaryRpcUrl",
+    "sp1SecurityReportPath", "activationRpcRegistryPath", "activationRpcRegistryTrustedRoot", "secondaryRpcUrl",
   ]);
   if (!options || typeof options !== "object" || Array.isArray(options)
       || Object.keys(options).some((key) => !allowed.has(key))) {
@@ -5032,6 +5032,7 @@ export async function runIndexer(options) {
     activationArtifactRoot = null,
     activationPython = null,
     activationRepoRoot = null,
+    sp1SecurityReportPath = null,
     activationRpcRegistryPath = null,
     activationRpcRegistryTrustedRoot = null,
     secondaryRpcUrl = null,
@@ -5040,10 +5041,10 @@ export async function runIndexer(options) {
   if (!outPath) throw new Error("required: --out <checkpoint.json>");
   const activationInputs = [activationPlanPath, activationCompletionPath, activationAuthorizationPath,
     activationTrustRegistryPath, activationArtifactRoot, activationPython, activationRepoRoot,
-    activationRpcRegistryPath, activationRpcRegistryTrustedRoot, secondaryRpcUrl];
+    sp1SecurityReportPath, activationRpcRegistryPath, activationRpcRegistryTrustedRoot, secondaryRpcUrl];
   if (activationInputs.some((value) => value === null)
       && activationInputs.some((value) => value !== null)) {
-    throw new Error("activation checkpointing requires plan, completion, authorization, protected RPC registry/root, validator trust inputs, and secondary RPC");
+    throw new Error("activation checkpointing requires plan, completion, authorization, the SP1 security report, protected RPC registry/root, validator trust inputs, and secondary RPC");
   }
   const resolvedManifest = resolve(manifestPath);
   const resolvedOut = resolve(outPath);
@@ -5063,6 +5064,7 @@ export async function runIndexer(options) {
       authorizationPath: activationAuthorizationPath,
       trustRegistryPath: activationTrustRegistryPath,
       artifactRoot: activationArtifactRoot,
+      sp1SecurityReportPath,
       chainRpcUrl: secondaryRpcUrl,
     }).value
     : null;
@@ -5282,7 +5284,7 @@ export function configureIndexerTranscripts(argv = process.argv, env = process.e
   };
 }
 
-export async function cli(argv = process.argv, env = process.env) {
+export function parseIndexerCliOptions(argv = process.argv, env = process.env, fetchImpl = fetch) {
   const manifestPath = parseArg(argv, "manifest");
   const outPath = parseArg(argv, "out");
   const rpcUrl = parseArg(argv, "rpc", "https://sepolia.base.org");
@@ -5294,18 +5296,23 @@ export async function cli(argv = process.argv, env = process.env) {
   const activationArtifactRoot = parseArg(argv, "activation-artifact-root", null);
   const activationPython = parseArg(argv, "activation-python", null);
   const activationRepoRoot = parseArg(argv, "activation-repo-root", null);
+  const sp1SecurityReportPath = parseArg(argv, "sp1-security-report", null);
   const activationRpcRegistryPath = parseArg(argv, "activation-rpc-registry", null);
   const activationRpcRegistryTrustedRoot = parseArg(argv, "activation-rpc-registry-trusted-root", null);
   const secondaryRpcUrl = parseArg(argv, "secondary-rpc", null);
-  const transcriptConfig = configureIndexerTranscripts(argv, env);
-  const checkpoint = await runIndexer({
+  const transcriptConfig = configureIndexerTranscripts(argv, env, fetchImpl);
+  return {
     manifestPath, rpcUrl, outPath, archivePath, activationPlanPath, activationCompletionPath,
     activationAuthorizationPath, activationTrustRegistryPath, activationArtifactRoot, activationPython, activationRepoRoot,
-    activationRpcRegistryPath, activationRpcRegistryTrustedRoot,
+    sp1SecurityReportPath, activationRpcRegistryPath, activationRpcRegistryTrustedRoot,
     secondaryRpcUrl,
     transcriptEndpoints: transcriptConfig.endpoints,
     transcriptFetchClient: transcriptConfig.fetchClient,
-  });
+  };
+}
+
+export async function cli(argv = process.argv, env = process.env) {
+  const checkpoint = await runIndexer(parseIndexerCliOptions(argv, env));
   if (!checkpoint.reconstruction.ok) process.exitCode = 1;
 }
 

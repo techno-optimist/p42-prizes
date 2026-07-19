@@ -86,7 +86,7 @@ function nonceEvidence(inputManifest, { blockNumber = 100, timestamp = 1_800_000
 
 function fixture() {
   const deployment = manifest();
-  const validatedAuthorization = { value: authorization(deployment), validatedBytesDigest: hash("d") };
+  const validatedAuthorization = { value: authorization(deployment), validatedBytesDigest: hash("d"), dependencySecurityReportDigest: hash("8") };
   const evidence = nonceEvidence(deployment);
   const requestSet = buildFundingAuthorizationRequestSet({
     manifest: deployment,

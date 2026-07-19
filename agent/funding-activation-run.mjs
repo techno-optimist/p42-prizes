@@ -92,6 +92,7 @@ export async function fundingActivationRunMain() {
   const activationSignaturesPath = required("activation-signatures");
   const trustRegistryPath = required("trust-registry");
   const artifactRoot = required("artifact-root");
+  const sp1SecurityReportPath = required("sp1-security-report");
   const rpcOperatorRegistryPath = required("rpc-operator-registry");
   const rpcRegistryTrustedRoot = required("rpc-registry-trusted-root");
   const python = required("python");
@@ -107,7 +108,7 @@ export async function fundingActivationRunMain() {
   const freshPlan = async () => {
     const manifest = loadManifestExact(manifestPath);
     const validatedAuthorization = runProductionAuthorizationValidator({
-      python, repoRoot, authorizationPath, trustRegistryPath, artifactRoot,
+      python, repoRoot, authorizationPath, trustRegistryPath, artifactRoot, sp1SecurityReportPath,
       chainRpcUrl: secondaryUrl,
     });
     const registryDigest = validatedAuthorization.value.artifacts?.activation_rpc_operator_registry?.sha256;

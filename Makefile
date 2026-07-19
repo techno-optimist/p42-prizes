@@ -15,7 +15,7 @@ LAUNCH_PROBLEMS := $(addprefix problems/,$(LAUNCH_SLUGS))
 RESEARCH_PROBLEMS := problems/hadamard-mini problems/signed-autoconvolution-c3-upper problems/b3-ruler-11-marks problems/b3-subset-first-jump-9 problems/edp-c3-longest-sequence problems/c4-star-ramsey-a17 problems/hypercube-q7-c4-free
 PROBLEMS := $(LAUNCH_PROBLEMS) $(RESEARCH_PROBLEMS)
 
-.PHONY: install-verifier-deps test validate validate-source-release-evidence verify-production-board-bindings refresh-production-board-bindings verify-source-release-evidence-online capture-sp1-runtime-evidence verify-sp1-runtime-evidence test-sp1-runtime-attestation lint verify-seed verify-open-witness-release verify-hadamard-seed verify-erdos-seed verify-edges-seed verify-arithmetic-kakeya-seed verify-autoconvolution-c1-seed verify-autoconvolution-c2-seed verify-signed-c3-seed verify-mertens-k12000-seed verify-pnt-sparse-seed verify-hadamard-668-seed admit-host-seed admit-host-ten-board admit-host-q6 admit-host-distinct-subset-sums admit-host-erdos admit-host-edges admit-host-arithmetic-kakeya admit-host-autoconvolution-c1 admit-host-autoconvolution-c2 admit-host-signed-c3 admit-host-mertens-k12000 admit-host-pnt-sparse admit-host-hadamard-668 contracts-test objective-core-test candidate-objective-program-gates objective-program-gates verify-sp1-objective-artifact verify-sp1-objective-resource-profile verify-render-release all
+.PHONY: install-verifier-deps test validate validate-source-release-evidence verify-production-board-bindings refresh-production-board-bindings verify-source-release-evidence-online capture-sp1-runtime-evidence verify-sp1-runtime-evidence test-sp1-runtime-attestation lint verify-seed verify-open-witness-release verify-hadamard-seed verify-erdos-seed verify-edges-seed verify-arithmetic-kakeya-seed verify-autoconvolution-c1-seed verify-autoconvolution-c2-seed verify-signed-c3-seed verify-mertens-k12000-seed verify-pnt-sparse-seed verify-hadamard-668-seed admit-host-seed admit-host-ten-board admit-host-q6 admit-host-distinct-subset-sums admit-host-erdos admit-host-edges admit-host-arithmetic-kakeya admit-host-autoconvolution-c1 admit-host-autoconvolution-c2 admit-host-signed-c3 admit-host-mertens-k12000 admit-host-pnt-sparse admit-host-hadamard-668 contracts-test objective-core-test candidate-objective-program-gates objective-program-gates objective-dependency-security-gate verify-sp1-objective-artifact verify-sp1-objective-resource-profile verify-render-release all
 
 all: validate lint test verify-seed
 
@@ -214,6 +214,11 @@ objective-program-gates: objective-core-test \
 	verify-sp1-objective-artifact \
 	verify-sp1-a11-objective-artifact \
 	verify-sp1-objective-resource-profile
+
+# Activation gate. It intentionally fails while an objective lockfile retains
+# a known vulnerable proof-system dependency.
+objective-dependency-security-gate:
+	@$(PYTHON) scripts/check_sp1_dependency_security.py --report docs/evidence/sp1-dependency-security-current.json
 
 verify-sp1-objective-artifact:
 	@test -n "$(P42_CARGO_PROVE)" || (echo "P42_CARGO_PROVE must name the pinned SP1 v6.1 cargo-prove binary" >&2; exit 2)

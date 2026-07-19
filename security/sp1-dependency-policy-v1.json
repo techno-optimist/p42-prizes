@@ -1,0 +1,56 @@
+{
+  "schema": "p42-objective-dependency-security-policy/v1",
+  "workspaces": [
+    { "path": "objective-programs", "sp1_bearing": true },
+    { "path": "objective-programs/arithmetic-kakeya", "sp1_bearing": true },
+    { "path": "objective-programs/autoconvolution-c1-upper", "sp1_bearing": false },
+    { "path": "objective-programs/autoconvolution-c2-lower", "sp1_bearing": false },
+    { "path": "objective-programs/edges-vs-triangles", "sp1_bearing": true },
+    { "path": "objective-programs/erdos-min-overlap", "sp1_bearing": false },
+    { "path": "objective-programs/q6-intersecting-hypergraph", "sp1_bearing": true }
+  ],
+  "sp1": {
+    "repository": "https://github.com/succinctlabs/sp1",
+    "revision": "d454975ac7c1126097e36eceda9bce2cb9899da4",
+    "version": "6.1.0",
+    "packages": [
+      "sp1-build", "sp1-core-executor", "sp1-core-executor-runner",
+      "sp1-core-executor-runner-binary", "sp1-core-machine", "sp1-curves",
+      "sp1-derive", "sp1-hypercube", "sp1-jit", "sp1-lib", "sp1-primitives",
+      "sp1-prover", "sp1-prover-types", "sp1-recursion-circuit",
+      "sp1-recursion-compiler", "sp1-recursion-executor",
+      "sp1-recursion-gnark-ffi", "sp1-recursion-machine", "sp1-sdk",
+      "sp1-verifier", "sp1-zkvm"
+    ]
+  },
+  "advisories": [
+    {
+      "id": "GHSA-vj64-rjf3-w3v7",
+      "package": "p3-challenger",
+      "severity": "high",
+      "url": "https://github.com/advisories/GHSA-vj64-rjf3-w3v7",
+      "ranges": [
+        { "lower": null, "lower_inclusive": false, "upper": "0.4.3", "upper_inclusive": false },
+        { "lower": "0.5.0", "lower_inclusive": true, "upper": "0.5.3", "upper_inclusive": false }
+      ]
+    },
+    {
+      "id": "GHSA-3g92-f9ch-qjcm",
+      "package": "p3-symmetric",
+      "severity": "low",
+      "url": "https://github.com/advisories/GHSA-3g92-f9ch-qjcm",
+      "ranges": [
+        { "lower": null, "lower_inclusive": false, "upper": "0.5.2", "upper_inclusive": true }
+      ]
+    },
+    {
+      "id": "GHSA-rhfx-m35p-ff5j",
+      "package": "lru",
+      "severity": "low",
+      "url": "https://github.com/advisories/GHSA-rhfx-m35p-ff5j",
+      "ranges": [
+        { "lower": "0.9.0", "lower_inclusive": true, "upper": "0.16.3", "upper_inclusive": false }
+      ]
+    }
+  ]
+}

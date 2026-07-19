@@ -178,7 +178,7 @@ test("activation plan binds ten treasury authorizations before governance opens 
   const plan = buildFundingActivationPlan({
     manifest: deployment,
     manifestBytesDigest: hash("e"),
-    validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") },
+    validatedAuthorization: { value: auth, validatedBytesDigest: hash("d"), dependencySecurityReportDigest: hash("8") },
     rpcRegistry: rpcRegistry(),
     rpcAuthority: rpcAuthority(), activationSignatures: signatureBundle(deployment, auth), manifestValidator: () => ({}),
   });
@@ -211,7 +211,7 @@ test("activation run rejects caller plan replacement and noncanonical bytes", ()
   const auth = authorization(deployment);
   const plan = buildFundingActivationPlan({
     manifest: deployment, manifestBytesDigest: hash("e"),
-    validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") },
+    validatedAuthorization: { value: auth, validatedBytesDigest: hash("d"), dependencySecurityReportDigest: hash("8") },
     rpcRegistry: rpcRegistry(),
     rpcAuthority: rpcAuthority(), activationSignatures: signatureBundle(deployment, auth), manifestValidator: () => ({}),
   });
@@ -231,9 +231,9 @@ test("activation rejects release substitution and incomplete topology", () => {
   const deployment = manifest();
   const auth = authorization(deployment);
   auth.release_binding.deployment_commit = "9".repeat(40);
-  assert.throws(() => buildFundingActivationPlan({ manifest: deployment, manifestBytesDigest: hash("e"), validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") }, rpcRegistry: rpcRegistry(), rpcAuthority: rpcAuthority(), activationSignatures: signatureBundle(deployment, auth), manifestValidator: () => ({}) }), /deployment_commit/);
+  assert.throws(() => buildFundingActivationPlan({ manifest: deployment, manifestBytesDigest: hash("e"), validatedAuthorization: { value: auth, validatedBytesDigest: hash("d"), dependencySecurityReportDigest: hash("8") }, rpcRegistry: rpcRegistry(), rpcAuthority: rpcAuthority(), activationSignatures: signatureBundle(deployment, auth), manifestValidator: () => ({}) }), /deployment_commit/);
   deployment.problems.pop();
-  assert.throws(() => buildFundingActivationPlan({ manifest: deployment, manifestBytesDigest: hash("e"), validatedAuthorization: { value: authorization(deployment), validatedBytesDigest: hash("d") }, rpcRegistry: rpcRegistry(), rpcAuthority: rpcAuthority(), activationSignatures: { schema: "p42-funding-activation-signatures/v2" }, manifestValidator: () => ({}) }), /exactly ten/);
+  assert.throws(() => buildFundingActivationPlan({ manifest: deployment, manifestBytesDigest: hash("e"), validatedAuthorization: { value: authorization(deployment), validatedBytesDigest: hash("d"), dependencySecurityReportDigest: hash("8") }, rpcRegistry: rpcRegistry(), rpcAuthority: rpcAuthority(), activationSignatures: { schema: "p42-funding-activation-signatures/v2" }, manifestValidator: () => ({}) }), /exactly ten/);
 });
 
 test("activation accepts a descendant evidence commit without granting it deployment authority", () => {
@@ -243,7 +243,7 @@ test("activation accepts a descendant evidence commit without granting it deploy
   const plan = buildFundingActivationPlan({
     manifest: deployment,
     manifestBytesDigest: hash("e"),
-    validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") },
+    validatedAuthorization: { value: auth, validatedBytesDigest: hash("d"), dependencySecurityReportDigest: hash("8") },
     rpcRegistry: rpcRegistry(),
     rpcAuthority: rpcAuthority(),
     activationSignatures: signatureBundle(deployment, auth),
@@ -262,7 +262,7 @@ test("activation rejects a legacy 43-contract authorization path", () => {
   assert.throws(() => buildFundingActivationPlan({
     manifest: deployment,
     manifestBytesDigest: hash("e"),
-    validatedAuthorization: { value: authorization(deployment), validatedBytesDigest: hash("d") },
+    validatedAuthorization: { value: authorization(deployment), validatedBytesDigest: hash("d"), dependencySecurityReportDigest: hash("8") },
     rpcRegistry: rpcRegistry(),
     rpcAuthority: rpcAuthority(),
     activationSignatures: signatureBundle(deployment),
@@ -276,7 +276,7 @@ test("activation fails closed on legacy, reordered, high-s, forged, and incomple
   const auth = authorization(deployment);
   const build = (bundle) => buildFundingActivationPlan({
     manifest: deployment, manifestBytesDigest: hash("e"),
-    validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") },
+    validatedAuthorization: { value: auth, validatedBytesDigest: hash("d"), dependencySecurityReportDigest: hash("8") },
     rpcRegistry: rpcRegistry(),
     rpcAuthority: rpcAuthority(),
     activationSignatures: bundle, manifestValidator: () => ({}),
@@ -307,7 +307,7 @@ test("activation signature bundle binds chain, managers, release digests, expiry
   const auth = authorization(deployment);
   const build = (bundle) => buildFundingActivationPlan({
     manifest: deployment, manifestBytesDigest: hash("e"),
-    validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") },
+    validatedAuthorization: { value: auth, validatedBytesDigest: hash("d"), dependencySecurityReportDigest: hash("8") },
     rpcRegistry: rpcRegistry(),
     rpcAuthority: rpcAuthority(),
     activationSignatures: bundle, manifestValidator: () => ({}),
@@ -329,17 +329,29 @@ test("activation signature bundle binds chain, managers, release digests, expiry
 
 test("validator invocation is argv-only, bounded, and rejects nonzero exit", () => {
   let observed;
+  let calls = 0;
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "p42-sp1-validator-")));
+  const reportPath = join(root, "report.json");
+  const reportBytes = Buffer.from(`${JSON.stringify({
+    schema: "p42-objective-dependency-security-report/v1",
+    result: "pass",
+    summary: { highFindings: 0, findings: 0, trackedLockfiles: 7, sp1Lockfiles: 4 },
+  }, null, 2)}\n`);
+  writeFileSync(reportPath, reportBytes);
   process.env.P42_FUNDING_TREASURY_PRIVATE_KEY = `0x${"7".repeat(64)}`;
   const fake = (executable, args, options) => {
     observed = { executable, args, options };
+    calls += 1;
+    if (calls === 1) return { status: 0, stdout: reportBytes, stderr: Buffer.alloc(0) };
     return { status: 1, stdout: Buffer.alloc(0), stderr: Buffer.from("rejected") };
   };
   assert.throws(() => runProductionAuthorizationValidator({
     python: process.execPath,
-    repoRoot: process.cwd(),
+    repoRoot: realpathSync(join(process.cwd(), "..")),
     authorizationPath: new URL("./package.json", import.meta.url).pathname,
     trustRegistryPath: new URL("./package.json", import.meta.url).pathname,
     artifactRoot: process.cwd(),
+    sp1SecurityReportPath: reportPath,
     chainRpcUrl: "https://rpc.example",
     spawn: fake,
   }), /rejected/);
@@ -354,6 +366,33 @@ test("validator invocation is argv-only, bounded, and rejects nonzero exit", () 
   );
   delete process.env.P42_FUNDING_TREASURY_PRIVATE_KEY;
   assert.ok(observed.args.includes("production-launch-authorization-validate"));
+});
+
+test("launch authorization validation fails closed on blocked or changed SP1 report", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "p42-sp1-validator-")));
+  const reportPath = join(root, "report.json");
+  const report = {
+    schema: "p42-objective-dependency-security-report/v1",
+    result: "blocked",
+    summary: { highFindings: 4, findings: 12, trackedLockfiles: 7, sp1Lockfiles: 4 },
+  };
+  const bytes = Buffer.from(`${JSON.stringify(report, null, 2)}\n`);
+  writeFileSync(reportPath, bytes);
+  const args = {
+    python: process.execPath, repoRoot: realpathSync(join(process.cwd(), "..")),
+    authorizationPath: new URL("./package.json", import.meta.url).pathname,
+    trustRegistryPath: new URL("./package.json", import.meta.url).pathname,
+    artifactRoot: process.cwd(), sp1SecurityReportPath: reportPath,
+    chainRpcUrl: "https://rpc.example",
+  };
+  assert.throws(() => runProductionAuthorizationValidator({
+    ...args,
+    spawn: () => ({ status: 1, stdout: bytes, stderr: Buffer.alloc(0) }),
+  }), /blocks production launch authorization/);
+  assert.throws(() => runProductionAuthorizationValidator({
+    ...args,
+    spawn: () => ({ status: 0, stdout: Buffer.from(bytes.toString().replace('"blocked"', '"pass"')), stderr: Buffer.alloc(0) }),
+  }), /missing, changed, or not the exact fresh scanner output/);
 });
 
 test("activation plan output is immutable, private, and rejects aliases", () => {

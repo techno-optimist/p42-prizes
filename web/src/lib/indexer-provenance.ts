@@ -382,7 +382,9 @@ function reconstructCanonicalActivationPlan(
   activationSignatures: JsonObject,
   rpcAuthority: JsonObject,
   rpcRegistry: JsonObject,
+  dependencySecurityReportDigest: unknown,
 ): JsonObject {
+  requireBinding(/^sha256:[0-9a-f]{64}$/.test(String(dependencySecurityReportDigest)));
   requireBinding(exactKeys(activationSignatures, [
     "schema", "chainId", "boardSetDigest", "releaseBindingDigest", "authorizationDigest",
     "expiresAt", "authorities", "boards",
@@ -507,6 +509,7 @@ function reconstructCanonicalActivationPlan(
     capsuleDigest: releaseEvidence.capsuleDigest, slateDigest: releaseEvidence.slateDigest,
     releaseIndexDigest: releaseEvidence.releaseIndexDigest, authorizationDigest: authorization.authorization_digest,
     authorizationExpiresAt: expiresAt, authorizationBytesDigest: sha256Bytes(authorizationBytes),
+    dependencySecurityReportDigest,
     rpcAuthority,
     activationSignaturesDigest: sha256Canonical(activationSignatures), timelock: getAddress(String(timelock.address)),
     timelockRuntimeCodeHash: timelock.runtimeCodeHash, treasury: getAddress(String(roles.treasury)),
@@ -794,6 +797,7 @@ export function activatedProvenanceFromArtifacts(
     manifest, manifestBytes, authorization, authorizationBytes, activationSignatures,
     object(plan.rpcAuthority, "activation plan RPC authority"),
     rpcRegistry,
+    plan.dependencySecurityReportDigest,
   );
   requireBinding(JSON.stringify(canonicalize(plan)) === JSON.stringify(canonicalize(canonicalPlan)));
   const { planDigest, ...planBody } = plan;
