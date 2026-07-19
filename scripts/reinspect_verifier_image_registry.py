@@ -658,7 +658,7 @@ def _reinspect_board(
             validated = release_helper.validate_platform_config(
                 config_raw.decode("utf-8"),
                 platform=platform,
-                commit=source_commit,
+                verifier_source_commit=source_commit,
                 source_hash=board["source_hash"],
                 problem_id=board["problem_id"],
                 version=board["version"],
@@ -993,7 +993,7 @@ def reinspect(
         source_root = source_root.resolve(strict=True)
         _require_clean_exact_checkout(
             source_root,
-            dossier["source_commit"],
+            dossier["verifier_source_commit"],
             label="publication source checkout",
             runner=runner,
         )
@@ -1016,7 +1016,7 @@ def reinspect(
             boards = [
                 _reinspect_board(
                     board,
-                    source_commit=dossier["source_commit"],
+                    source_commit=dossier["verifier_source_commit"],
                     executable=executable,
                     release_helper=release_helper,
                     root=source_root,
@@ -1036,7 +1036,7 @@ def reinspect(
             )
             _require_clean_exact_checkout(
                 source_root,
-                dossier["source_commit"],
+                dossier["verifier_source_commit"],
                 label="publication source checkout",
                 runner=runner,
             )
@@ -1064,7 +1064,7 @@ def reinspect(
             "observed_at_utc": now().astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             "sealed_dossier": {"file_digest": dossier_digest, "dossier_hash": dossier["dossier_hash"]},
             "source_checkout": {
-                "commit": dossier["source_commit"],
+                "commit": dossier["verifier_source_commit"],
                 "dirty_state": "clean",
                 "clean_exact_commit": True,
             },

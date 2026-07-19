@@ -14,14 +14,15 @@ repository base such as `ghcr.io/projectforty2/verifier-images`. It never edits
 `problem.yaml`; applying reviewed immutable digests remains a separate human
 change with its own review.
 
-The default is a local plan. It computes the ten source hashes and prints the
+The default is a local plan. `S` is the clean verifier-source commit whose
+bytes will be built. The command computes the ten source hashes and prints the
 canonical plan JSON, but invokes no Docker command, build, registry request, or
 other network operation:
 
 ```bash
 PYTHONPATH=src python3 scripts/release_verifier_images.py \
   --registry-base ghcr.io/projectforty2/verifier-images \
-  --commit "$(git rev-parse HEAD)"
+  --verifier-source-commit "$S"
 ```
 
 Publication is deliberately explicit and all-ten. It performs one
@@ -29,17 +30,32 @@ Publication is deliberately explicit and all-ten. It performs one
 implicit provenance descriptors disabled, records Buildx's authoritative
 `containerimage.digest`, cryptographically walks the raw registry index through
 each child manifest and config blob, and writes a
-canonical newline-terminated JSON dossier only after every board passes:
+canonical, private, self-hashed publication journal only after every board
+passes. It does not claim a final release configuration:
 
 ```bash
 PYTHONPATH=src python3 scripts/release_verifier_images.py \
   --registry-base ghcr.io/projectforty2/verifier-images \
-  --commit "$(git rev-parse HEAD)" \
-  --publish --output verifier-image-release.json
+  --verifier-source-commit "$S" \
+  --publish --journal verifier-image-publication.journal.json
 ```
 
-The dossier conforms to `schemas/verifier-image-release.schema.json` and binds
-the exact commit, the durable frozen Git-archive digest,
+After publication, commit only the resulting immutable repository/digest pairs
+to all ten `problem.yaml` manifests. Let that clean commit be `R`. Finalization
+replays both commits, proves `S` is an ancestor of `R`, requires every
+normalized verifier source hash to remain identical, re-inspects every OCI
+graph by immutable digest, and writes the non-overwriting v2 dossier:
+
+```bash
+PYTHONPATH=src python3 scripts/release_verifier_images.py \
+  --finalize-journal verifier-image-publication.journal.json \
+  --release-config-commit "$R" \
+  --output verifier-image-release-v2.json
+```
+
+The dossier conforms to `schemas/verifier-image-release.schema.json`. It binds
+the distinct `verifier_source_commit` (`S`) and `release_config_commit` (`R`),
+both durable Git-archive digests, each final raw `problem.yaml` digest,
 `p42-source-tree-sha256/v2` source hash, verifier problem ID
 and version, immutable OCI index digest, unique child manifest digest and size,
 and checked config/runtime assumptions for exactly `linux/amd64` and
@@ -55,16 +71,20 @@ raw-body` command using the operator's normal registry credential store; they
 are not inferred from an `imagetools` projection.
 
 Before the first push, publish mode durably reserves the exact ten-board plan
-in `<output>.journal.json`. Each board transitions from `planned` to `building`
+in the requested journal. Each board transitions from `planned` to `building`
 before Buildx starts, retains its exact metadata in a private 0700 work
 directory, and reaches `verified` only after registry digest-chain validation.
 Journal updates are canonical, fsynced, generation-hashed, and serialized with
 an OS file lock that is released if the process dies. A restart revalidates
 already verified registry state. If a process died after a push but before
 durable Buildx metadata exists, restart fails closed and never republishes that
-mutable commit tag; explicit operator recovery is required. The final dossier
-binds the completed journal hash and is created privately without overwriting
-an existing dossier.
+mutable source-commit tag; explicit operator recovery is required. Finalization
+binds the completed journal hash and creates the dossier privately without
+overwriting an existing file. It never invokes a build or accepts a tag.
+
+`p42-verifier-image-release/v1` remains historical evidence only. Consumers
+fail closed on v1 instead of reinterpreting its single `source_commit` as one
+of the two v2 authorities.
 
 This dossier is release evidence, not independent-host admission evidence. A
 registry operator with valid push credentials must provision the repository
@@ -76,9 +96,14 @@ does not create those hosts, prove hardware identity, or close Gate 2.
 
 Each runner can consume the finished dossier with the pull-only rehearsal in
 `docs/VERIFIER_RUNNER.md`. That path refuses tags and local builds, matches the
-resolved host-platform config digest and OCI labels to the dossier, executes a
-fixture under the production sandbox policy, and emits
-`p42-verifier-image-runtime-rehearsal/v1`. It deliberately remains marked
+resolved host-platform config digest and OCI labels to the dossier, then uses
+the same bounded extraction path as local admission to hash the reviewed source
+files actually present under `/repo` in the pulled immutable image. The
+observed filesystem-source hash must equal the exact `S` source hash even when
+all labels claim the expected value. It is recorded in each raw rehearsal and
+the signed host summary before the fixture is executed under the production
+sandbox policy and the runner emits
+`p42-verifier-image-runtime-rehearsal/v2`. It deliberately remains marked
 single-host, non-launch evidence until the independent signed host matrix and
 deployment-specific rehearsal exist.
 
@@ -111,13 +136,33 @@ A problem may be marked fundable only when all of these match:
   then records `admissionMatrixDigest`, a durable `ipfs://` or `ar://` matrix
   URI, and on-chain `admissionMatrixHash = keccak256(utf8(admissionMatrixDigest))`.
 
-Run the local gate:
+Run the release-bound local gate from a clean checkout at exact `R`. The dossier
+and completed publication-journal file digests must be supplied from independent
+release records, not calculated implicitly by the command. The portable gate
+proves `S` and `R` exist, proves `S` is an ancestor of `R`, recomputes both exact
+Git-archive digests, validates the pinned journal bytes and self-hash, and
+replays the exact-ten board set and generated source bindings from both commit
+snapshots before accepting any individual board:
 
 ```bash
-PYTHONPATH=src python3 -m p42_prizes.cli admit-ready \
+PYTHONPATH=src python3 -m p42_prizes.cli admit-release-ready \
   --problem problems/<slug> \
-  --matrix admission-matrix.json
+  --matrix admission-matrix.json \
+  --image-dossier verifier-image-release-v2.json \
+  --image-dossier-sha256 sha256:<independent-dossier-file-digest> \
+  --publication-journal verifier-image-publication.journal.json \
+  --publication-journal-sha256 sha256:<independent-journal-file-digest> \
+  --host-set-bundle host-a.bundle --host-set-hash sha256:<signed-host-set-hash> \
+  --host-set-bundle host-b.bundle --host-set-hash sha256:<signed-host-set-hash> \
+  --host-set-bundle host-c.bundle --host-set-hash sha256:<signed-host-set-hash> \
+  --host-set-bundle host-d.bundle --host-set-hash sha256:<signed-host-set-hash>
 ```
+
+`admit-ready` remains a matrix-only preflight and is not sufficient to activate
+a v2 image release. Canonical contract release preparation, offline
+verification, and production deployment use `admit-release-ready` with both
+independent file pins, every independently pinned signed host-set bundle, and
+the exact `R` checkout.
 
 `admit-ready` permanently rejects the `hadamard-mini` Phase 0 demo fixture and
 the current signed C3 package, even if a caller supplies an immutable image and

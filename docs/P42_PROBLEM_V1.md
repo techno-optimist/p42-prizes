@@ -46,15 +46,21 @@ PYTHONPATH=src python3 -m p42_prizes.cli admit-host \
 
 PYTHONPATH=src python3 -m p42_prizes.cli admit-matrix \
   --evidence x86-glibc-a.json \
+  --host-set-binding x86-glibc-a.host-set-binding.json \
   --evidence x86-glibc-b.json \
+  --host-set-binding x86-glibc-b.host-set-binding.json \
   --evidence arm-glibc-a.json \
+  --host-set-binding arm-glibc-a.host-set-binding.json \
   --evidence arm-glibc-b.json \
+  --host-set-binding arm-glibc-b.host-set-binding.json \
   --output admission-matrix.json
 ```
 
 The matrix gate requires at least four distinct host labels, both `x86_64` and
 `aarch64`, at least two distinct `glibc` versions, and byte-identical canonical
-`VerdictReport` hashes. The artifact schemas live at
+`VerdictReport` hashes. Matrix v4 also binds every host entry to its signed
+all-ten host-set hash, board summary, and exact pair of raw runtime receipts.
+The artifact schemas live at
 `schemas/admission-host.schema.json` and `schemas/admission-matrix.schema.json`.
 
 Before a problem can be funded, the verifier image must also pass the immutable

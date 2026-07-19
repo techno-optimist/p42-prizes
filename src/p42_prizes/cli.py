@@ -52,7 +52,10 @@ from p42_prizes.open_witness_authority import (
 )
 from p42_prizes.open_witness_policy import OpenWitnessPolicyError, load_production_open_witness_policy
 from p42_prizes.problem import load_manifest, repo_root_from_problem, validate_problem
-from p42_prizes.readiness import validate_fundable_admission
+from p42_prizes.readiness import (
+    validate_fundable_admission,
+    validate_fundable_release_admission,
+)
 from p42_prizes.runner_alerts import RunnerAlertError, build_runner_alerts
 from p42_prizes.runner_burst import RunnerBurstError, normalize_runner_burst_report
 from p42_prizes.runner_queue import (
@@ -386,7 +389,8 @@ def _cmd_admit_host(args: argparse.Namespace) -> int:
 def _cmd_admit_matrix(args: argparse.Namespace) -> int:
     try:
         evidence = [load_evidence_file(path) for path in args.evidence]
-        matrix = build_admission_matrix(evidence)
+        bindings = [load_evidence_file(path) for path in args.host_set_binding]
+        matrix = build_admission_matrix(evidence, host_set_bindings=bindings)
         _enforce_gate_schema(matrix, "admission-matrix.schema.json")
     except (AdmissionError, jsonschema.ValidationError) as exc:
         print(str(exc), file=sys.stderr)
@@ -412,6 +416,33 @@ def _cmd_admit_ready(args: argparse.Namespace) -> int:
             print(error, file=sys.stderr)
         return 1
     print(f"OK: {Path(args.problem)} is fundable-admission ready")
+    return 0
+
+
+def _cmd_admit_release_ready(args: argparse.Namespace) -> int:
+    matrix = args.matrix
+    if args.matrix_stdin:
+        try:
+            matrix = read_strict_json_stream(sys.stdin.buffer, max_bytes=DEFAULT_MAX_BYTES)
+        except Exception as exc:
+            print(f"stdin admission matrix: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(matrix, dict):
+            print("stdin admission matrix must be an object", file=sys.stderr)
+            return 1
+    if len(args.host_set_bundle) != len(args.host_set_hash):
+        print("host-set bundle paths and hashes must have equal cardinality", file=sys.stderr)
+        return 1
+    errors = validate_fundable_release_admission(
+        args.problem, matrix, args.image_dossier, args.image_dossier_sha256,
+        args.publication_journal, args.publication_journal_sha256,
+        list(zip(args.host_set_bundle, args.host_set_hash, strict=True)),
+    )
+    if errors:
+        for error in errors:
+            print(error, file=sys.stderr)
+        return 1
+    print(f"OK: {Path(args.problem)} is release-bound fundable-admission ready")
     return 0
 
 
@@ -1131,6 +1162,12 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="host evidence JSON file; repeat for every matrix host",
     )
+    admit_matrix.add_argument(
+        "--host-set-binding",
+        action="append",
+        required=True,
+        help="board-specific signed host-set binding; repeat for every matrix host",
+    )
     admit_matrix.add_argument("--output")
     admit_matrix.set_defaults(func=_cmd_admit_matrix)
 
@@ -1143,6 +1180,22 @@ def build_parser() -> argparse.ArgumentParser:
     admit_ready_matrix.add_argument("--matrix")
     admit_ready_matrix.add_argument("--matrix-stdin", action="store_true")
     admit_ready.set_defaults(func=_cmd_admit_ready)
+
+    admit_release_ready = subparsers.add_parser(
+        "admit-release-ready",
+        help="require matrix admission and an exact v2 verifier-source/release-config dossier",
+    )
+    admit_release_ready.add_argument("--problem", required=True)
+    admit_release_matrix = admit_release_ready.add_mutually_exclusive_group(required=True)
+    admit_release_matrix.add_argument("--matrix")
+    admit_release_matrix.add_argument("--matrix-stdin", action="store_true")
+    admit_release_ready.add_argument("--image-dossier", required=True)
+    admit_release_ready.add_argument("--image-dossier-sha256", required=True)
+    admit_release_ready.add_argument("--publication-journal", required=True)
+    admit_release_ready.add_argument("--publication-journal-sha256", required=True)
+    admit_release_ready.add_argument("--host-set-bundle", action="append", required=True)
+    admit_release_ready.add_argument("--host-set-hash", action="append", required=True)
+    admit_release_ready.set_defaults(func=_cmd_admit_release_ready)
 
     seed_check = subparsers.add_parser(
         "seed-check",

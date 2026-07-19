@@ -3,7 +3,7 @@ from __future__ import annotations
 from fractions import Fraction
 from pathlib import Path
 import re
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from p42_prizes.admission import (
     AdmissionError,
@@ -12,11 +12,14 @@ from p42_prizes.admission import (
     REQUIRED_ARCHITECTURES,
     SOURCE_HASH_ALGORITHM,
     compute_source_hash,
+    load_image_release_dossier,
     load_evidence_file,
     ssh_public_key_fingerprint,
     validate_admission_matrix,
+    validate_image_release_checkout,
+    validate_problem_image_release_binding,
 )
-from p42_prizes.problem import load_manifest, validate_problem
+from p42_prizes.problem import load_manifest, repo_root_from_problem, validate_problem
 from p42_prizes.runner_sandbox import RunnerSandboxError, compose_immutable_image_ref
 from p42_prizes.verdict import (
     MAX_SCORE_ATOMS_BOUND,
@@ -323,4 +326,66 @@ def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path
         if len(observed_fingerprints) < MIN_MATRIX_HOSTS:
             errors.append(f"admission matrix: requires {MIN_MATRIX_HOSTS} distinct manifest-trusted host keys")
 
+    return errors
+
+
+def validate_fundable_release_admission(
+    problem_dir: str | Path,
+    matrix_path: str | Path | Mapping[str, Any],
+    dossier_path: str | Path,
+    dossier_file_sha256: str,
+    publication_journal_path: str | Path,
+    publication_journal_file_sha256: str,
+    host_set_bundles: Sequence[tuple[str | Path, str]],
+) -> list[str]:
+    """Production gate: matrix admission plus exact v2 image adoption."""
+
+    errors = validate_fundable_admission(problem_dir, matrix_path)
+    try:
+        dossier = load_image_release_dossier(
+            dossier_path, expected_file_sha256=dossier_file_sha256,
+        )
+    except AdmissionError as exc:
+        errors.append(f"image dossier: {exc}")
+        return errors
+    try:
+        validate_image_release_checkout(
+            repo_root_from_problem(Path(problem_dir).resolve()),
+            dossier,
+            publication_journal_path=publication_journal_path,
+            publication_journal_file_sha256=publication_journal_file_sha256,
+        )
+    except AdmissionError as exc:
+        errors.append(f"image dossier checkout: {exc}")
+        return errors
+    errors.extend(
+        f"image dossier: {error}"
+        for error in validate_problem_image_release_binding(problem_dir, dossier)
+    )
+    if errors:
+        return errors
+    try:
+        from p42_prizes.runtime_admission import (
+            load_fixture_manifest,
+            validate_matrix_host_set_bundles,
+        )
+        from p42_prizes.verdict import sha256_file
+
+        root = repo_root_from_problem(Path(problem_dir).resolve())
+        fixture_path = root / "protocol" / "production-verifier-fixtures-v1.json"
+        fixture_sha256 = sha256_file(fixture_path)
+        fixtures = load_fixture_manifest(root, fixture_path, expected_sha256=fixture_sha256)
+        raw_matrix = dict(matrix_path) if isinstance(matrix_path, Mapping) else load_evidence_file(matrix_path)
+        checked_matrix = validate_admission_matrix(raw_matrix)
+        validate_matrix_host_set_bundles(
+            checked_matrix,
+            [(Path(path), expected_hash) for path, expected_hash in host_set_bundles],
+            root=root,
+            dossier=dossier,
+            fixtures=fixtures,
+            dossier_sha256=dossier_file_sha256,
+            fixture_sha256=fixture_sha256,
+        )
+    except AdmissionError as exc:
+        errors.append(f"host-set bundles: {exc}")
     return errors

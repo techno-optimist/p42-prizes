@@ -1,18 +1,20 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://projectforty2.org/schemas/verifier-image-release.schema.json",
-  "title": "P42 verifier image release dossier",
+  "title": "P42 verifier image release dossier v2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "published_at_utc", "source_commit", "source_archive_digest", "registry_base", "platforms", "boards", "manifest_mutation", "publication_journal_hash", "dossier_hash"],
+  "required": ["schema_version", "published_at_utc", "identity_model", "verifier_source_commit", "verifier_source_archive_digest", "release_config_commit", "release_config_archive_digest", "registry_base", "platforms", "boards", "publication_journal_hash", "dossier_hash"],
   "properties": {
-    "schema_version": {"const": "p42-verifier-image-release/v1"},
+    "schema_version": {"const": "p42-verifier-image-release/v2"},
     "published_at_utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
-    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-    "source_archive_digest": {"$ref": "#/$defs/digest"},
+    "identity_model": {"const": "p42-verifier-source-release-config/v1"},
+    "verifier_source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "verifier_source_archive_digest": {"$ref": "#/$defs/digest"},
+    "release_config_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "release_config_archive_digest": {"$ref": "#/$defs/digest"},
     "registry_base": {"type": "string", "pattern": "^[a-z0-9.-]+(?::[0-9]{1,5})?/[a-z0-9._/-]+$"},
     "platforms": {"const": ["linux/amd64", "linux/arm64"]},
-    "manifest_mutation": {"const": "none"},
     "publication_journal_hash": {"$ref": "#/$defs/digest"},
     "dossier_hash": {"$ref": "#/$defs/digest"},
     "boards": {
@@ -36,11 +38,13 @@
     "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "board": {
       "type": "object", "additionalProperties": false,
-      "required": ["slug", "problem_id", "version", "source_hash", "repository", "index_digest", "immutable_reference", "platform_manifests"],
+      "required": ["slug", "problem_id", "version", "source_hash", "repository", "index_digest", "immutable_reference", "release_manifest_path", "release_manifest_sha256", "platform_manifests"],
       "properties": {
         "slug": {"type": "string"}, "problem_id": {"type": "string"}, "version": {"type": "string", "minLength": 1},
         "source_hash": {"$ref": "#/$defs/digest"}, "repository": {"type": "string"}, "index_digest": {"$ref": "#/$defs/digest"},
         "immutable_reference": {"type": "string", "pattern": "^[^@]+@sha256:[0-9a-f]{64}$"},
+        "release_manifest_path": {"type": "string", "pattern": "^problems/[a-z0-9][a-z0-9-]*/problem\\.yaml$"},
+        "release_manifest_sha256": {"$ref": "#/$defs/digest"},
         "platform_manifests": {
           "type": "array", "minItems": 2, "maxItems": 2,
           "prefixItems": [

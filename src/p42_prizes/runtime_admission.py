@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import jsonschema
 
@@ -35,7 +35,7 @@ from p42_prizes.verdict import canonical_json, sha256_bytes, sha256_file
 
 
 FIXTURE_SCHEMA_VERSION = "p42-production-verifier-fixtures/v1"
-HOST_SET_SCHEMA_VERSION = "p42-admission-host-set/v1"
+HOST_SET_SCHEMA_VERSION = "p42-admission-host-set/v3"
 REPORTS_PER_BOARD = 2
 MAX_JSON_BYTES = 8 * 1024 * 1024
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -212,8 +212,8 @@ def validate_clean_source(root: Path, dossier: Mapping[str, Any]) -> None:
     """Recompute dossier source hashes from the clean committed source cohort."""
 
     head = validate_clean_checkout(root)
-    if head != dossier.get("source_commit"):
-        raise RuntimeAdmissionError("checkout HEAD does not match the pinned dossier source commit")
+    if head != dossier.get("release_config_commit"):
+        raise RuntimeAdmissionError("checkout HEAD does not match the pinned release-config commit")
 
     with tempfile.TemporaryDirectory(prefix="p42-source-cohort-") as directory:
         archive_path = Path(directory) / "source.tar"
@@ -271,8 +271,10 @@ def _stable_report_identity(report: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "verdict": report["execution"]["verdict"],
         "solution_sha256": report["solution_sha256"],
-        "source_commit": report["source_commit"],
+        "verifier_source_commit": report["verifier_source_commit"],
+        "release_config_commit": report["release_config_commit"],
         "source_hash": report["board"]["source_hash"],
+        "observed_source_hash": report["image"]["observed_source_hash"],
         "index_digest": report["image"]["index_digest"],
         "config_digest": report["image"]["expected_config_digest"],
         "local_image_id": report["image"]["local_image_id"],
@@ -337,6 +339,11 @@ def build_host_evidence_from_pair(
         raise RuntimeAdmissionError(f"paired runtime reports disagree for {slug}")
     if reports[0]["solution_sha256"] != fixture["sha256"]:
         raise RuntimeAdmissionError(f"runtime report solution does not match pinned fixture for {slug}")
+    observed_source_hash = reports[0]["image"].get("observed_source_hash")
+    if observed_source_hash != reports[0]["board"].get("source_hash"):
+        raise RuntimeAdmissionError(
+            f"pulled image filesystem source does not match the verifier-source commit for {slug}"
+        )
     verdict = reports[0]["execution"]["verdict"]
     if not isinstance(verdict, dict):
         raise RuntimeAdmissionError(f"runtime report has no VerdictReport for {slug}")
@@ -370,9 +377,11 @@ def build_host_evidence_from_pair(
             "image_os": os_name,
         },
         "source": {
-            "commit": reports[0]["source_commit"],
+            "commit": reports[0]["verifier_source_commit"],
             "tree_hash_algorithm": SOURCE_HASH_ALGORITHM,
-            "tree_hash": reports[0]["board"]["source_hash"],
+            # This value is the digest observed by bounded extraction from the
+            # pulled immutable image, not a copy of its OCI label.
+            "tree_hash": observed_source_hash,
         },
         "report": verdict,
     }
@@ -429,12 +438,24 @@ def build_host_set(
             signing_key=signing_key,
             generated_at_utc=timestamp,
         )
+        rehearsal_refs = []
+        for run_index, (_source_path, report) in enumerate(pairs, start=1):
+            report_filename = f"{slug}.runtime-rehearsal-{run_index}.json"
+            report_file_sha256 = sha256_bytes(
+                (canonical_json(report) + "\n").encode("utf-8")
+            )
+            rehearsal_refs.append({
+                "path": report_filename,
+                "file_sha256": report_file_sha256,
+                "rehearsal_hash": report["rehearsal_hash"],
+            })
+            artifacts.append((report_filename, report))
         filename = f"{slug}.admission-host.json"
         artifacts.append((filename, evidence))
         board_index.append({
             "slug": slug,
             "fixture": {"path": fixture["path"], "sha256": fixture["sha256"]},
-            "rehearsal_hashes": [item[1]["rehearsal_hash"] for item in pairs],
+            "runtime_rehearsals": rehearsal_refs,
             "evidence_path": filename,
             "evidence_hash": evidence["evidence_hash"],
         })
@@ -445,7 +466,8 @@ def build_host_set(
             "path": str(dossier_path),
             "file_sha256": dossier_sha256,
             "dossier_hash": dossier["dossier_hash"],
-            "source_commit": dossier["source_commit"],
+            "verifier_source_commit": dossier["verifier_source_commit"],
+            "release_config_commit": dossier["release_config_commit"],
         },
         "fixtures": {
             "path": str(fixture_path),
@@ -493,6 +515,7 @@ def validate_host_set(
     expected_host: Mapping[str, str],
     expected_key_fingerprint: str,
     expected_runtime: str,
+    runtime_report_validator: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> None:
     """Validate a host set against independently pinned release and fixture inputs."""
 
@@ -526,7 +549,8 @@ def validate_host_set(
     if not isinstance(dossier_pin, Mapping) or (
         dossier_pin.get("file_sha256") != dossier_sha256
         or dossier_pin.get("dossier_hash") != dossier.get("dossier_hash")
-        or dossier_pin.get("source_commit") != dossier.get("source_commit")
+        or dossier_pin.get("verifier_source_commit") != dossier.get("verifier_source_commit")
+        or dossier_pin.get("release_config_commit") != dossier.get("release_config_commit")
     ):
         raise RuntimeAdmissionError("host-set dossier binding does not match the independent release input")
     if not isinstance(fixture_pin, Mapping) or (
@@ -551,6 +575,17 @@ def validate_host_set(
         or len(expected_boards) != 10
     ):
         raise RuntimeAdmissionError("independent inputs must contain exactly the all-ten cohort")
+    if runtime_report_validator is None:
+        rehearsal = _load_rehearsal_module(root)
+
+        def runtime_report_validator(
+            report: Mapping[str, Any], release_board: Mapping[str, Any]
+        ) -> Mapping[str, Any]:
+            slug = release_board["slug"]
+            manifest = load_manifest(root / "problems" / slug)
+            return rehearsal.validate_runtime_report(report, dossier=dossier, manifest=manifest)
+
+    expected_artifact_names: set[str] = set()
     for position, board in enumerate(boards):
         fixture = expected_fixtures[position]
         release_board = expected_boards[position]
@@ -563,9 +598,64 @@ def validate_host_set(
         ):
             raise RuntimeAdmissionError(f"host-set external board binding is invalid at board {position}")
         filename = board.get("evidence_path") if isinstance(board, Mapping) else None
+        rehearsal_refs = board.get("runtime_rehearsals") if isinstance(board, Mapping) else None
+        if (
+            not isinstance(rehearsal_refs, list)
+            or len(rehearsal_refs) != REPORTS_PER_BOARD
+        ):
+            raise RuntimeAdmissionError(f"host-set raw rehearsal index is invalid at board {position}")
         evidence = artifacts.get(filename) if isinstance(filename, str) else None
         if not isinstance(evidence, Mapping):
             raise RuntimeAdmissionError(f"host-set evidence is missing at board {position}")
+        expected_artifact_names.add(filename)
+        raw_reports: list[Mapping[str, Any]] = []
+        for run_index, rehearsal_ref in enumerate(rehearsal_refs, start=1):
+            if not isinstance(rehearsal_ref, Mapping):
+                raise RuntimeAdmissionError(
+                    f"host-set raw rehearsal reference is invalid at board {position} run {run_index}"
+                )
+            report_path = rehearsal_ref.get("path")
+            if not isinstance(report_path, str) or Path(report_path).name != report_path:
+                raise RuntimeAdmissionError(
+                    f"host-set raw rehearsal path is invalid at board {position} run {run_index}"
+                )
+            report = artifacts.get(report_path)
+            if not isinstance(report, Mapping):
+                raise RuntimeAdmissionError(
+                    f"host-set raw rehearsal is missing at board {position} run {run_index}"
+                )
+            expected_artifact_names.add(report_path)
+            observed_file_hash = sha256_bytes(
+                (canonical_json(report) + "\n").encode("utf-8")
+            )
+            if observed_file_hash != rehearsal_ref.get("file_sha256"):
+                raise RuntimeAdmissionError(
+                    f"host-set raw rehearsal file hash mismatch at board {position} run {run_index}"
+                )
+            try:
+                validated_report = runtime_report_validator(report, release_board)
+            except Exception as exc:
+                raise RuntimeAdmissionError(
+                    f"host-set raw rehearsal is invalid at board {position} run {run_index}: {exc}"
+                ) from exc
+            if (
+                validated_report.get("rehearsal_hash") != rehearsal_ref.get("rehearsal_hash")
+                or validated_report.get("board", {}).get("slug") != expected_slug
+                or not validated_report.get("result", {}).get("succeeded")
+            ):
+                raise RuntimeAdmissionError(
+                    f"host-set raw rehearsal binding is invalid at board {position} run {run_index}"
+                )
+            raw_reports.append(validated_report)
+        if _stable_report_identity(raw_reports[0]) != _stable_report_identity(raw_reports[1]):
+            raise RuntimeAdmissionError(f"host-set raw rehearsal pair disagrees at board {position}")
+        if (
+            raw_reports[0].get("rehearsal_hash") == raw_reports[1].get("rehearsal_hash")
+            or raw_reports[0].get("execution_nonce") == raw_reports[1].get("execution_nonce")
+        ):
+            raise RuntimeAdmissionError(
+                f"host-set raw rehearsal pair is not independently challenged at board {position}"
+            )
         validated, signed = _validate_host_evidence(evidence, position)
         if (
             not signed
@@ -573,7 +663,7 @@ def validate_host_set(
             or validated.get("problem_id") != expected_slug
             or validated.get("solution_hash") != fixture.get("sha256")
             or validated.get("verifier_image") != release_board.get("index_digest")
-            or validated.get("source", {}).get("commit") != dossier.get("source_commit")
+            or validated.get("source", {}).get("commit") != dossier.get("verifier_source_commit")
             or validated.get("source", {}).get("tree_hash") != release_board.get("source_hash")
             or validated.get("host") != index.get("host")
             or validated.get("execution", {}).get("runtime") != expected_runtime
@@ -581,6 +671,8 @@ def validate_host_set(
             != attestation.get("key_fingerprint")
         ):
             raise RuntimeAdmissionError(f"host-set evidence binding is invalid at board {position}")
+    if len(expected_artifact_names) != 30 or set(artifacts) != expected_artifact_names:
+        raise RuntimeAdmissionError("host-set contains orphan or unindexed artifacts")
 
 
 def _write_exclusive_file(directory_fd: int, name: str, value: Mapping[str, Any]) -> None:
@@ -642,47 +734,214 @@ def reconcile_published_host_set(
     expected_host: Mapping[str, str],
     expected_key_fingerprint: str,
     expected_runtime: str,
+    runtime_report_validator: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Accept an existing bundle only after complete independent revalidation."""
 
+    parent = output_dir.parent.resolve(strict=True)
+    parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+    directory_fd = -1
+    held_children: list[tuple[str, int, tuple[int, ...]]] = []
+
+    def identity(metadata: os.stat_result) -> tuple[int, ...]:
+        values = [metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_nlink]
+        generation = getattr(metadata, "st_gen", None)
+        if generation is not None:
+            values.append(generation)
+        return tuple(values)
+
+    def directory_generation(metadata: os.stat_result) -> tuple[int, ...]:
+        return identity(metadata) + (metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+    def read_child(name: str) -> dict[str, Any]:
+        if Path(name).name != name or name in ("", ".", ".."):
+            raise RuntimeAdmissionError("existing host-set artifact path is invalid")
+        try:
+            descriptor = os.open(
+                name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd,
+            )
+        except OSError as exc:
+            raise RuntimeAdmissionError("could not open a nofollow host-set artifact") from exc
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or opened.st_size < 2
+                or opened.st_size > MAX_JSON_BYTES
+            ):
+                raise RuntimeAdmissionError("existing host-set artifacts must be bounded singly linked regular files")
+            payload = b""
+            while len(payload) < opened.st_size:
+                chunk = os.read(descriptor, opened.st_size - len(payload))
+                if not chunk:
+                    raise RuntimeAdmissionError("existing host-set artifact was truncated while reading")
+                payload += chunk
+            final = os.fstat(descriptor)
+            if directory_generation(final) != directory_generation(opened):
+                raise RuntimeAdmissionError("existing host-set artifact changed while reading")
+            held_children.append((name, descriptor, directory_generation(opened)))
+        except Exception:
+            os.close(descriptor)
+            raise
+        try:
+            value = loads_strict_json(payload)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeAdmissionError("existing host-set artifact is not strict UTF-8 JSON") from exc
+        if not isinstance(value, dict) or payload != (canonical_json(value) + "\n").encode("utf-8"):
+            raise RuntimeAdmissionError("existing host-set artifacts must use canonical JSON bytes")
+        return value
+
     try:
-        metadata = output_dir.lstat()
-    except OSError as exc:
-        raise RuntimeAdmissionError(f"could not inspect existing host-set output: {exc}") from exc
-    if output_dir.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
-        raise RuntimeAdmissionError("existing host-set output must be a direct directory")
-    index = read_pinned_canonical_json(output_dir / "host-set.json", expected_sha256=None)
-    _validate_schema(index, root, "admission-host-set.schema.json", "host-set index")
-    boards = index.get("boards")
-    if not isinstance(boards, list):
-        raise RuntimeAdmissionError("existing host-set index boards are invalid")
-    artifact_names = [board.get("evidence_path") for board in boards if isinstance(board, Mapping)]
-    if (
-        len(artifact_names) != 10
-        or any(not isinstance(name, str) or Path(name).name != name for name in artifact_names)
-        or len(set(artifact_names)) != 10
-    ):
-        raise RuntimeAdmissionError("existing host-set artifact paths are invalid")
-    expected_names = {"host-set.json", *artifact_names}
-    if set(os.listdir(output_dir)) != expected_names:
-        raise RuntimeAdmissionError("existing host-set directory contains an incomplete or unexpected file set")
-    artifacts = {
-        name: read_pinned_canonical_json(output_dir / name, expected_sha256=None)
-        for name in artifact_names
+        try:
+            pathname_metadata = os.stat(output_dir.name, dir_fd=parent_fd, follow_symlinks=False)
+            directory_fd = os.open(
+                output_dir.name,
+                os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=parent_fd,
+            )
+        except OSError as exc:
+            raise RuntimeAdmissionError(f"could not inspect existing host-set output: {exc}") from exc
+        opened_directory = os.fstat(directory_fd)
+        if not stat.S_ISDIR(pathname_metadata.st_mode) or identity(opened_directory) != identity(pathname_metadata):
+            raise RuntimeAdmissionError("existing host-set output must be a direct pinned directory")
+        initial_generation = directory_generation(opened_directory)
+        names = os.listdir(directory_fd)
+        if len(names) != len(set(names)):
+            raise RuntimeAdmissionError("existing host-set directory contains duplicate entries")
+        index = read_child("host-set.json")
+        _validate_schema(index, root, "admission-host-set.schema.json", "host-set index")
+        boards = index.get("boards")
+        if not isinstance(boards, list):
+            raise RuntimeAdmissionError("existing host-set index boards are invalid")
+        artifact_names = []
+        for board in boards:
+            if not isinstance(board, Mapping):
+                continue
+            artifact_names.append(board.get("evidence_path"))
+            rehearsals = board.get("runtime_rehearsals")
+            if isinstance(rehearsals, list):
+                artifact_names.extend(
+                    item.get("path") for item in rehearsals if isinstance(item, Mapping)
+                )
+        if (
+            len(artifact_names) != 30
+            or any(not isinstance(name, str) or Path(name).name != name for name in artifact_names)
+            or len(set(artifact_names)) != 30
+        ):
+            raise RuntimeAdmissionError("existing host-set artifact paths are invalid")
+        expected_names = {"host-set.json", *artifact_names}
+        if set(names) != expected_names:
+            raise RuntimeAdmissionError("existing host-set directory contains an incomplete or unexpected file set")
+        artifacts = {name: read_child(name) for name in artifact_names}
+        validate_host_set(
+            index,
+            artifacts,
+            root=root,
+            dossier=dossier,
+            fixtures=fixtures,
+            dossier_sha256=dossier_sha256,
+            fixture_sha256=fixture_sha256,
+            expected_host=expected_host,
+            expected_key_fingerprint=expected_key_fingerprint,
+            expected_runtime=expected_runtime,
+            runtime_report_validator=runtime_report_validator,
+        )
+        for name, descriptor, opened_generation in held_children:
+            final_child = os.fstat(descriptor)
+            pathname_child = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if (
+                directory_generation(final_child) != opened_generation
+                or identity(pathname_child) != identity(final_child)
+            ):
+                raise RuntimeAdmissionError("existing host-set artifact changed during reconciliation")
+        final_directory = os.fstat(directory_fd)
+        final_pathname = os.stat(output_dir.name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            directory_generation(final_directory) != initial_generation
+            or identity(final_pathname) != identity(opened_directory)
+        ):
+            raise RuntimeAdmissionError("existing host-set directory changed during reconciliation")
+        return index
+    finally:
+        for _name, descriptor, _generation in reversed(held_children):
+            os.close(descriptor)
+        if directory_fd >= 0:
+            os.close(directory_fd)
+        os.close(parent_fd)
+
+
+def validate_matrix_host_set_bundles(
+    matrix: Mapping[str, Any],
+    bundle_inputs: Sequence[tuple[Path, str]],
+    *,
+    root: Path,
+    dossier: Mapping[str, Any],
+    fixtures: Mapping[str, Any],
+    dossier_sha256: str,
+    fixture_sha256: str,
+    runtime_report_validator: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
+) -> None:
+    """Bind every matrix host to one independently pinned signed all-ten bundle."""
+
+    bindings = matrix.get("host_sets")
+    evidence_items = matrix.get("evidence")
+    problem_id = matrix.get("problem_id")
+    if not isinstance(bindings, list) or not isinstance(evidence_items, list):
+        raise RuntimeAdmissionError("admission matrix host-set bindings are missing")
+    if len(bundle_inputs) != len(bindings):
+        raise RuntimeAdmissionError("release admission requires one pinned host-set bundle per matrix host")
+    binding_by_hash = {
+        item.get("host_set_hash"): item for item in bindings if isinstance(item, Mapping)
     }
-    validate_host_set(
-        index,
-        artifacts,
-        root=root,
-        dossier=dossier,
-        fixtures=fixtures,
-        dossier_sha256=dossier_sha256,
-        fixture_sha256=fixture_sha256,
-        expected_host=expected_host,
-        expected_key_fingerprint=expected_key_fingerprint,
-        expected_runtime=expected_runtime,
-    )
-    return index
+    evidence_by_hash = {
+        item.get("evidence_hash"): item for item in evidence_items if isinstance(item, Mapping)
+    }
+    supplied_hashes = [expected_hash for _path, expected_hash in bundle_inputs]
+    if (
+        len(binding_by_hash) != len(bindings)
+        or len(set(supplied_hashes)) != len(supplied_hashes)
+        or set(supplied_hashes) != set(binding_by_hash)
+    ):
+        raise RuntimeAdmissionError("pinned host-set bundle cohort is missing, duplicated, or substituted")
+    for bundle_path, expected_hash in bundle_inputs:
+        _require_digest(expected_hash, "pinned host-set hash")
+        binding = binding_by_hash[expected_hash]
+        evidence = evidence_by_hash.get(binding.get("evidence_hash"))
+        if not isinstance(evidence, Mapping):
+            raise RuntimeAdmissionError("host-set binding refers to orphan matrix evidence")
+        expected_host = evidence.get("host")
+        attestation = evidence.get("attestation")
+        execution = evidence.get("execution")
+        if not isinstance(expected_host, Mapping) or not isinstance(attestation, Mapping) or not isinstance(execution, Mapping):
+            raise RuntimeAdmissionError("host-set binding matrix evidence is incomplete")
+        index = reconcile_published_host_set(
+            bundle_path,
+            root=root,
+            dossier=dossier,
+            fixtures=fixtures,
+            dossier_sha256=dossier_sha256,
+            fixture_sha256=fixture_sha256,
+            expected_host={key: str(value) for key, value in expected_host.items()},
+            expected_key_fingerprint=str(attestation.get("key_fingerprint")),
+            expected_runtime=str(execution.get("runtime")),
+            runtime_report_validator=runtime_report_validator,
+        )
+        if index.get("host_set_hash") != expected_hash:
+            raise RuntimeAdmissionError("host-set bundle does not match its independently pinned hash")
+        board = next(
+            (item for item in index.get("boards", []) if isinstance(item, Mapping) and item.get("slug") == problem_id),
+            None,
+        )
+        expected_binding = {
+            "host_set_hash": expected_hash,
+            "evidence_hash": board.get("evidence_hash") if isinstance(board, Mapping) else None,
+            "evidence_path": board.get("evidence_path") if isinstance(board, Mapping) else None,
+            "key_fingerprint": index.get("attestation", {}).get("key_fingerprint"),
+            "runtime_rehearsals": board.get("runtime_rehearsals") if isinstance(board, Mapping) else None,
+        }
+        if canonical_json(binding) != canonical_json(expected_binding):
+            raise RuntimeAdmissionError("admission matrix does not bind the exact host-set summary and raw receipt pair")
 
 
 def publish_host_set(

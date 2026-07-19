@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { keccak256 } from "ethers";
@@ -67,6 +68,10 @@ export async function prepareProductionRelease({
   repoRoot,
   ceremonyConfigPath,
   imageDossierPath,
+  imageDossierSha256,
+  publicationJournalPath,
+  publicationJournalSha256,
+  hostSetBundles,
   objectiveVerifierArtifactPath,
   sp1RuntimeAttestationPath,
   evidenceRoot,
@@ -95,14 +100,19 @@ export async function prepareProductionRelease({
   if (!repoRoot || !evidenceRoot || !outputRoot || rootsOverlap(root, evidence) || rootsOverlap(root, output) || rootsOverlap(evidence, output)) throw new Error("repository, evidence, and output roots must be explicit and pairwise disjoint");
   const commit = assertCleanCheckout(root, null, run);
   rootRelativePath(evidence, ceremonyConfigPath, "ceremony config");
+  const imageRegistryPath = rootRelativePath(evidence, imageDossierPath, "image dossier");
+  const journalRelativePath = rootRelativePath(evidence, publicationJournalPath, "publication journal");
   rootRelativePath(evidence, objectiveVerifierArtifactPath, "objective verifier artifact");
   rootRelativePath(evidence, sp1RuntimeAttestationPath, "SP1 runtime attestation");
-  const [ceremonyInput, dossierInput, objectiveVerifierInput] = await Promise.all([
+  const [ceremonyInput, dossierInput, journalInput, objectiveVerifierInput] = await Promise.all([
     readConfig(resolve(ceremonyConfigPath ?? ""), { trustedRoot: evidence }),
     readDossier(resolve(imageDossierPath ?? ""), { trustedRoot: evidence }),
+    readDossier(resolve(publicationJournalPath ?? ""), { trustedRoot: evidence }),
     readDossier(resolve(objectiveVerifierArtifactPath ?? ""), { trustedRoot: evidence }),
   ]);
   const { value: imageDossier, bytes: imageBytes } = dossierInput;
+  if (!/^sha256:[0-9a-f]{64}$/.test(imageDossierSha256 ?? "") || `sha256:${createHash("sha256").update(imageBytes).digest("hex")}` !== imageDossierSha256) throw new Error("image dossier does not match its independent file digest");
+  if (!/^sha256:[0-9a-f]{64}$/.test(publicationJournalSha256 ?? "") || `sha256:${createHash("sha256").update(journalInput.bytes).digest("hex")}` !== publicationJournalSha256) throw new Error("publication journal does not match its independent file digest");
   assertProductionObjectiveVerifierArtifact(objectiveVerifierInput.value);
   const config = parseCeremony(ethers, ceremonyInput.value, { deployerAddress: expectedDeployer });
   const sp1RuntimeAttestation = verifyRuntimeAttestation({
@@ -111,7 +121,6 @@ export async function prepareProductionRelease({
     evidencePath: sp1RuntimeAttestationPath,
     run,
   });
-  const imageRegistryPath = rootRelativePath(evidence, imageDossierPath, "image dossier");
   const objectiveVerifierArtifactRelativePath = rootRelativePath(evidence, objectiveVerifierArtifactPath, "objective verifier artifact");
   const hardhat = join(root, "contracts", "node_modules", ".bin", "hardhat");
   run(hardhat, ["compile", "--force"], { cwd: join(root, "contracts"), encoding: "utf8", stdio: "pipe" });
@@ -135,7 +144,14 @@ export async function prepareProductionRelease({
     objectiveVerifierArtifact: objectiveVerifierInput.value,
     problems: config.problems, now,
   });
-  preflightSlate(ethers, slate, config, { repoRoot: root, evidenceRoot: evidence });
+  preflightSlate(ethers, slate, config, {
+    repoRoot: root,
+    evidenceRoot: evidence,
+    imageDossierSha256,
+    publicationJournalPath: journalRelativePath,
+    publicationJournalSha256,
+    hostSetBundles,
+  });
   assertCleanCheckout(root, commit, run);
   await mkdir(output, { recursive: true, mode: 0o700 });
   const capsuleDirectory = join(output, "capsules");
@@ -156,6 +172,10 @@ export function requiredReleaseEnvironment(env = process.env) {
   const required = [
     "P42_MULTIBOARD_CEREMONY_CONFIG",
     "P42_PRODUCTION_IMAGE_DOSSIER_PATH",
+    "P42_PRODUCTION_IMAGE_DOSSIER_SHA256",
+    "P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_PATH",
+    "P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_SHA256",
+    "P42_ADMISSION_HOST_SET_BUNDLES_JSON",
     "P42_OBJECTIVE_VERIFIER_ARTIFACT_PATH",
     "P42_SP1_RUNTIME_ATTESTATION_PATH",
     "P42_RELEASE_EVIDENCE_ROOT",

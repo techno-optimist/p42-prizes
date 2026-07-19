@@ -143,16 +143,20 @@ def _dossier_and_registry():
             "index_digest": index_digest,
             "immutable_reference": f"{repository}@{index_digest}",
             "platform_manifests": platform_records,
+            "release_manifest_path": f"problems/{slug}/problem.yaml",
+            "release_manifest_sha256": reinspect._sha256((ROOT / "problems" / slug / "problem.yaml").read_bytes()),
         })
     dossier = release._finalize_dossier({
         "schema_version": release.SCHEMA_VERSION,
         "published_at_utc": "2026-07-18T00:00:00Z",
-        "source_commit": SOURCE_COMMIT,
-        "source_archive_digest": ARCHIVE,
+        "identity_model": release.IDENTITY_MODEL,
+        "verifier_source_commit": SOURCE_COMMIT,
+        "verifier_source_archive_digest": ARCHIVE,
+        "release_config_commit": VALIDATOR_COMMIT,
+        "release_config_archive_digest": "sha256:" + "6" * 64,
         "registry_base": BASE,
         "platforms": list(release.PLATFORMS),
         "boards": boards,
-        "manifest_mutation": "none",
         "publication_journal_hash": JOURNAL,
     })
     release.validate_release_dossier(dossier)

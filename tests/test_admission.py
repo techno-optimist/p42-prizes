@@ -20,18 +20,47 @@ from p42_prizes.admission import (
     VerifierRun,
     _inspect_image,
     _seal_host_evidence,
-    build_admission_matrix,
+    build_admission_matrix as _build_admission_matrix,
     build_verifier_env,
     compute_source_hash,
     generate_host_evidence,
     run_verifier_once,
     validate_admission_matrix,
+    validate_image_release_dossier,
+    validate_problem_image_release_binding,
 )
 from p42_prizes.verdict import canonical_json, sha256_bytes, sha256_file
 from p42_prizes.bounded_process import OutputLimitExceeded
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _host_set_bindings(evidence_items: list[dict]) -> list[dict]:
+    bindings = []
+    for index, evidence in enumerate(evidence_items):
+        slug = evidence["problem_id"]
+        bindings.append({
+            "host_set_hash": sha256_bytes(f"host-set-{index}".encode()),
+            "evidence_hash": evidence["evidence_hash"],
+            "evidence_path": f"{slug}.admission-host.json",
+            "key_fingerprint": evidence["attestation"].get("key_fingerprint", "SHA256:test-only-untrusted"),
+            "runtime_rehearsals": [
+                {
+                    "path": f"{slug}.runtime-rehearsal-{run}.json",
+                    "file_sha256": sha256_bytes(f"receipt-file-{index}-{run}".encode()),
+                    "rehearsal_hash": sha256_bytes(f"receipt-{index}-{run}".encode()),
+                }
+                for run in (1, 2)
+            ],
+        })
+    return bindings
+
+
+def build_admission_matrix(evidence_items, **kwargs):
+    materialized = list(evidence_items)
+    kwargs.setdefault("host_set_bindings", _host_set_bindings(materialized))
+    return _build_admission_matrix(materialized, **kwargs)
 
 
 def run_cli(*args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -240,7 +269,7 @@ def test_build_admission_matrix_accepts_signed_full_n_host_coverage(tmp_path: Pa
 
     schema = json.loads((ROOT / "schemas" / "admission-matrix.schema.json").read_text())
     jsonschema.validate(matrix, schema)
-    assert matrix["schema_version"] == "p42-admission-matrix/v3"
+    assert matrix["schema_version"] == "p42-admission-matrix/v4"
     assert matrix["coverage"]["host_count"] == 4
     assert matrix["coverage"]["signed_host_count"] == 4
     assert matrix["coverage"]["architectures"] == ["aarch64", "x86_64"]
@@ -256,8 +285,12 @@ def test_admit_matrix_cli_revalidates_signed_evidence(tmp_path: Path) -> None:
         paths.append(path)
 
     args: list[str] = ["admit-matrix"]
-    for path in paths:
+    bindings = _host_set_bindings(evidence)
+    for index, path in enumerate(paths):
         args.extend(["--evidence", str(path)])
+        binding_path = tmp_path / f"binding-{index}.json"
+        binding_path.write_text(canonical_json(bindings[index]), encoding="utf-8")
+        args.extend(["--host-set-binding", str(binding_path)])
     completed = run_cli(*args)
 
     assert completed.returncode == 0, completed.stderr
@@ -452,6 +485,365 @@ def test_source_hash_normalizes_the_self_referential_image_digest(tmp_path: Path
         encoding="utf-8",
     )
     assert compute_source_hash(problem) == before
+
+
+def test_v2_dossier_adopts_digest_only_commit_but_rejects_later_source_change(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    _copy_source_build_inputs(root)
+    shutil.copytree(ROOT / "schemas", root / "schemas")
+    shutil.copytree(ROOT / "src", root / "src")
+    problem = root / "problems" / "hadamard-mini"
+    shutil.copytree(ROOT / "problems" / "hadamard-mini", problem)
+    manifest_path = problem / "problem.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    repository = "ghcr.io/projectforty2/verifiers/hadamard-mini"
+    manifest["verifier"]["image_repository"] = repository
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "P42 Test"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "verifier source"], cwd=root, check=True)
+    verifier_source_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True,
+    ).stdout.strip()
+    source_hash = compute_source_hash(problem)
+
+    image_digest = "sha256:" + "a" * 64
+    manifest["verifier"]["image"] = image_digest
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    assert compute_source_hash(problem) == source_hash
+    subprocess.run(["git", "add", str(manifest_path)], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "adopt immutable digest"], cwd=root, check=True)
+    release_config_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True,
+    ).stdout.strip()
+
+    def board(slug: str, *, target: bool) -> dict:
+        version = manifest["verifier"]["version"] if target else "1.0.0"
+        repo = repository if target else f"ghcr.io/projectforty2/verifiers/{slug}"
+        platform_records = []
+        for platform in ("linux/amd64", "linux/arm64"):
+            platform_records.append({
+                "platform": platform,
+                "manifest_digest": "sha256:" + "b" * 64,
+                "manifest_size": 1,
+                "config_digest": "sha256:" + "c" * 64,
+                "config_size": 1,
+                "layer_count": 1,
+                "labels": {
+                    admission.OCI_REVISION_LABEL: verifier_source_commit,
+                    admission.SOURCE_HASH_LABEL: source_hash,
+                    admission.SOURCE_HASH_ALGORITHM_LABEL: admission.SOURCE_HASH_ALGORITHM,
+                    admission.PROBLEM_ID_LABEL: slug,
+                    admission.VERIFIER_VERSION_LABEL: version,
+                },
+                "runtime": {
+                    "user": "65534:65534", "workdir": f"/repo/problems/{slug}",
+                    "entrypoint": None, "cmd": [],
+                },
+            })
+        return {
+            "slug": slug, "problem_id": slug, "version": version,
+            "source_hash": source_hash, "repository": repo,
+            "index_digest": image_digest,
+            "immutable_reference": f"{repo}@{image_digest}",
+            "release_manifest_path": f"problems/{slug}/problem.yaml",
+            "release_manifest_sha256": sha256_file(manifest_path) if target else "sha256:" + "d" * 64,
+            "platform_manifests": platform_records,
+        }
+
+    dossier = {
+        "schema_version": admission.IMAGE_RELEASE_SCHEMA_VERSION,
+        "published_at_utc": "2026-07-18T00:00:00Z",
+        "identity_model": admission.IMAGE_RELEASE_IDENTITY_MODEL,
+        "verifier_source_commit": verifier_source_commit,
+        "verifier_source_archive_digest": "sha256:" + "e" * 64,
+        "release_config_commit": release_config_commit,
+        "release_config_archive_digest": "sha256:" + "f" * 64,
+        "registry_base": "ghcr.io/projectforty2/verifiers",
+        "platforms": ["linux/amd64", "linux/arm64"],
+        "boards": [board("hadamard-mini", target=True)] + [
+            board(f"synthetic-{index}", target=False) for index in range(9)
+        ],
+        "publication_journal_hash": "sha256:" + "1" * 64,
+    }
+    dossier["dossier_hash"] = sha256_bytes(canonical_json(dossier).encode("utf-8"))
+    (root / "protocol").mkdir()
+    (root / "protocol" / "production-board-set-v1.json").write_text(
+        json.dumps({"boards": [item["slug"] for item in dossier["boards"]]}),
+        encoding="utf-8",
+    )
+    assert validate_image_release_dossier(dossier) == dossier
+    assert validate_problem_image_release_binding(problem, dossier) == []
+
+    tampered = copy.deepcopy(dossier)
+    tampered["release_config_commit"] = "f" * 40
+    with pytest.raises(AdmissionError, match="self-hash mismatch"):
+        validate_image_release_dossier(tampered)
+
+    verifier_path = problem / "verifier" / "verify.py"
+    verifier_path.write_text(verifier_path.read_text() + "\n# changed verifier source\n")
+    assert any(
+        "rebuild required" in error
+        for error in validate_problem_image_release_binding(problem, dossier)
+    )
+
+
+def test_v2_dossier_structural_and_legacy_inputs_fail() -> None:
+    dossier = {
+        "schema_version": admission.IMAGE_RELEASE_SCHEMA_VERSION,
+        "identity_model": admission.IMAGE_RELEASE_IDENTITY_MODEL,
+        "verifier_source_commit": "a" * 40,
+        "release_config_commit": "b" * 40,
+        "verifier_source_archive_digest": "sha256:" + "1" * 64,
+        "release_config_archive_digest": "sha256:" + "2" * 64,
+        "publication_journal_hash": "sha256:" + "3" * 64,
+        "dossier_hash": "sha256:" + "4" * 64,
+        "boards": [],
+    }
+    with pytest.raises(AdmissionError, match="root keys"):
+        validate_image_release_dossier(dossier)
+    with pytest.raises(AdmissionError, match="historical-only"):
+        validate_image_release_dossier({"schema_version": "p42-verifier-image-release/v1"})
+
+
+def _portable_release_fixture(tmp_path: Path) -> tuple[Path, dict, Path, str]:
+    root = tmp_path / "portable-repo"
+    _copy_source_build_inputs(root)
+    shutil.copytree(ROOT / "schemas", root / "schemas")
+    shutil.copytree(ROOT / "src", root / "src")
+    board_set = json.loads(
+        (ROOT / "protocol" / "production-board-set-v1.json").read_text(encoding="utf-8")
+    )
+    slugs = board_set["boards"]
+    (root / "protocol").mkdir()
+    (root / "protocol" / "production-board-set-v1.json").write_text(
+        canonical_json({"boards": slugs}) + "\n", encoding="utf-8"
+    )
+    registry = "ghcr.io/projectforty2/verifiers"
+    versions: dict[str, str] = {}
+    for slug in slugs:
+        problem = root / "problems" / slug
+        shutil.copytree(ROOT / "problems" / slug, problem)
+        manifest_path = problem / "problem.yaml"
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        versions[slug] = manifest["verifier"]["version"]
+        manifest["verifier"]["image_repository"] = f"{registry}/{slug}"
+        manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "P42 Test"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "verifier source"], cwd=root, check=True)
+    source_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True,
+    ).stdout.strip()
+    source_hashes = {
+        slug: compute_source_hash(root / "problems" / slug) for slug in slugs
+    }
+    image_digest = "sha256:" + "a" * 64
+    for slug in slugs:
+        manifest_path = root / "problems" / slug / "problem.yaml"
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        manifest["verifier"]["image"] = image_digest
+        manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+        assert compute_source_hash(root / "problems" / slug) == source_hashes[slug]
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "release config"], cwd=root, check=True)
+    release_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True,
+    ).stdout.strip()
+    with admission._exact_git_snapshot(root, source_commit) as (_snapshot, source_archive):
+        pass
+    with admission._exact_git_snapshot(root, release_commit) as (_snapshot, release_archive):
+        pass
+
+    dossier_boards = []
+    journal_boards = []
+    for slug in slugs:
+        repository = f"{registry}/{slug}"
+        labels = {
+            admission.OCI_REVISION_LABEL: source_commit,
+            admission.SOURCE_HASH_LABEL: source_hashes[slug],
+            admission.SOURCE_HASH_ALGORITHM_LABEL: admission.SOURCE_HASH_ALGORITHM,
+            admission.PROBLEM_ID_LABEL: slug,
+            admission.VERIFIER_VERSION_LABEL: versions[slug],
+        }
+        platforms = [
+            {
+                "platform": platform,
+                "manifest_digest": "sha256:" + str(index + 1) * 64,
+                "manifest_size": 100 + index,
+                "config_digest": "sha256:" + str(index + 3) * 64,
+                "config_size": 200 + index,
+                "layer_count": 1,
+                "labels": labels,
+                "runtime": {
+                    "user": "65534:65534",
+                    "workdir": f"/repo/problems/{slug}",
+                    "entrypoint": None,
+                    "cmd": [],
+                },
+            }
+            for index, platform in enumerate(("linux/amd64", "linux/arm64"))
+        ]
+        release_record = {
+            "slug": slug,
+            "problem_id": slug,
+            "version": versions[slug],
+            "source_hash": source_hashes[slug],
+            "repository": repository,
+            "index_digest": image_digest,
+            "immutable_reference": f"{repository}@{image_digest}",
+            "platform_manifests": platforms,
+        }
+        dossier_boards.append({
+            **release_record,
+            "release_manifest_path": f"problems/{slug}/problem.yaml",
+            "release_manifest_sha256": sha256_file(root / "problems" / slug / "problem.yaml"),
+        })
+        journal_boards.append({
+            "slug": slug,
+            "problem_id": slug,
+            "version": versions[slug],
+            "source_hash": source_hashes[slug],
+            "repository": repository,
+            "tag": f"{repository}:{source_commit}",
+            "state": "verified",
+            "metadata_digest": "sha256:" + "9" * 64,
+            "release_record": release_record,
+        })
+    journal = {
+        "schema_version": "p42-verifier-image-publish-journal/v2",
+        "verifier_source_commit": source_commit,
+        "verifier_source_archive_digest": source_archive,
+        "registry_base": registry,
+        "platforms": ["linux/amd64", "linux/arm64"],
+        "generation": 20,
+        "boards": journal_boards,
+    }
+    journal["journal_hash"] = sha256_bytes(canonical_json(journal).encode("utf-8"))
+    dossier = {
+        "schema_version": admission.IMAGE_RELEASE_SCHEMA_VERSION,
+        "published_at_utc": "2026-07-18T00:00:00Z",
+        "identity_model": admission.IMAGE_RELEASE_IDENTITY_MODEL,
+        "verifier_source_commit": source_commit,
+        "verifier_source_archive_digest": source_archive,
+        "release_config_commit": release_commit,
+        "release_config_archive_digest": release_archive,
+        "registry_base": registry,
+        "platforms": ["linux/amd64", "linux/arm64"],
+        "boards": dossier_boards,
+        "publication_journal_hash": journal["journal_hash"],
+    }
+    dossier["dossier_hash"] = sha256_bytes(canonical_json(dossier).encode("utf-8"))
+    journal_path = tmp_path / "publication.journal.json"
+    journal_path.write_text(canonical_json(journal) + "\n", encoding="utf-8")
+    return root, dossier, journal_path, sha256_file(journal_path)
+
+
+def test_portable_release_validator_recomputes_commits_archives_and_journal(
+    tmp_path: Path,
+) -> None:
+    root, dossier, journal_path, journal_sha = _portable_release_fixture(tmp_path)
+    replayed = []
+    result = admission.validate_image_release_checkout(
+        root,
+        dossier,
+        publication_journal_path=journal_path,
+        publication_journal_file_sha256=journal_sha,
+        board_binding_verifier=lambda snapshot: replayed.append(snapshot),
+    )
+    assert result["verifier_source_archive_digest"] == dossier["verifier_source_archive_digest"]
+    assert result["release_config_archive_digest"] == dossier["release_config_archive_digest"]
+    assert len(replayed) == 2
+    assert replayed[0] != replayed[1]
+
+
+def test_portable_release_validator_rejects_arbitrary_archive_and_journal_hashes(
+    tmp_path: Path,
+) -> None:
+    root, dossier, journal_path, journal_sha = _portable_release_fixture(tmp_path)
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    forged_archive = "sha256:" + "0" * 64
+    journal["verifier_source_archive_digest"] = forged_archive
+    journal.pop("journal_hash")
+    journal["journal_hash"] = sha256_bytes(canonical_json(journal).encode("utf-8"))
+    journal_path.write_text(canonical_json(journal) + "\n", encoding="utf-8")
+    dossier["verifier_source_archive_digest"] = forged_archive
+    dossier["publication_journal_hash"] = journal["journal_hash"]
+    dossier.pop("dossier_hash")
+    dossier["dossier_hash"] = sha256_bytes(canonical_json(dossier).encode("utf-8"))
+    with pytest.raises(AdmissionError, match="archive digest mismatch"):
+        admission.validate_image_release_checkout(
+            root,
+            dossier,
+            publication_journal_path=journal_path,
+            publication_journal_file_sha256=sha256_file(journal_path),
+            board_binding_verifier=lambda _snapshot: None,
+        )
+
+    root, dossier, journal_path, journal_sha = _portable_release_fixture(tmp_path / "second")
+    dossier["publication_journal_hash"] = "sha256:" + "f" * 64
+    dossier.pop("dossier_hash")
+    dossier["dossier_hash"] = sha256_bytes(canonical_json(dossier).encode("utf-8"))
+    with pytest.raises(AdmissionError, match="journal hash"):
+        admission.validate_image_release_checkout(
+            root,
+            dossier,
+            publication_journal_path=journal_path,
+            publication_journal_file_sha256=journal_sha,
+            board_binding_verifier=lambda _snapshot: None,
+        )
+
+
+def test_portable_release_validator_rejects_unrelated_same_tree_source_commit(
+    tmp_path: Path,
+) -> None:
+    root, dossier, journal_path, _journal_sha = _portable_release_fixture(tmp_path)
+    original_source = dossier["verifier_source_commit"]
+    source_tree = subprocess.run(
+        ["git", "rev-parse", f"{original_source}^{{tree}}"],
+        cwd=root, check=True, text=True, capture_output=True,
+    ).stdout.strip()
+    unrelated_source = subprocess.run(
+        ["git", "commit-tree", source_tree], cwd=root, check=True, text=True,
+        input="unrelated verifier source\n", capture_output=True,
+    ).stdout.strip()
+    with admission._exact_git_snapshot(root, unrelated_source) as (_snapshot, archive_digest):
+        pass
+
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    dossier["verifier_source_commit"] = unrelated_source
+    dossier["verifier_source_archive_digest"] = archive_digest
+    journal["verifier_source_commit"] = unrelated_source
+    journal["verifier_source_archive_digest"] = archive_digest
+    for dossier_board, journal_board in zip(
+        dossier["boards"], journal["boards"], strict=True,
+    ):
+        journal_board["tag"] = f"{journal_board['repository']}:{unrelated_source}"
+        for record in (dossier_board, journal_board["release_record"]):
+            for platform in record["platform_manifests"]:
+                platform["labels"][admission.OCI_REVISION_LABEL] = unrelated_source
+    journal.pop("journal_hash")
+    journal["journal_hash"] = sha256_bytes(canonical_json(journal).encode("utf-8"))
+    journal_path.write_text(canonical_json(journal) + "\n", encoding="utf-8")
+    dossier["publication_journal_hash"] = journal["journal_hash"]
+    dossier.pop("dossier_hash")
+    dossier["dossier_hash"] = sha256_bytes(canonical_json(dossier).encode("utf-8"))
+
+    with pytest.raises(AdmissionError, match="merge-base"):
+        admission.validate_image_release_checkout(
+            root,
+            dossier,
+            publication_journal_path=journal_path,
+            publication_journal_file_sha256=sha256_file(journal_path),
+            board_binding_verifier=lambda _snapshot: None,
+        )
 
 
 @pytest.mark.parametrize(
@@ -811,7 +1203,7 @@ def test_image_inspection_binds_registry_digest_and_source_labels(
         return subprocess.CompletedProcess(command, 0, stdout, "")
 
     monkeypatch.setattr(admission.subprocess, "run", fake_run)
-    monkeypatch.setattr(admission, "_extract_image_source_hash", lambda **_kwargs: source_hash)
+    monkeypatch.setattr(admission, "extract_image_source_hash", lambda **_kwargs: source_hash)
 
     identity = _inspect_image(problem, image_ref, "docker")
 
@@ -825,13 +1217,13 @@ def test_image_inspection_binds_registry_digest_and_source_labels(
     inspection[0]["Config"]["Labels"]["io.projectforty2.verifier.source-sha256"] = source_hash
     monkeypatch.setattr(
         admission,
-        "_extract_image_source_hash",
+        "extract_image_source_hash",
         lambda **_kwargs: "sha256:" + "d" * 64,
     )
     with pytest.raises(AdmissionError, match="filesystem source does not match"):
         _inspect_image(problem, image_ref, "docker")
 
-    monkeypatch.setattr(admission, "_extract_image_source_hash", lambda **_kwargs: source_hash)
+    monkeypatch.setattr(admission, "extract_image_source_hash", lambda **_kwargs: source_hash)
     inspection[0]["Config"]["Entrypoint"] = ["/payload/hidden"]
     with pytest.raises(AdmissionError, match="must not define an OCI entrypoint"):
         _inspect_image(problem, image_ref, "docker")

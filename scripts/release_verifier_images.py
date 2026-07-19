@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -36,9 +37,11 @@ from p42_prizes.problem import load_manifest
 from p42_prizes.verdict import canonical_json, sha256_bytes, strict_json_loads
 
 
-SCHEMA_VERSION = "p42-verifier-image-release/v1"
-PLAN_SCHEMA_VERSION = "p42-verifier-image-release-plan/v1"
-JOURNAL_SCHEMA_VERSION = "p42-verifier-image-publish-journal/v1"
+SCHEMA_VERSION = "p42-verifier-image-release/v2"
+LEGACY_SCHEMA_VERSION = "p42-verifier-image-release/v1"
+PLAN_SCHEMA_VERSION = "p42-verifier-image-release-plan/v2"
+JOURNAL_SCHEMA_VERSION = "p42-verifier-image-publish-journal/v2"
+IDENTITY_MODEL = "p42-verifier-source-release-config/v1"
 INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json"
 MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
 CONFIG_MEDIA_TYPE = "application/vnd.oci.image.config.v1+json"
@@ -248,7 +251,7 @@ def validate_platform_config(
     raw: str,
     *,
     platform: str,
-    commit: str,
+    verifier_source_commit: str,
     source_hash: str,
     problem_id: str,
     version: str,
@@ -262,7 +265,7 @@ def validate_platform_config(
         raise ReleaseError(f"{platform} image config is missing config")
     labels = config.get("Labels")
     expected_labels = {
-        OCI_REVISION_LABEL: commit,
+        OCI_REVISION_LABEL: verifier_source_commit,
         SOURCE_HASH_LABEL: source_hash,
         SOURCE_HASH_ALGORITHM_LABEL: SOURCE_HASH_ALGORITHM,
         PROBLEM_ID_LABEL: problem_id,
@@ -356,7 +359,7 @@ def parse_child_manifest(raw: str) -> dict[str, Any]:
     return {"config": config, "layers": checked_layers}
 
 
-def buildx_command(root: Path, repository: str, commit: str, manifest: Mapping[str, Any], source_hash: str, metadata_file: Path) -> list[str]:
+def buildx_command(root: Path, repository: str, verifier_source_commit: str, manifest: Mapping[str, Any], source_hash: str, metadata_file: Path) -> list[str]:
     verifier = manifest["verifier"]
     problem_id = manifest["problem_id"]
     return [
@@ -365,11 +368,11 @@ def buildx_command(root: Path, repository: str, commit: str, manifest: Mapping[s
         "--metadata-file", str(metadata_file),
         "--file", str(root / "Dockerfile.verifier"),
         "--build-arg", f"PROBLEM={problem_id}",
-        "--build-arg", f"SOURCE_COMMIT={commit}",
+        "--build-arg", f"SOURCE_COMMIT={verifier_source_commit}",
         "--build-arg", f"VERIFIER_SOURCE_SHA256={source_hash}",
         "--build-arg", f"VERIFIER_PROBLEM_ID={problem_id}",
         "--build-arg", f"VERIFIER_VERSION={verifier['version']}",
-        "--tag", f"{repository}:{commit}", str(root),
+        "--tag", f"{repository}:{verifier_source_commit}", str(root),
     ]
 
 
@@ -479,6 +482,38 @@ def _prepare_frozen_context(
     return context, archive_digest
 
 
+def _make_tree_removable(root: Path) -> None:
+    if not root.exists():
+        return
+    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        try:
+            path.chmod(0o700 if path.is_dir() else 0o600)
+        except OSError:
+            pass
+    try:
+        root.chmod(0o700)
+    except OSError:
+        pass
+
+
+@contextmanager
+def _frozen_commit_snapshot(
+    root: Path, commit: str,
+    *, runner: Callable[..., subprocess.CompletedProcess[str]],
+):
+    with tempfile.TemporaryDirectory(prefix="p42-verifier-release-") as temporary:
+        workspace = Path(temporary) / "snapshot"
+        workspace.mkdir(mode=0o700)
+        context, archive_digest = _prepare_frozen_context(
+            root=root, workspace=workspace, commit=commit, runner=runner,
+            fresh_release=True,
+        )
+        try:
+            yield context, archive_digest
+        finally:
+            _make_tree_removable(workspace)
+
+
 def _finalize_dossier(value: Mapping[str, Any]) -> dict[str, Any]:
     dossier = dict(value)
     dossier.pop("dossier_hash", None)
@@ -487,14 +522,35 @@ def _finalize_dossier(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def validate_release_dossier(value: Mapping[str, Any]) -> dict[str, Any]:
-    root_keys = {"schema_version", "published_at_utc", "source_commit", "source_archive_digest", "registry_base", "platforms", "boards", "manifest_mutation", "publication_journal_hash", "dossier_hash"}
+    if value.get("schema_version") == LEGACY_SCHEMA_VERSION:
+        raise ReleaseError(
+            "v1 release dossiers are historical-only: they do not separate verifier source from release configuration"
+        )
+    root_keys = {
+        "schema_version", "published_at_utc", "identity_model",
+        "verifier_source_commit", "verifier_source_archive_digest",
+        "release_config_commit", "release_config_archive_digest",
+        "registry_base", "platforms", "boards", "publication_journal_hash",
+        "dossier_hash",
+    }
     if not isinstance(value, Mapping) or set(value) != root_keys:
         raise ReleaseError("release dossier keys are invalid")
-    if value.get("schema_version") != SCHEMA_VERSION or value.get("platforms") != list(PLATFORMS) or value.get("manifest_mutation") != "none":
+    if (
+        value.get("schema_version") != SCHEMA_VERSION
+        or value.get("identity_model") != IDENTITY_MODEL
+        or value.get("platforms") != list(PLATFORMS)
+    ):
         raise ReleaseError("release dossier identity is invalid")
-    commit = value.get("source_commit")
+    verifier_source_commit = value.get("verifier_source_commit")
+    release_config_commit = value.get("release_config_commit")
     base = value.get("registry_base")
-    if not COMMIT_RE.fullmatch(commit or "") or not DIGEST_RE.fullmatch(value.get("source_archive_digest") or "") or canonicalize_registry_base(base or "") != base:
+    if (
+        not COMMIT_RE.fullmatch(verifier_source_commit or "")
+        or not COMMIT_RE.fullmatch(release_config_commit or "")
+        or not DIGEST_RE.fullmatch(value.get("verifier_source_archive_digest") or "")
+        or not DIGEST_RE.fullmatch(value.get("release_config_archive_digest") or "")
+        or canonicalize_registry_base(base or "") != base
+    ):
         raise ReleaseError("release dossier source or registry binding is invalid")
     if not DIGEST_RE.fullmatch(value.get("publication_journal_hash") or ""):
         raise ReleaseError("release dossier journal binding is invalid")
@@ -504,12 +560,22 @@ def validate_release_dossier(value: Mapping[str, Any]) -> dict[str, Any]:
     boards = value.get("boards")
     if not isinstance(boards, list) or [board.get("slug") if isinstance(board, Mapping) else None for board in boards] != list(LAUNCH_SLUGS):
         raise ReleaseError("release dossier board order is invalid")
-    board_keys = {"slug", "problem_id", "version", "source_hash", "repository", "index_digest", "immutable_reference", "platform_manifests"}
+    board_keys = {
+        "slug", "problem_id", "version", "source_hash", "repository",
+        "index_digest", "immutable_reference", "release_manifest_path",
+        "release_manifest_sha256", "platform_manifests",
+    }
     platform_keys = {"platform", "manifest_digest", "manifest_size", "config_digest", "config_size", "layer_count", "labels", "runtime"}
     for board in boards:
         if set(board) != board_keys or board["problem_id"] != board["slug"] or board["repository"] != image_repository(base, board["slug"]):
             raise ReleaseError("release dossier board binding is invalid")
-        if not DIGEST_RE.fullmatch(board.get("source_hash") or "") or not DIGEST_RE.fullmatch(board.get("index_digest") or "") or board["immutable_reference"] != f"{board['repository']}@{board['index_digest']}":
+        if (
+            not DIGEST_RE.fullmatch(board.get("source_hash") or "")
+            or not DIGEST_RE.fullmatch(board.get("index_digest") or "")
+            or not DIGEST_RE.fullmatch(board.get("release_manifest_sha256") or "")
+            or board.get("release_manifest_path") != f"problems/{board['slug']}/problem.yaml"
+            or board["immutable_reference"] != f"{board['repository']}@{board['index_digest']}"
+        ):
             raise ReleaseError("release dossier immutable image binding is invalid")
         records = board.get("platform_manifests")
         if not isinstance(records, list) or [record.get("platform") if isinstance(record, Mapping) else None for record in records] != list(PLATFORMS):
@@ -520,7 +586,8 @@ def validate_release_dossier(value: Mapping[str, Any]) -> dict[str, Any]:
             if any(not isinstance(record.get(key), int) or isinstance(record.get(key), bool) or record[key] <= 0 for key in ("manifest_size", "config_size", "layer_count")):
                 raise ReleaseError("release dossier platform sizes are invalid")
             expected_labels = {
-                OCI_REVISION_LABEL: commit, SOURCE_HASH_LABEL: board["source_hash"],
+                OCI_REVISION_LABEL: verifier_source_commit,
+                SOURCE_HASH_LABEL: board["source_hash"],
                 SOURCE_HASH_ALGORITHM_LABEL: SOURCE_HASH_ALGORITHM,
                 PROBLEM_ID_LABEL: board["problem_id"], VERIFIER_VERSION_LABEL: board["version"],
             }
@@ -671,8 +738,9 @@ def _journal_hash(value: Mapping[str, Any]) -> str:
 
 def _journal_immutable(value: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        "schema_version": value["schema_version"], "source_commit": value["source_commit"],
-        "source_archive_digest": value["source_archive_digest"],
+        "schema_version": value["schema_version"],
+        "verifier_source_commit": value["verifier_source_commit"],
+        "verifier_source_archive_digest": value["verifier_source_archive_digest"],
         "registry_base": value["registry_base"], "platforms": value["platforms"],
         "boards": [
             {key: board[key] for key in ("slug", "problem_id", "version", "source_hash", "repository", "tag")}
@@ -681,13 +749,21 @@ def _journal_immutable(value: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_publish_journal(*, boards: Sequence[Mapping[str, Any]], commit: str, source_archive_digest: str, registry_base: str) -> dict[str, Any]:
+def _build_publish_journal(
+    *, boards: Sequence[Mapping[str, Any]], verifier_source_commit: str,
+    verifier_source_archive_digest: str, registry_base: str,
+) -> dict[str, Any]:
     value = {
-        "schema_version": JOURNAL_SCHEMA_VERSION, "source_commit": commit,
-        "source_archive_digest": source_archive_digest,
+        "schema_version": JOURNAL_SCHEMA_VERSION,
+        "verifier_source_commit": verifier_source_commit,
+        "verifier_source_archive_digest": verifier_source_archive_digest,
         "registry_base": registry_base, "platforms": list(PLATFORMS), "generation": 0,
         "boards": [
-            {**dict(board), "tag": f"{board['repository']}:{commit}", "state": "planned", "metadata_digest": None, "release_record": None}
+            {
+                **dict(board),
+                "tag": f"{board['repository']}:{verifier_source_commit}",
+                "state": "planned", "metadata_digest": None, "release_record": None,
+            }
             for board in boards
         ],
     }
@@ -696,13 +772,19 @@ def _build_publish_journal(*, boards: Sequence[Mapping[str, Any]], commit: str, 
 
 
 def _validate_publish_journal(value: Mapping[str, Any]) -> dict[str, Any]:
-    if set(value) != {"schema_version", "source_commit", "source_archive_digest", "registry_base", "platforms", "generation", "boards", "journal_hash"}:
+    if set(value) != {
+        "schema_version", "verifier_source_commit", "verifier_source_archive_digest",
+        "registry_base", "platforms", "generation", "boards", "journal_hash",
+    }:
         raise ReleaseError("publish journal keys are invalid")
     if value.get("schema_version") != JOURNAL_SCHEMA_VERSION or value.get("platforms") != list(PLATFORMS):
         raise ReleaseError("publish journal identity is invalid")
-    if not COMMIT_RE.fullmatch(value.get("source_commit", "")) or canonicalize_registry_base(value.get("registry_base", "")) != value.get("registry_base"):
+    if (
+        not COMMIT_RE.fullmatch(value.get("verifier_source_commit", ""))
+        or canonicalize_registry_base(value.get("registry_base", "")) != value.get("registry_base")
+    ):
         raise ReleaseError("publish journal release binding is invalid")
-    if not DIGEST_RE.fullmatch(value.get("source_archive_digest") or ""):
+    if not DIGEST_RE.fullmatch(value.get("verifier_source_archive_digest") or ""):
         raise ReleaseError("publish journal source archive binding is invalid")
     if not isinstance(value.get("generation"), int) or isinstance(value.get("generation"), bool) or value["generation"] < 0:
         raise ReleaseError("publish journal generation is invalid")
@@ -713,7 +795,7 @@ def _validate_publish_journal(value: Mapping[str, Any]) -> dict[str, Any]:
         required = {"slug", "problem_id", "version", "source_hash", "repository", "tag", "state", "metadata_digest", "release_record"}
         if set(board) != required or board["problem_id"] != board["slug"] or not DIGEST_RE.fullmatch(board["source_hash"]):
             raise ReleaseError("publish journal board identity is invalid")
-        if board["tag"] != f"{board['repository']}:{value['source_commit']}" or board["state"] not in ("planned", "building", "verified"):
+        if board["tag"] != f"{board['repository']}:{value['verifier_source_commit']}" or board["state"] not in ("planned", "building", "verified"):
             raise ReleaseError("publish journal board state is invalid")
         if board["state"] in ("planned", "building") and (board["metadata_digest"] is not None or board["release_record"] is not None):
             raise ReleaseError("incomplete publish journal board contains evidence")
@@ -809,11 +891,19 @@ def _require_private_workspace(path: Path, *, create: bool) -> None:
 
 
 def _inspect_release_record(
-    *, root: Path, board: Mapping[str, Any], commit: str, index_digest: str,
+    *, root: Path, board: Mapping[str, Any], verifier_source_commit: str,
+    index_digest: str, use_immutable_reference: bool = False,
     runner: Callable[..., subprocess.CompletedProcess[str]],
 ) -> dict[str, Any]:
-    tag = f"{board['repository']}:{commit}"
-    raw_index_response = _run(["docker", "buildx", "imagetools", "inspect", "--raw", tag], cwd=root, runner=runner)
+    reference = (
+        f"{board['repository']}@{index_digest}"
+        if use_immutable_reference
+        else f"{board['repository']}:{verifier_source_commit}"
+    )
+    raw_index_response = _run(
+        ["docker", "buildx", "imagetools", "inspect", "--raw", reference],
+        cwd=root, runner=runner,
+    )
     raw_index = verify_raw_index_digest(raw_index_response, index_digest)
     children = parse_oci_index(raw_index)
     platform_records = []
@@ -826,7 +916,12 @@ def _inspect_release_record(
         config_descriptor = child_manifest["config"]
         raw_config_response = _run(["regctl", "blob", "get", board["repository"], config_descriptor["digest"], "--format", "raw-body"], cwd=root, runner=runner)
         raw_config = verify_descriptor_bytes(raw_config_response, digest=config_descriptor["digest"], size=config_descriptor["size"], label=f"{platform} image config")
-        validated = validate_platform_config(raw_config, platform=platform, commit=commit, source_hash=board["source_hash"], problem_id=board["problem_id"], version=board["version"])
+        validated = validate_platform_config(
+            raw_config, platform=platform,
+            verifier_source_commit=verifier_source_commit,
+            source_hash=board["source_hash"], problem_id=board["problem_id"],
+            version=board["version"],
+        )
         platform_records.append({
             "platform": platform, "manifest_digest": child["digest"], "manifest_size": child["size"],
             "config_digest": config_descriptor["digest"], "config_size": config_descriptor["size"],
@@ -848,20 +943,18 @@ def release(
     board_binding_verifier(root)
     boards = _board_inputs(root, base)
     if not publish:
-        return {"schema_version": PLAN_SCHEMA_VERSION, "mode": "plan", "source_commit": commit, "platforms": list(PLATFORMS), "boards": boards}
+        return {
+            "schema_version": PLAN_SCHEMA_VERSION, "mode": "plan",
+            "verifier_source_commit": commit,
+            "platforms": list(PLATFORMS), "boards": boards,
+        }
     if output is None:
-        raise ReleaseError("--output is required in publish mode")
+        raise ReleaseError("--journal is required in publish mode")
     output_parent = output.absolute().parent
     output_parent.mkdir(parents=True, exist_ok=True)
     output = output_parent.resolve(strict=True) / output.name
-    try:
-        output.lstat()
-    except FileNotFoundError:
-        pass
-    else:
-        raise ReleaseError("refusing publish because the final dossier path already exists")
-    journal_path = output.with_name(output.name + ".journal.json")
-    workspace = output.with_name(output.name + ".publish-work")
+    journal_path = output
+    workspace = journal_path.with_name(journal_path.name + ".publish-work")
     try:
         journal_path.lstat()
         fresh_release = False
@@ -878,9 +971,12 @@ def release(
     if canonical_json(boards) != canonical_json(frozen_boards):
         raise ReleaseError("frozen exact-commit source differs from the preflight checkout")
     boards = frozen_boards
-    expected_journal = _build_publish_journal(boards=boards, commit=commit, source_archive_digest=source_archive_digest, registry_base=base)
+    expected_journal = _build_publish_journal(
+        boards=boards, verifier_source_commit=commit,
+        verifier_source_archive_digest=source_archive_digest,
+        registry_base=base,
+    )
     journal, _created = _reserve_publish_journal(journal_path, expected_journal)
-    released = []
     for index, board in enumerate(boards):
         require_board_source_unchanged(frozen_root, board, commit, runner=runner, check_git=False)
         manifest = load_manifest(frozen_root / "problems" / board["slug"])
@@ -904,26 +1000,128 @@ def release(
             raise ReleaseError(f"{board['slug']} publication is ambiguous: build started but no durable metadata exists; refusing to repush")
         metadata_raw = _read_private_text(metadata_file) if durable_board["state"] != "verified" else None
         if durable_board["state"] == "verified":
-            record = _inspect_release_record(root=frozen_root, board=board, commit=commit, index_digest=durable_board["release_record"]["index_digest"], runner=runner)
+            record = _inspect_release_record(
+                root=frozen_root, board=board, verifier_source_commit=commit,
+                index_digest=durable_board["release_record"]["index_digest"], runner=runner,
+            )
             if canonical_json(record) != canonical_json(durable_board["release_record"]):
                 raise ReleaseError(f"{board['slug']} registry state conflicts with the durable publish journal")
         else:
             index_digest = parse_build_metadata(metadata_raw)
             metadata_digest = sha256_bytes(metadata_raw.encode("utf-8"))
-            record = _inspect_release_record(root=frozen_root, board=board, commit=commit, index_digest=index_digest, runner=runner)
+            record = _inspect_release_record(
+                root=frozen_root, board=board, verifier_source_commit=commit,
+                index_digest=index_digest, runner=runner,
+            )
             journal = _record_verified_board(journal_path, expected_hash=journal["journal_hash"], index=index, metadata_digest=metadata_digest, release_record=record)
-        released.append(record)
     for board in boards:
         require_board_source_unchanged(frozen_root, board, commit, runner=runner, check_git=False)
     journal = _validate_publish_journal(_read_canonical_private(journal_path))
     if any(board["state"] != "verified" for board in journal["boards"]):
         raise ReleaseError("publish journal is incomplete after the release run")
+    # Publication deliberately stops at a complete, self-hashed journal. The
+    # immutable index digests must first be committed to problem.yaml. A v2
+    # dossier is finalized only from that later clean release-config commit.
+    return journal
+
+
+def finalize_release_dossier(
+    *, root: Path, journal_path: Path, release_config_commit: str, output: Path,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    board_binding_verifier: Callable[[Path], None] | None = None,
+) -> dict[str, Any]:
+    """Adopt a completed image cohort into a later exact release commit.
+
+    Images are never rebuilt here. The immutable journal binds their source
+    commit and OCI graph; the release commit must adopt those exact digests in
+    all ten manifests while preserving every canonical verifier source hash.
+    """
+
+    root = root.resolve()
+    board_binding_verifier = board_binding_verifier or verify_production_board_bindings
+    require_clean_exact_commit(root, release_config_commit, runner=runner)
+    # Keep the caller's final path component intact so O_NOFOLLOW can reject a
+    # symlink. Path.resolve() here would silently turn that check into a read of
+    # the symlink target.
+    journal = _validate_publish_journal(_read_canonical_private(journal_path.absolute()))
+    if any(board["state"] != "verified" for board in journal["boards"]):
+        raise ReleaseError("cannot finalize an incomplete verifier image publication journal")
+    verifier_source_commit = journal["verifier_source_commit"]
+    try:
+        _run(
+            ["git", "merge-base", "--is-ancestor", verifier_source_commit, release_config_commit],
+            cwd=root, runner=runner,
+        )
+    except ReleaseError as exc:
+        raise ReleaseError("verifier source commit is not an ancestor of the release-config commit") from exc
+
+    board_binding_verifier(root)
+    base = journal["registry_base"]
+    with _frozen_commit_snapshot(root, verifier_source_commit, runner=runner) as (
+        source_root, source_archive_digest,
+    ):
+        if source_archive_digest != journal["verifier_source_archive_digest"]:
+            raise ReleaseError("verifier source archive no longer matches the publication journal")
+        board_binding_verifier(source_root)
+        source_boards = _board_inputs(source_root, base)
+        for expected, observed in zip(journal["boards"], source_boards, strict=True):
+            for key in ("slug", "problem_id", "version", "source_hash", "repository"):
+                if expected[key] != observed[key]:
+                    raise ReleaseError(
+                        f"{expected['slug']} publication journal does not match its verifier-source commit"
+                    )
+
+    with _frozen_commit_snapshot(root, release_config_commit, runner=runner) as (
+        release_root, release_archive_digest,
+    ):
+        board_binding_verifier(release_root)
+        release_boards = _board_inputs(release_root, base)
+        finalized_boards: list[dict[str, Any]] = []
+        for journal_board, release_board in zip(journal["boards"], release_boards, strict=True):
+            slug = journal_board["slug"]
+            for key in ("slug", "problem_id", "version", "source_hash", "repository"):
+                if journal_board[key] != release_board[key]:
+                    raise ReleaseError(
+                        f"{slug} verifier source changed after image publication; rebuild required"
+                    )
+            manifest_path = release_root / "problems" / slug / "problem.yaml"
+            manifest = load_manifest(manifest_path.parent)
+            verifier = manifest.get("verifier")
+            release_record = journal_board["release_record"]
+            if (
+                not isinstance(verifier, Mapping)
+                or verifier.get("image_repository") != journal_board["repository"]
+                or verifier.get("image") != release_record["index_digest"]
+            ):
+                raise ReleaseError(
+                    f"{slug} release manifest does not adopt the journal's exact immutable image"
+                )
+            reinspected = _inspect_release_record(
+                root=release_root, board=release_board,
+                verifier_source_commit=verifier_source_commit,
+                index_digest=release_record["index_digest"],
+                use_immutable_reference=True, runner=runner,
+            )
+            if canonical_json(reinspected) != canonical_json(release_record):
+                raise ReleaseError(f"{slug} immutable registry record is stale or mismatched")
+            finalized_boards.append({
+                **reinspected,
+                "release_manifest_path": f"problems/{slug}/problem.yaml",
+                "release_manifest_sha256": _sha256_file(manifest_path),
+            })
+
     dossier = _finalize_dossier({
         "schema_version": SCHEMA_VERSION,
         "published_at_utc": now().astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-        "source_commit": commit, "registry_base": base, "platforms": list(PLATFORMS), "boards": released,
-        "source_archive_digest": source_archive_digest,
-        "manifest_mutation": "none",
+        "identity_model": IDENTITY_MODEL,
+        "verifier_source_commit": verifier_source_commit,
+        "verifier_source_archive_digest": journal["verifier_source_archive_digest"],
+        "release_config_commit": release_config_commit,
+        "release_config_archive_digest": release_archive_digest,
+        "registry_base": base,
+        "platforms": list(PLATFORMS),
+        "boards": finalized_boards,
         "publication_journal_hash": journal["journal_hash"],
     })
     validate_release_dossier(dossier)
@@ -933,20 +1131,41 @@ def release(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--registry-base", required=True)
-    parser.add_argument("--commit", required=True)
-    parser.add_argument("--publish", action="store_true", help="push and inspect all ten images")
-    parser.add_argument("--output", type=Path, help="canonical release dossier path; publish mode only")
+    parser.add_argument("--registry-base")
+    parser.add_argument("--verifier-source-commit", "--commit", dest="verifier_source_commit")
+    parser.add_argument("--publish", action="store_true", help="push and inspect all ten source-bound images")
+    parser.add_argument("--journal", type=Path, help="private resumable publication journal path")
+    parser.add_argument("--finalize-journal", type=Path, help="completed v2 publication journal to adopt")
+    parser.add_argument("--release-config-commit", help="clean commit containing all ten immutable image digests")
+    parser.add_argument("--output", type=Path, help="non-overwriting finalized v2 dossier path")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.output is not None and not args.publish:
-        print("release error: --output is only valid with --publish", file=sys.stderr)
-        return 2
     try:
-        result = release(root=Path(__file__).resolve().parents[1], registry_base=args.registry_base, commit=args.commit, publish=args.publish, output=args.output)
+        root = Path(__file__).resolve().parents[1]
+        if args.finalize_journal is not None:
+            if args.publish or args.journal is not None or args.registry_base is not None or args.verifier_source_commit is not None:
+                raise ReleaseError("finalize mode cannot be combined with plan or publish inputs")
+            if args.release_config_commit is None or args.output is None:
+                raise ReleaseError("finalize mode requires --release-config-commit and --output")
+            result = finalize_release_dossier(
+                root=root, journal_path=args.finalize_journal,
+                release_config_commit=args.release_config_commit, output=args.output,
+            )
+        else:
+            if args.registry_base is None or args.verifier_source_commit is None:
+                raise ReleaseError("plan/publish mode requires --registry-base and --verifier-source-commit")
+            if args.release_config_commit is not None or args.output is not None:
+                raise ReleaseError("--release-config-commit and --output are finalize-only")
+            if args.publish != (args.journal is not None):
+                raise ReleaseError("publish mode requires --publish and --journal together")
+            result = release(
+                root=root, registry_base=args.registry_base,
+                commit=args.verifier_source_commit, publish=args.publish,
+                output=args.journal,
+            )
     except (ReleaseError, ValueError, OSError) as exc:
         print(f"release error: {exc}", file=sys.stderr)
         return 1

@@ -103,9 +103,10 @@ After the all-ten image release dossier exists, every production runner host
 must prove that it can execute the published bytes without rebuilding or using
 a mutable tag. The published mode of `scripts/rehearse_verifier_image.py`:
 
-- requires canonical, schema-valid `p42-verifier-image-release/v1` dossier
+- requires canonical, schema-valid `p42-verifier-image-release/v2` dossier
   bytes, an independently supplied digest of those bytes, and the exact fully
-  clean source commit named by that dossier;
+  clean release-config commit named by that dossier, while OCI labels bind the
+  distinct verifier-source commit;
 - selects the board's `repository@sha256:<OCI-index>` reference from the
   dossier rather than accepting an image reference from the caller;
 - runs only `docker pull` and `docker image inspect` before execution. It never
@@ -148,7 +149,11 @@ Each admission host then runs the all-ten collector locally. The command has no
 offline-report mode: it launches both pull-only rehearsals itself, binds a fresh
 collector challenge into each report, signs each board artifact and the complete
 ordered host-set index with the same host key, and publishes through an atomic
-no-replace directory operation.
+no-replace directory operation. The v3 bundle contains all 20 canonical raw
+runtime rehearsals as well as the ten signed board summaries. Each raw receipt
+is indexed by its path, exact canonical-file SHA-256, and rehearsal self-hash;
+reconciliation independently reruns the semantic validator and rejects missing,
+tampered, duplicate, or orphan files before accepting an existing bundle.
 
 ```bash
 PYTHONPATH=src python3 scripts/collect_verifier_host_set.py \

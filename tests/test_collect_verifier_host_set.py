@@ -4,6 +4,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -22,6 +23,7 @@ from p42_prizes.runtime_admission import (
     publish_host_set,
     reconcile_published_host_set,
     validate_host_set,
+    validate_matrix_host_set_bundles,
 )
 from p42_prizes.verdict import canonical_json, sha256_bytes, sha256_file
 
@@ -75,8 +77,9 @@ def _runtime_report(
         "verifier_image": DIGEST_A,
         "verifier_version": "1.0.0",
     }
-    return {
-        "source_commit": "a" * 40,
+    report = {
+        "verifier_source_commit": "a" * 40,
+        "release_config_commit": "b" * 40,
         "execution_nonce": sha256_bytes(f"nonce-{slug}-{platform}".encode()).removeprefix("sha256:"),
         "board": {"slug": slug, "source_hash": DIGEST_C},
         "solution_sha256": solution,
@@ -85,6 +88,7 @@ def _runtime_report(
             "immutable_reference": f"ghcr.io/projectforty2/{slug}@{DIGEST_A}",
             "index_digest": DIGEST_A,
             "expected_config_digest": config,
+            "observed_source_hash": DIGEST_C,
             "local_image_id": config,
             "observed_runtime": {
                 "user": "inherited-root-overridden-by-runner",
@@ -94,8 +98,23 @@ def _runtime_report(
             },
         },
         "execution": {"verdict": verdict},
-        "rehearsal_hash": sha256_bytes(f"{slug}-{platform}".encode()),
+        "result": {"succeeded": True},
     }
+    report["rehearsal_hash"] = sha256_bytes(canonical_json(report).encode())
+    return report
+
+
+def _reseal_runtime_report(report: dict) -> None:
+    report.pop("rehearsal_hash", None)
+    report["rehearsal_hash"] = sha256_bytes(canonical_json(report).encode())
+
+
+def _validate_synthetic_runtime_report(report, _release_board):
+    body = copy.deepcopy(report)
+    supplied = body.pop("rehearsal_hash", None)
+    if supplied != sha256_bytes(canonical_json(body).encode()):
+        raise RuntimeAdmissionError("synthetic runtime rehearsal hash mismatch")
+    return report
 
 
 def _evidence(
@@ -169,6 +188,22 @@ def test_pair_rejects_fixture_solution_mismatch(tmp_path: Path) -> None:
         )
 
 
+def test_pair_rejects_matching_labels_with_altered_image_files(tmp_path: Path) -> None:
+    key = _make_signing_key(tmp_path, "altered-source")
+    reports = [_runtime_report(), _runtime_report()]
+    reports[1]["rehearsal_hash"] = sha256_bytes(b"second-altered-source")
+    reports[1]["execution_nonce"] = sha256_bytes(b"second-altered-source-nonce").removeprefix("sha256:")
+    for report in reports:
+        report["image"]["observed_source_hash"] = DIGEST_A
+    with pytest.raises(RuntimeAdmissionError, match="filesystem source"):
+        build_host_evidence_from_pair(
+            {"slug": "q6-intersecting-hypergraph", "sha256": DIGEST_B},
+            reports,
+            host=_host("host-a"), runtime="docker", signing_key=key,
+            generated_at_utc="2026-07-14T00:00:00Z",
+        )
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -215,7 +250,22 @@ def test_pair_emits_signed_v3_matrix_compatible_evidence(tmp_path: Path) -> None
         _evidence(tmp_path, label="arm-235", architecture="aarch64", libc="2.35"),
         _evidence(tmp_path, label="arm-239", architecture="aarch64", libc="2.39"),
     ]
-    matrix = build_admission_matrix(evidence, generated_at_utc="2026-07-14T00:00:00Z")
+    bindings = [{
+        "host_set_hash": sha256_bytes(f"host-set-{index}".encode()),
+        "evidence_hash": item["evidence_hash"],
+        "evidence_path": "q6-intersecting-hypergraph.admission-host.json",
+        "key_fingerprint": item["attestation"]["key_fingerprint"],
+        "runtime_rehearsals": [{
+            "path": f"q6-intersecting-hypergraph.runtime-rehearsal-{run}.json",
+            "file_sha256": sha256_bytes(f"receipt-file-{index}-{run}".encode()),
+            "rehearsal_hash": sha256_bytes(f"receipt-{index}-{run}".encode()),
+        } for run in (1, 2)],
+    } for index, item in enumerate(evidence)]
+    matrix = build_admission_matrix(
+        evidence,
+        host_set_bindings=bindings,
+        generated_at_utc="2026-07-14T00:00:00Z",
+    )
     assert matrix["coverage"]["host_count"] == 4
     assert matrix["coverage"]["architectures"] == ["aarch64", "x86_64"]
     assert all(item["schema_version"] == "p42-admission-host/v3" for item in evidence)
@@ -270,24 +320,36 @@ def test_atomic_publish_primitive_never_replaces_existing_directory(tmp_path: Pa
     assert (destination / "destination-marker").read_text(encoding="utf-8") == "destination"
 
 
-def _signed_host_set(tmp_path: Path):
-    signing_key = _make_signing_key(tmp_path, "host-set")
-    host = _host("host-set")
+def _signed_host_set(
+    tmp_path: Path,
+    *,
+    label: str = "host-set",
+    architecture: str = "x86_64",
+    libc: str = "2.35",
+):
+    signing_key = _make_signing_key(tmp_path, label)
+    host = _host(label, architecture, libc)
     fixtures = {
         "board_set": {"sha256": DIGEST_C},
         "fixtures": [],
     }
-    dossier = {"dossier_hash": DIGEST_B, "source_commit": "a" * 40, "boards": []}
+    dossier = {
+        "dossier_hash": DIGEST_B,
+        "verifier_source_commit": "a" * 40,
+        "release_config_commit": "b" * 40,
+        "boards": [],
+    }
     artifacts = {}
     board_index = []
     for position in range(10):
         slug = f"board-{position}"
         fixture_sha = "sha256:" + f"{position:x}" * 64
         fixture = {"slug": slug, "path": f"problems/{slug}/fixture.json", "sha256": fixture_sha}
-        first = _runtime_report(slug=slug, solution=fixture_sha)
+        platform = "linux/arm64" if architecture == "aarch64" else "linux/amd64"
+        first = _runtime_report(slug=slug, solution=fixture_sha, platform=platform)
         second = copy.deepcopy(first)
-        second["rehearsal_hash"] = sha256_bytes(f"second-{slug}".encode())
         second["execution_nonce"] = sha256_bytes(f"second-nonce-{slug}".encode()).removeprefix("sha256:")
+        _reseal_runtime_report(second)
         evidence = build_host_evidence_from_pair(
             fixture,
             [first, second],
@@ -300,21 +362,31 @@ def _signed_host_set(tmp_path: Path):
         fixtures["fixtures"].append(fixture)
         dossier["boards"].append({"slug": slug, "source_hash": DIGEST_C, "index_digest": DIGEST_A})
         artifacts[filename] = evidence
+        rehearsal_refs = []
+        for run_index, report in enumerate((first, second), start=1):
+            report_path = f"{slug}.runtime-rehearsal-{run_index}.json"
+            artifacts[report_path] = report
+            rehearsal_refs.append({
+                "path": report_path,
+                "file_sha256": sha256_bytes((canonical_json(report) + "\n").encode()),
+                "rehearsal_hash": report["rehearsal_hash"],
+            })
         board_index.append({
             "slug": slug,
             "fixture": {"path": fixture["path"], "sha256": fixture_sha},
-            "rehearsal_hashes": [first["rehearsal_hash"], second["rehearsal_hash"]],
+            "runtime_rehearsals": rehearsal_refs,
             "evidence_path": filename,
             "evidence_hash": evidence["evidence_hash"],
         })
     index = {
-        "schema_version": "p42-admission-host-set/v1",
+        "schema_version": "p42-admission-host-set/v3",
         "generated_at_utc": "2026-07-14T00:00:00Z",
         "dossier": {
             "path": "/independent/release.json",
             "file_sha256": DIGEST_A,
             "dossier_hash": DIGEST_B,
-            "source_commit": "a" * 40,
+            "verifier_source_commit": "a" * 40,
+            "release_config_commit": "b" * 40,
         },
         "fixtures": {
             "path": "/independent/fixtures.json",
@@ -350,6 +422,7 @@ def test_validate_host_set_rederives_all_ten_external_bindings(tmp_path: Path) -
         expected_host=index["host"],
         expected_key_fingerprint=index["attestation"]["key_fingerprint"],
         expected_runtime="docker",
+        runtime_report_validator=_validate_synthetic_runtime_report,
     )
 
     tampered_fixtures = copy.deepcopy(fixtures)
@@ -366,6 +439,7 @@ def test_validate_host_set_rederives_all_ten_external_bindings(tmp_path: Path) -
             expected_host=index["host"],
             expected_key_fingerprint=index["attestation"]["key_fingerprint"],
             expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
         )
 
     oversized_dossier = copy.deepcopy(dossier)
@@ -382,6 +456,7 @@ def test_validate_host_set_rederives_all_ten_external_bindings(tmp_path: Path) -
             expected_host=index["host"],
             expected_key_fingerprint=index["attestation"]["key_fingerprint"],
             expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
         )
 
 
@@ -399,6 +474,7 @@ def test_reconcile_accepts_only_complete_existing_signed_bundle(tmp_path: Path) 
         expected_host=index["host"],
         expected_key_fingerprint=index["attestation"]["key_fingerprint"],
         expected_runtime="docker",
+        runtime_report_validator=_validate_synthetic_runtime_report,
     ) == index
 
     wrong_host = dict(index["host"])
@@ -414,6 +490,7 @@ def test_reconcile_accepts_only_complete_existing_signed_bundle(tmp_path: Path) 
             expected_host=wrong_host,
             expected_key_fingerprint=index["attestation"]["key_fingerprint"],
             expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
         )
     with pytest.raises(RuntimeAdmissionError, match="requested admission key"):
         reconcile_published_host_set(
@@ -426,6 +503,7 @@ def test_reconcile_accepts_only_complete_existing_signed_bundle(tmp_path: Path) 
             expected_host=index["host"],
             expected_key_fingerprint="SHA256:not-the-host-key",
             expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
         )
 
     (output / "unexpected").write_text("not evidence", encoding="utf-8")
@@ -440,12 +518,134 @@ def test_reconcile_accepts_only_complete_existing_signed_bundle(tmp_path: Path) 
             expected_host=index["host"],
             expected_key_fingerprint=index["attestation"]["key_fingerprint"],
             expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
+        )
+
+
+def _four_published_host_sets(tmp_path: Path):
+    specifications = [
+        ("x86-231", "x86_64", "2.31"),
+        ("x86-235", "x86_64", "2.35"),
+        ("arm-235", "aarch64", "2.35"),
+        ("arm-239", "aarch64", "2.39"),
+    ]
+    bundles = []
+    evidence = []
+    bindings = []
+    dossier = fixtures = None
+    for label, architecture, libc in specifications:
+        source = tmp_path / f"source-{label}"
+        source.mkdir()
+        index, artifacts, dossier, fixtures = _signed_host_set(
+            source, label=label, architecture=architecture, libc=libc,
+        )
+        output = tmp_path / f"bundle-{label}"
+        publish_host_set(output, list(artifacts.items()), index)
+        board = index["boards"][0]
+        evidence.append(artifacts[board["evidence_path"]])
+        bindings.append({
+            "host_set_hash": index["host_set_hash"],
+            "evidence_hash": board["evidence_hash"],
+            "evidence_path": board["evidence_path"],
+            "key_fingerprint": index["attestation"]["key_fingerprint"],
+            "runtime_rehearsals": board["runtime_rehearsals"],
+        })
+        bundles.append((output, index["host_set_hash"]))
+    matrix = build_admission_matrix(
+        evidence,
+        host_set_bindings=bindings,
+        generated_at_utc="2026-07-14T00:00:00Z",
+    )
+    return matrix, bundles, dossier, fixtures
+
+
+def test_release_admission_replays_exact_four_host_all_ten_bundles(tmp_path: Path) -> None:
+    matrix, bundles, dossier, fixtures = _four_published_host_sets(tmp_path)
+    validate_matrix_host_set_bundles(
+        matrix, bundles, root=ROOT, dossier=dossier, fixtures=fixtures,
+        dossier_sha256=DIGEST_A, fixture_sha256=DIGEST_B,
+        runtime_report_validator=_validate_synthetic_runtime_report,
+    )
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "substituted"])
+def test_release_admission_rejects_bad_bundle_cohort(tmp_path: Path, mutation: str) -> None:
+    matrix, bundles, dossier, fixtures = _four_published_host_sets(tmp_path)
+    hostile = list(bundles)
+    if mutation == "missing":
+        hostile.pop()
+    elif mutation == "duplicate":
+        hostile[-1] = hostile[0]
+    else:
+        hostile[-1] = (hostile[-1][0], DIGEST_C)
+    with pytest.raises(RuntimeAdmissionError, match="one pinned|missing, duplicated, or substituted"):
+        validate_matrix_host_set_bundles(
+            matrix, hostile, root=ROOT, dossier=dossier, fixtures=fixtures,
+            dossier_sha256=DIGEST_A, fixture_sha256=DIGEST_B,
+            runtime_report_validator=_validate_synthetic_runtime_report,
+        )
+
+
+@pytest.mark.parametrize("mutation", ["tampered", "symlink", "orphan", "binding-mismatch"])
+def test_release_admission_rejects_hostile_bundle_contents(tmp_path: Path, mutation: str) -> None:
+    matrix, bundles, dossier, fixtures = _four_published_host_sets(tmp_path)
+    bundle = bundles[0][0]
+    if mutation == "tampered":
+        receipt = next(bundle.glob("*.runtime-rehearsal-1.json"))
+        value = json.loads(receipt.read_text(encoding="utf-8"))
+        value["result"]["succeeded"] = False
+        receipt.write_text(canonical_json(value) + "\n", encoding="utf-8")
+    elif mutation == "symlink":
+        receipt = next(bundle.glob("*.runtime-rehearsal-1.json"))
+        target = tmp_path / "linked-receipt.json"
+        shutil.copyfile(receipt, target)
+        receipt.unlink()
+        receipt.symlink_to(target)
+    elif mutation == "orphan":
+        (bundle / "orphan.json").write_text("{}\n", encoding="utf-8")
+    else:
+        matrix["host_sets"][0]["runtime_rehearsals"][0]["file_sha256"] = DIGEST_C
+        matrix.pop("matrix_hash")
+        matrix["matrix_hash"] = sha256_bytes(canonical_json(matrix).encode())
+    with pytest.raises(RuntimeAdmissionError, match="raw rehearsal|nofollow|unexpected file set|exact host-set summary"):
+        validate_matrix_host_set_bundles(
+            matrix, bundles, root=ROOT, dossier=dossier, fixtures=fixtures,
+            dossier_sha256=DIGEST_A, fixture_sha256=DIGEST_B,
+            runtime_report_validator=_validate_synthetic_runtime_report,
+        )
+
+
+def test_reconcile_rejects_concurrent_directory_replacement(tmp_path: Path) -> None:
+    index, artifacts, dossier, fixtures = _signed_host_set(tmp_path)
+    output = tmp_path / "published-host-set"
+    publish_host_set(output, list(artifacts.items()), index)
+    replacement = tmp_path / "replacement"
+    shutil.copytree(output, replacement)
+    displaced = tmp_path / "displaced"
+    replaced = False
+
+    def replace_during_validation(report, release_board):
+        nonlocal replaced
+        if not replaced:
+            output.rename(displaced)
+            replacement.rename(output)
+            replaced = True
+        return _validate_synthetic_runtime_report(report, release_board)
+
+    with pytest.raises(RuntimeAdmissionError, match="directory changed during reconciliation"):
+        reconcile_published_host_set(
+            output, root=ROOT, dossier=dossier, fixtures=fixtures,
+            dossier_sha256=DIGEST_A, fixture_sha256=DIGEST_B,
+            expected_host=index["host"],
+            expected_key_fingerprint=index["attestation"]["key_fingerprint"],
+            expected_runtime="docker",
+            runtime_report_validator=replace_during_validation,
         )
 
 
 def test_validate_host_set_rejects_rehashed_unsigned_index_mutation(tmp_path: Path) -> None:
     index, artifacts, dossier, fixtures = _signed_host_set(tmp_path)
-    index["boards"][0]["rehearsal_hashes"][0] = DIGEST_C
+    index["boards"][0]["runtime_rehearsals"][0]["rehearsal_hash"] = DIGEST_C
     payload = dict(index)
     payload.pop("host_set_hash")
     payload.pop("attestation")
@@ -463,6 +663,91 @@ def test_validate_host_set_rejects_rehashed_unsigned_index_mutation(tmp_path: Pa
             expected_host=index["host"],
             expected_key_fingerprint=index["attestation"]["key_fingerprint"],
             expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
+        )
+
+
+def test_validate_host_set_rejects_missing_raw_rehearsal(tmp_path: Path) -> None:
+    index, artifacts, dossier, fixtures = _signed_host_set(tmp_path)
+    missing = index["boards"][3]["runtime_rehearsals"][1]["path"]
+    artifacts.pop(missing)
+    with pytest.raises(RuntimeAdmissionError, match="raw rehearsal is missing"):
+        validate_host_set(
+            index, artifacts, root=ROOT, dossier=dossier, fixtures=fixtures,
+            dossier_sha256=DIGEST_A, fixture_sha256=DIGEST_B,
+            expected_host=index["host"],
+            expected_key_fingerprint=index["attestation"]["key_fingerprint"],
+            expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
+        )
+
+
+def test_validate_host_set_rejects_tampered_raw_rehearsal(tmp_path: Path) -> None:
+    index, artifacts, dossier, fixtures = _signed_host_set(tmp_path)
+    path = index["boards"][4]["runtime_rehearsals"][0]["path"]
+    artifacts[path]["execution"]["verdict"]["score"] = "999/1"
+    with pytest.raises(RuntimeAdmissionError, match="file hash mismatch"):
+        validate_host_set(
+            index, artifacts, root=ROOT, dossier=dossier, fixtures=fixtures,
+            dossier_sha256=DIGEST_A, fixture_sha256=DIGEST_B,
+            expected_host=index["host"],
+            expected_key_fingerprint=index["attestation"]["key_fingerprint"],
+            expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
+        )
+
+
+def test_validate_host_set_rejects_orphan_raw_rehearsal(tmp_path: Path) -> None:
+    index, artifacts, dossier, fixtures = _signed_host_set(tmp_path)
+    artifacts["orphan.runtime-rehearsal-1.json"] = copy.deepcopy(
+        artifacts[index["boards"][0]["runtime_rehearsals"][0]["path"]]
+    )
+    with pytest.raises(RuntimeAdmissionError, match="orphan or unindexed"):
+        validate_host_set(
+            index, artifacts, root=ROOT, dossier=dossier, fixtures=fixtures,
+            dossier_sha256=DIGEST_A, fixture_sha256=DIGEST_B,
+            expected_host=index["host"],
+            expected_key_fingerprint=index["attestation"]["key_fingerprint"],
+            expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
+        )
+
+
+@pytest.mark.parametrize("attack", ["missing", "tampered", "orphan"])
+def test_reconcile_rejects_invalid_published_raw_rehearsal(
+    tmp_path: Path, attack: str,
+) -> None:
+    work = tmp_path / attack
+    work.mkdir()
+    index, artifacts, dossier, fixtures = _signed_host_set(work)
+    output = work / "published-host-set"
+    publish_host_set(output, list(artifacts.items()), index)
+    raw_path = index["boards"][2]["runtime_rehearsals"][0]["path"]
+    if attack == "missing":
+        (output / raw_path).unlink()
+        expected = "unexpected file set"
+    elif attack == "tampered":
+        report = copy.deepcopy(artifacts[raw_path])
+        report["execution"]["verdict"]["score"] = "999/1"
+        (output / raw_path).write_text(canonical_json(report) + "\n", encoding="utf-8")
+        expected = "file hash mismatch"
+    else:
+        (output / "orphan.runtime-rehearsal-1.json").write_text(
+            canonical_json(artifacts[raw_path]) + "\n", encoding="utf-8"
+        )
+        expected = "unexpected file set"
+    with pytest.raises(RuntimeAdmissionError, match=expected):
+        reconcile_published_host_set(
+            output,
+            root=ROOT,
+            dossier=dossier,
+            fixtures=fixtures,
+            dossier_sha256=DIGEST_A,
+            fixture_sha256=DIGEST_B,
+            expected_host=index["host"],
+            expected_key_fingerprint=index["attestation"]["key_fingerprint"],
+            expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
         )
 
 

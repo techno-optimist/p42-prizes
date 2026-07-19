@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
@@ -25,6 +26,8 @@ DIGEST_A = "sha256:" + "1" * 64
 DIGEST_B = "sha256:" + "2" * 64
 SOURCE = "sha256:" + "3" * 64
 ARCHIVE = "sha256:" + "4" * 64
+RELEASE_COMMIT = "b" * 40
+RELEASE_ARCHIVE = "sha256:" + "5" * 64
 REAL_BOARD_BINDING_VERIFIER = release.verify_production_board_bindings
 
 
@@ -84,6 +87,55 @@ def oci_graph(slug="hadamard-mini", version="0.1.1"):
         manifests.append({"mediaType": release.MANIFEST_MEDIA_TYPE, "digest": child_digest, "size": len(child.encode()), "platform": {"os": os_name, "architecture": arch}})
     index = json.dumps({"schemaVersion": 2, "mediaType": release.INDEX_MEDIA_TYPE, "manifests": manifests}, separators=(",", ":"))
     return index, blobs
+
+
+def completed_journal(monkeypatch, tmp_path):
+    base = "ghcr.io/projectforty2/verifiers"
+    monkeypatch.setattr(release, "compute_source_hash", lambda problem: SOURCE)
+    boards = release._board_inputs(ROOT, base)
+    journal = release._build_publish_journal(
+        boards=boards,
+        verifier_source_commit=COMMIT,
+        verifier_source_archive_digest=ARCHIVE,
+        registry_base=base,
+    )
+    for board in journal["boards"]:
+        records = []
+        for platform in release.PLATFORMS:
+            records.append({
+                "platform": platform,
+                "manifest_digest": DIGEST_A,
+                "manifest_size": 100,
+                "config_digest": DIGEST_B,
+                "config_size": 200,
+                "layer_count": 1,
+                "labels": {
+                    release.OCI_REVISION_LABEL: COMMIT,
+                    release.SOURCE_HASH_LABEL: SOURCE,
+                    release.SOURCE_HASH_ALGORITHM_LABEL: release.SOURCE_HASH_ALGORITHM,
+                    release.PROBLEM_ID_LABEL: board["problem_id"],
+                    release.VERIFIER_VERSION_LABEL: board["version"],
+                },
+                "runtime": {
+                    "user": "65534:65534",
+                    "workdir": f"/repo/problems/{board['problem_id']}",
+                    "entrypoint": None,
+                    "cmd": [],
+                },
+            })
+        board["state"] = "verified"
+        board["metadata_digest"] = DIGEST_B
+        board["release_record"] = {
+            **{key: board[key] for key in ("slug", "problem_id", "version", "source_hash", "repository")},
+            "index_digest": DIGEST_A,
+            "immutable_reference": f"{board['repository']}@{DIGEST_A}",
+            "platform_manifests": records,
+        }
+    journal["generation"] = len(journal["boards"]) * 2
+    journal["journal_hash"] = release._journal_hash(journal)
+    path = tmp_path / "publication.journal.json"
+    release._write_canonical(path, journal)
+    return path, journal, boards
 
 
 def completed(argv, stdout="", returncode=0):
@@ -222,12 +274,12 @@ def test_parse_index_rejects_duplicate_keys_digests_sizes_and_uppercase_forgery(
 
 
 def test_platform_config_binds_labels_and_safe_runtime_assumptions():
-    result = release.validate_platform_config(config_json(), platform="linux/amd64", commit=COMMIT, source_hash=SOURCE, problem_id="hadamard-mini", version="0.1.1")
+    result = release.validate_platform_config(config_json(), platform="linux/amd64", verifier_source_commit=COMMIT, source_hash=SOURCE, problem_id="hadamard-mini", version="0.1.1")
     assert result["runtime"]["entrypoint"] is None
     bad_labels = json.loads(config_json())["config"]["Labels"]
     bad_labels[release.SOURCE_HASH_LABEL] = "sha256:" + "f" * 64
     with pytest.raises(release.ReleaseError, match="labels"):
-        release.validate_platform_config(config_json(labels=bad_labels), platform="linux/amd64", commit=COMMIT, source_hash=SOURCE, problem_id="hadamard-mini", version="0.1.1")
+        release.validate_platform_config(config_json(labels=bad_labels), platform="linux/amd64", verifier_source_commit=COMMIT, source_hash=SOURCE, problem_id="hadamard-mini", version="0.1.1")
 
 
 @pytest.mark.parametrize("kwargs,match", [
@@ -238,7 +290,7 @@ def test_platform_config_binds_labels_and_safe_runtime_assumptions():
 ])
 def test_platform_config_rejects_unsafe_execution_metadata(kwargs, match):
     with pytest.raises(release.ReleaseError, match=match):
-        release.validate_platform_config(config_json(**kwargs), platform="linux/amd64", commit=COMMIT, source_hash=SOURCE, problem_id="hadamard-mini", version="0.1.1")
+        release.validate_platform_config(config_json(**kwargs), platform="linux/amd64", verifier_source_commit=COMMIT, source_hash=SOURCE, problem_id="hadamard-mini", version="0.1.1")
 
 
 def test_dirty_tree_and_nonexact_commit_fail_closed():
@@ -347,7 +399,7 @@ def test_release_fails_closed_when_board_binding_replay_fails():
         )
 
 
-def test_publish_mock_writes_canonical_self_hashed_schema_valid_dossier(monkeypatch, tmp_path):
+def test_publish_mock_stops_at_complete_source_bound_journal(monkeypatch, tmp_path):
     calls = []
     def runner(argv, **kwargs):
         calls.append(argv)
@@ -378,28 +430,174 @@ def test_publish_mock_writes_canonical_self_hashed_schema_valid_dossier(monkeypa
         return completed(argv, "")
     monkeypatch.setattr(release, "compute_source_hash", lambda problem: SOURCE)
     monkeypatch.setattr(release, "_prepare_frozen_context", lambda **kwargs: (ROOT, ARCHIVE))
-    output = tmp_path / "release.json"
-    dossier = release.release(root=ROOT, registry_base="ghcr.io/projectforty2/verifiers", commit=COMMIT, publish=True, output=output, runner=runner, now=lambda: datetime(2026, 7, 11, tzinfo=timezone.utc))
+    output = tmp_path / "publication.journal.json"
+    journal = release.release(root=ROOT, registry_base="ghcr.io/projectforty2/verifiers", commit=COMMIT, publish=True, output=output, runner=runner, now=lambda: datetime(2026, 7, 11, tzinfo=timezone.utc))
     raw = output.read_text()
-    assert raw == release.canonical_json(dossier) + "\n"
+    assert raw == release.canonical_json(journal) + "\n"
     assert output.stat().st_mode & 0o777 == 0o600
-    unhashed = dict(dossier); unhashed.pop("dossier_hash")
-    assert dossier["dossier_hash"] == release.sha256_bytes(release.canonical_json(unhashed).encode())
-    schema = json.loads((ROOT / "schemas" / "verifier-image-release.schema.json").read_text())
-    jsonschema.Draft202012Validator(schema).validate(dossier)
+    assert journal["schema_version"] == release.JOURNAL_SCHEMA_VERSION
+    assert journal["verifier_source_commit"] == COMMIT
+    assert all(board["state"] == "verified" for board in journal["boards"])
+    assert release._validate_publish_journal(journal) == journal
     builds = [call for call in calls if call[:3] == ["docker", "buildx", "build"]]
     assert len(builds) == 10
     assert all("type=registry,oci-mediatypes=true" in call for call in builds)
-    assert all(board["immutable_reference"].endswith(board["index_digest"]) for board in dossier["boards"])
+    assert all(
+        board["release_record"]["immutable_reference"].endswith(
+            board["release_record"]["index_digest"]
+        )
+        for board in journal["boards"]
+    )
+
+
+def test_finalize_adopts_digest_only_release_commit_without_rebuilding(monkeypatch, tmp_path):
+    journal_path, journal, boards = completed_journal(monkeypatch, tmp_path)
+    snapshots = iter(((ROOT, ARCHIVE), (ROOT, RELEASE_ARCHIVE)))
+
+    @contextmanager
+    def snapshot(*args, **kwargs):
+        yield next(snapshots)
+
+    monkeypatch.setattr(release, "_frozen_commit_snapshot", snapshot)
+    board_calls = iter((boards, boards))
+    monkeypatch.setattr(release, "_board_inputs", lambda *args, **kwargs: next(board_calls))
+    manifests = {
+        board["slug"]: {
+            "problem_id": board["slug"],
+            "verifier": {
+                "version": board["version"],
+                "image": DIGEST_A,
+                "image_repository": board["repository"],
+            },
+        }
+        for board in boards
+    }
+    monkeypatch.setattr(release, "load_manifest", lambda problem: manifests[Path(problem).name])
+    records = {board["slug"]: board["release_record"] for board in journal["boards"]}
+    monkeypatch.setattr(
+        release, "_inspect_release_record",
+        lambda **kwargs: records[kwargs["board"]["slug"]],
+    )
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        if argv[1:3] == ["rev-parse", "HEAD"]:
+            return completed(argv, RELEASE_COMMIT + "\n")
+        return completed(argv, "")
+
+    output = tmp_path / "release-v2.json"
+    dossier = release.finalize_release_dossier(
+        root=ROOT, journal_path=journal_path,
+        release_config_commit=RELEASE_COMMIT, output=output, runner=runner,
+        now=lambda: datetime(2026, 7, 18, tzinfo=timezone.utc),
+        board_binding_verifier=lambda root: None,
+    )
+    assert dossier["verifier_source_commit"] == COMMIT
+    assert dossier["release_config_commit"] == RELEASE_COMMIT
+    assert dossier["verifier_source_archive_digest"] == ARCHIVE
+    assert dossier["release_config_archive_digest"] == RELEASE_ARCHIVE
+    assert dossier["publication_journal_hash"] == journal["journal_hash"]
+    assert all(board["release_manifest_sha256"].startswith("sha256:") for board in dossier["boards"])
+    assert not any(call[:3] == ["docker", "buildx", "build"] for call in calls)
     assert release.validate_release_dossier(dossier) == dossier
-    forged = json.loads(json.dumps(dossier))
-    forged["boards"][0]["immutable_reference"] = f"{forged['boards'][0]['repository']}@{DIGEST_A}"
-    forged_body = dict(forged); forged_body.pop("dossier_hash")
-    forged["dossier_hash"] = release.sha256_bytes(release.canonical_json(forged_body).encode())
-    with pytest.raises(release.ReleaseError, match="immutable image binding"):
-        release.validate_release_dossier(forged)
-    with pytest.raises(release.ReleaseError, match="overwrite|already exists"):
-        release._write_canonical(output, dossier)
+    schema = json.loads((ROOT / "schemas" / "verifier-image-release.schema.json").read_text())
+    jsonschema.Draft202012Validator(schema).validate(dossier)
+
+
+def test_finalize_requires_rebuild_after_verifier_source_change(monkeypatch, tmp_path):
+    journal_path, _journal, boards = completed_journal(monkeypatch, tmp_path)
+    snapshots = iter(((ROOT, ARCHIVE), (ROOT, RELEASE_ARCHIVE)))
+
+    @contextmanager
+    def snapshot(*args, **kwargs):
+        yield next(snapshots)
+
+    changed = [dict(board) for board in boards]
+    changed[0]["source_hash"] = DIGEST_B
+    board_calls = iter((boards, changed))
+    monkeypatch.setattr(release, "_frozen_commit_snapshot", snapshot)
+    monkeypatch.setattr(release, "_board_inputs", lambda *args, **kwargs: next(board_calls))
+    monkeypatch.setattr(
+        release, "require_clean_exact_commit", lambda *args, **kwargs: RELEASE_COMMIT,
+    )
+    with pytest.raises(release.ReleaseError, match="verifier source changed.*rebuild required"):
+        release.finalize_release_dossier(
+            root=ROOT, journal_path=journal_path,
+            release_config_commit=RELEASE_COMMIT,
+            output=tmp_path / "must-not-exist.json",
+            runner=lambda argv, **kwargs: completed(argv, ""),
+            board_binding_verifier=lambda root: None,
+        )
+
+
+def test_finalize_rejects_stale_manifest_and_registry_evidence(monkeypatch, tmp_path):
+    journal_path, journal, boards = completed_journal(monkeypatch, tmp_path)
+
+    @contextmanager
+    def snapshot(*args, **kwargs):
+        yield (ROOT, ARCHIVE if args[1] == COMMIT else RELEASE_ARCHIVE)
+
+    monkeypatch.setattr(release, "_frozen_commit_snapshot", snapshot)
+    monkeypatch.setattr(release, "_board_inputs", lambda *args, **kwargs: boards)
+    monkeypatch.setattr(release, "require_clean_exact_commit", lambda *args, **kwargs: RELEASE_COMMIT)
+    manifests = {
+        board["slug"]: {
+            "problem_id": board["slug"],
+            "verifier": {
+                "version": board["version"],
+                "image": DIGEST_B if index == 0 else DIGEST_A,
+                "image_repository": board["repository"],
+            },
+        }
+        for index, board in enumerate(boards)
+    }
+    monkeypatch.setattr(release, "load_manifest", lambda problem: manifests[Path(problem).name])
+    with pytest.raises(release.ReleaseError, match="does not adopt.*exact immutable image"):
+        release.finalize_release_dossier(
+            root=ROOT, journal_path=journal_path, release_config_commit=RELEASE_COMMIT,
+            output=tmp_path / "stale-manifest.json",
+            runner=lambda argv, **kwargs: completed(argv, ""),
+            board_binding_verifier=lambda root: None,
+        )
+
+    manifests[boards[0]["slug"]]["verifier"]["image"] = DIGEST_A
+    monkeypatch.setattr(
+        release, "_inspect_release_record",
+        lambda **kwargs: {
+            **journal["boards"][0]["release_record"], "index_digest": DIGEST_B,
+        },
+    )
+    with pytest.raises(release.ReleaseError, match="registry record is stale or mismatched"):
+        release.finalize_release_dossier(
+            root=ROOT, journal_path=journal_path, release_config_commit=RELEASE_COMMIT,
+            output=tmp_path / "stale-registry.json",
+            runner=lambda argv, **kwargs: completed(argv, ""),
+            board_binding_verifier=lambda root: None,
+        )
+
+
+def test_v1_dossier_is_explicitly_historical_only():
+    with pytest.raises(release.ReleaseError, match="historical-only"):
+        release.validate_release_dossier({"schema_version": release.LEGACY_SCHEMA_VERSION})
+
+
+def test_finalize_rejects_symlinked_publication_journal(monkeypatch, tmp_path):
+    journal_path, _journal, _boards = completed_journal(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        release, "require_clean_exact_commit", lambda *args, **kwargs: RELEASE_COMMIT,
+    )
+    symlink = tmp_path / "publication-link.json"
+    symlink.symlink_to(journal_path)
+    with pytest.raises((release.ReleaseError, OSError), match="symlink|regular|loop|follow|levels"):
+        release.finalize_release_dossier(
+            root=ROOT,
+            journal_path=symlink,
+            release_config_commit=RELEASE_COMMIT,
+            output=tmp_path / "must-not-exist.json",
+            runner=lambda argv, **kwargs: completed(argv, ""),
+            board_binding_verifier=lambda root: None,
+        )
 
 
 def test_build_metadata_and_raw_registry_bytes_must_agree():
@@ -426,7 +624,7 @@ def test_child_manifest_and_config_are_verified_through_digest_and_size():
     parsed = release.parse_child_manifest(child_raw)
     config = parsed["config"]
     verified = release.verify_descriptor_bytes(blobs[config["digest"]], digest=config["digest"], size=config["size"], label="config")
-    assert release.validate_platform_config(verified, platform="linux/amd64", commit=COMMIT, source_hash=SOURCE, problem_id="hadamard-mini", version="0.1.1")
+    assert release.validate_platform_config(verified, platform="linux/amd64", verifier_source_commit=COMMIT, source_hash=SOURCE, problem_id="hadamard-mini", version="0.1.1")
     with pytest.raises(release.ReleaseError, match="digest and size"):
         release.verify_descriptor_bytes(blobs[config["digest"]] + " ", digest=config["digest"], size=config["size"], label="config")
 
@@ -459,9 +657,9 @@ def test_restart_refuses_to_repush_a_building_board_without_durable_metadata(mon
     base = "ghcr.io/projectforty2/verifiers"
     monkeypatch.setattr(release, "compute_source_hash", lambda problem: SOURCE)
     boards = release._board_inputs(ROOT, base)
-    output = tmp_path / "release.json"
-    journal_path = output.with_name(output.name + ".journal.json")
-    expected = release._build_publish_journal(boards=boards, commit=COMMIT, source_archive_digest=ARCHIVE, registry_base=base)
+    output = tmp_path / "publication.journal.json"
+    journal_path = output
+    expected = release._build_publish_journal(boards=boards, verifier_source_commit=COMMIT, verifier_source_archive_digest=ARCHIVE, registry_base=base)
     journal, created = release._reserve_publish_journal(journal_path, expected)
     assert created
     output.with_name(output.name + ".publish-work").mkdir(mode=0o700)
