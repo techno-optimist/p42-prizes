@@ -18,7 +18,7 @@
     "topologyDigest": { "$ref": "#/$defs/digest" },
     "contractCount": { "const": 47 },
     "expiresAt": { "type": "integer", "minimum": 1 },
-    "acceptances": { "type": "array", "minItems": 4, "items": { "$ref": "#/$defs/acceptance" } },
+    "acceptances": { "type": "array", "minItems": 7, "items": { "$ref": "#/$defs/acceptance" } },
     "packetDigest": { "$ref": "#/$defs/digest" }
   },
   "$defs": {
@@ -29,7 +29,7 @@
       "additionalProperties": false,
       "required": ["role", "address", "nonce", "riskAccepted", "roleAccepted", "signature"],
       "properties": {
-        "role": { "enum": ["timelock-signer", "guardian", "treasury", "resolver-quorum-signer"] },
+        "role": { "enum": ["timelock-signer", "guardian", "treasury", "production-launch-authority", "independent-security-authority", "governance-authority", "resolver-quorum-signer"] },
         "address": { "$ref": "#/$defs/address" },
         "nonce": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
         "riskAccepted": { "const": true },
