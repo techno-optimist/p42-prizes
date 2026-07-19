@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.world/protocol/typed-transcript/typed-transcript-vectors-v1.schema.json",
+  "title": "TypedTranscriptV1 structural vectors",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifactStatus", "cryptographicOutputsIncluded", "protocolId", "version", "formatVectors", "negativePairs", "rejectionVectors"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "artifactStatus": {"const": "design-only-non-activating"},
+    "cryptographicOutputsIncluded": {"const": false},
+    "protocolId": {"const": "p42.sp1.typed-transcript"},
+    "version": {"const": 1},
+    "formatVectors": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/vector"}},
+    "negativePairs": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/pair"}},
+    "rejectionVectors": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/rejection"}}
+  },
+  "$defs": {
+    "word": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"},
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tag", "encoding", "counter", "logicalLength", "payload"],
+      "properties": {
+        "tag": {"type": "string"},
+        "encoding": {"type": "string"},
+        "counter": {"type": "integer", "minimum": 0},
+        "logicalLength": {"type": "integer", "minimum": 0},
+        "payload": {"type": "array", "items": {"$ref": "#/$defs/word"}}
+      }
+    },
+    "vector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "profile", "event", "expectedFrameWords", "expectedBlocks"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "profile": {"enum": ["inner-koalabear-v1", "outer-bn254-v1"]},
+        "event": {"$ref": "#/$defs/event"},
+        "expectedFrameWords": {"type": "array", "items": {"$ref": "#/$defs/word"}},
+        "expectedBlocks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["index", "occupied", "final", "control", "rateWords"],
+            "properties": {
+              "index": {"type": "integer", "minimum": 0, "maximum": 65535},
+              "occupied": {"type": "integer", "minimum": 1},
+              "final": {"type": "boolean"},
+              "control": {"$ref": "#/$defs/word"},
+              "rateWords": {"type": "array", "items": {"$ref": "#/$defs/word"}}
+            }
+          }
+        }
+      }
+    },
+    "pair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "profile", "left", "right", "reason"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "profile": {"enum": ["inner-koalabear-v1", "outer-bn254-v1"]},
+        "left": {"$ref": "#/$defs/event"},
+        "right": {"$ref": "#/$defs/event"},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "rejection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "envelope", "error"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "envelope": {"type": "object"},
+        "error": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

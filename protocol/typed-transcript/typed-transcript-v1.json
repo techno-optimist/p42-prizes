@@ -1,0 +1,67 @@
+{
+  "$schema": "./typed-transcript-v1.schema.json",
+  "artifactStatus": "design-only-non-activating",
+  "remediatesIssue164": false,
+  "protocolId": "p42.sp1.typed-transcript",
+  "version": 1,
+  "fieldProfiles": {
+    "inner-koalabear-v1": {
+      "profileId": 1,
+      "modulus": "2130706433",
+      "width": 16,
+      "rate": 8,
+      "capacity": 8
+    },
+    "outer-bn254-v1": {
+      "profileId": 2,
+      "modulus": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+      "width": 3,
+      "rate": 2,
+      "capacity": 1
+    }
+  },
+  "constants": {
+    "protocolMagic": 1345597953,
+    "frameEnd": 1162757121,
+    "blockControlBase": 1073741824,
+    "profileShift": 23,
+    "phaseShift": 21,
+    "finalShift": 20,
+    "occupiedShift": 16,
+    "blockIndexBits": 16,
+    "lengthRadix": 65536,
+    "lengthLimbs": 4,
+    "koalaBearPackingRadix": 2147483648,
+    "koalaBearValuesPerBn254Word": 8
+  },
+  "phases": {
+    "absorbFrame": 1,
+    "squeezeContinuation": 2
+  },
+  "eventTags": {
+    "protocolInit": 1,
+    "baseField": 16,
+    "extensionField": 17,
+    "digest": 18,
+    "commitment": 19,
+    "sliceBegin": 32,
+    "sliceEnd": 33,
+    "containerBegin": 34,
+    "containerEnd": 35,
+    "squeezeField": 48,
+    "squeezeBits": 49,
+    "squeezeExtension": 50
+  },
+  "encodingTags": {
+    "none": 0,
+    "koalaBearDirect": 1,
+    "koalaBearPacked8": 2,
+    "extension4KoalaBearDirect": 3,
+    "extension4KoalaBearPacked8": 4,
+    "koalaBearDigest8": 5,
+    "bn254Native": 6,
+    "container": 7,
+    "squeezeRequest": 8,
+    "koalaBearDigest8Packed8": 9
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.world/protocol/typed-transcript/typed-transcript-v1.schema.json",
+  "title": "P42 TypedTranscriptV1 design constants",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifactStatus", "remediatesIssue164", "protocolId", "version", "fieldProfiles", "constants", "phases", "eventTags", "encodingTags"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "artifactStatus": {"const": "design-only-non-activating"},
+    "remediatesIssue164": {"const": false},
+    "protocolId": {"const": "p42.sp1.typed-transcript"},
+    "version": {"const": 1},
+    "fieldProfiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inner-koalabear-v1", "outer-bn254-v1"],
+      "properties": {
+        "inner-koalabear-v1": {"$ref": "#/$defs/profile"},
+        "outer-bn254-v1": {"$ref": "#/$defs/profile"}
+      }
+    },
+    "constants": {"$ref": "#/$defs/uniqueIntegerMap"},
+    "phases": {"$ref": "#/$defs/uniqueIntegerMap"},
+    "eventTags": {"$ref": "#/$defs/uniqueIntegerMap"},
+    "encodingTags": {"$ref": "#/$defs/uniqueIntegerMap"}
+  },
+  "$defs": {
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profileId", "modulus", "width", "rate", "capacity"],
+      "properties": {
+        "profileId": {"type": "integer", "minimum": 1, "maximum": 15},
+        "modulus": {"type": "string", "pattern": "^[1-9][0-9]+$"},
+        "width": {"type": "integer", "minimum": 2},
+        "rate": {"type": "integer", "minimum": 1},
+        "capacity": {"type": "integer", "minimum": 1}
+      }
+    },
+    "uniqueIntegerMap": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    }
+  }
+}

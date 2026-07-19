@@ -1,0 +1,119 @@
+{
+  "$schema": "./typed-transcript-vectors-v1.schema.json",
+  "artifactStatus": "design-only-non-activating",
+  "cryptographicOutputsIncluded": false,
+  "protocolId": "p42.sp1.typed-transcript",
+  "version": 1,
+  "formatVectors": [
+    {
+      "id": "init-inner",
+      "profile": "inner-koalabear-v1",
+      "event": {"tag": "protocolInit", "encoding": "none", "counter": 0, "logicalLength": 0, "payload": []},
+      "expectedFrameWords": ["1345597953", "1", "1", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "1162757121"],
+      "expectedBlocks": [
+        {"index": 0, "occupied": 8, "final": false, "control": "1084751872", "rateWords": ["1345597953", "1", "1", "0", "0", "0", "0", "0"]},
+        {"index": 1, "occupied": 8, "final": false, "control": "1084751873", "rateWords": ["0", "0", "0", "0", "0", "0", "0", "0"]},
+        {"index": 2, "occupied": 1, "final": true, "control": "1085341698", "rateWords": ["1162757121", "0", "0", "0", "0", "0", "0", "0"]}
+      ]
+    },
+    {
+      "id": "base-seven-inner",
+      "profile": "inner-koalabear-v1",
+      "event": {"tag": "baseField", "encoding": "koalaBearDirect", "counter": 1, "logicalLength": 1, "payload": ["7"]},
+      "expectedFrameWords": ["1345597953", "1", "16", "1", "1", "0", "0", "0", "1", "0", "0", "0", "1", "0", "0", "0", "7", "1162757121"],
+      "expectedBlocks": [
+        {"index": 0, "occupied": 8, "final": false, "control": "1084751872", "rateWords": ["1345597953", "1", "16", "1", "1", "0", "0", "0"]},
+        {"index": 1, "occupied": 8, "final": false, "control": "1084751873", "rateWords": ["1", "0", "0", "0", "1", "0", "0", "0"]},
+        {"index": 2, "occupied": 2, "final": true, "control": "1085407234", "rateWords": ["7", "1162757121", "0", "0", "0", "0", "0", "0"]}
+      ]
+    },
+    {
+      "id": "packed-one-two-outer",
+      "profile": "outer-bn254-v1",
+      "event": {"tag": "baseField", "encoding": "koalaBearPacked8", "counter": 1, "logicalLength": 2, "payload": ["4294967297"]},
+      "expectedFrameWords": ["1345597953", "1", "16", "2", "1", "0", "0", "0", "2", "0", "0", "0", "1", "0", "0", "0", "4294967297", "1162757121"],
+      "expectedBlocks": [
+        {"index": 0, "occupied": 2, "final": false, "control": "1092747264", "rateWords": ["1345597953", "1"]},
+        {"index": 1, "occupied": 2, "final": false, "control": "1092747265", "rateWords": ["16", "2"]},
+        {"index": 2, "occupied": 2, "final": false, "control": "1092747266", "rateWords": ["1", "0"]},
+        {"index": 3, "occupied": 2, "final": false, "control": "1092747267", "rateWords": ["0", "0"]},
+        {"index": 4, "occupied": 2, "final": false, "control": "1092747268", "rateWords": ["2", "0"]},
+        {"index": 5, "occupied": 2, "final": false, "control": "1092747269", "rateWords": ["0", "0"]},
+        {"index": 6, "occupied": 2, "final": false, "control": "1092747270", "rateWords": ["1", "0"]},
+        {"index": 7, "occupied": 2, "final": false, "control": "1092747271", "rateWords": ["0", "0"]},
+        {"index": 8, "occupied": 2, "final": true, "control": "1093795848", "rateWords": ["4294967297", "1162757121"]}
+      ]
+    },
+    {
+      "id": "extension-one-inner",
+      "profile": "inner-koalabear-v1",
+      "event": {"tag": "extensionField", "encoding": "extension4KoalaBearDirect", "counter": 2, "logicalLength": 1, "payload": ["1", "2", "3", "4"]},
+      "expectedFrameWords": ["1345597953", "1", "17", "3", "2", "0", "0", "0", "1", "0", "0", "0", "4", "0", "0", "0", "1", "2", "3", "4", "1162757121"],
+      "expectedBlocks": [
+        {"index": 0, "occupied": 8, "final": false, "control": "1084751872", "rateWords": ["1345597953", "1", "17", "3", "2", "0", "0", "0"]},
+        {"index": 1, "occupied": 8, "final": false, "control": "1084751873", "rateWords": ["1", "0", "0", "0", "4", "0", "0", "0"]},
+        {"index": 2, "occupied": 5, "final": true, "control": "1085603842", "rateWords": ["1", "2", "3", "4", "1162757121", "0", "0", "0"]}
+      ]
+    },
+    {
+      "id": "squeeze-one-outer",
+      "profile": "outer-bn254-v1",
+      "event": {"tag": "squeezeField", "encoding": "squeezeRequest", "counter": 2, "logicalLength": 1, "payload": []},
+      "expectedFrameWords": ["1345597953", "1", "48", "8", "2", "0", "0", "0", "1", "0", "0", "0", "0", "0", "0", "0", "1162757121"],
+      "expectedBlocks": [
+        {"index": 0, "occupied": 2, "final": false, "control": "1092747264", "rateWords": ["1345597953", "1"]},
+        {"index": 1, "occupied": 2, "final": false, "control": "1092747265", "rateWords": ["48", "8"]},
+        {"index": 2, "occupied": 2, "final": false, "control": "1092747266", "rateWords": ["2", "0"]},
+        {"index": 3, "occupied": 2, "final": false, "control": "1092747267", "rateWords": ["0", "0"]},
+        {"index": 4, "occupied": 2, "final": false, "control": "1092747268", "rateWords": ["1", "0"]},
+        {"index": 5, "occupied": 2, "final": false, "control": "1092747269", "rateWords": ["0", "0"]},
+        {"index": 6, "occupied": 2, "final": false, "control": "1092747270", "rateWords": ["0", "0"]},
+        {"index": 7, "occupied": 2, "final": false, "control": "1092747271", "rateWords": ["0", "0"]},
+        {"index": 8, "occupied": 1, "final": true, "control": "1093730312", "rateWords": ["1162757121", "0"]}
+      ]
+    }
+  ],
+  "negativePairs": [
+    {
+      "id": "packed-trailing-zero",
+      "profile": "outer-bn254-v1",
+      "left": {"tag": "baseField", "encoding": "koalaBearPacked8", "counter": 1, "logicalLength": 1, "payload": ["7"]},
+      "right": {"tag": "baseField", "encoding": "koalaBearPacked8", "counter": 1, "logicalLength": 2, "payload": ["7"]},
+      "reason": "The packed payload aliases arithmetically, but logical length changes the frame."
+    },
+    {
+      "id": "direct-trailing-zero",
+      "profile": "inner-koalabear-v1",
+      "left": {"tag": "baseField", "encoding": "koalaBearDirect", "counter": 3, "logicalLength": 1, "payload": ["5"]},
+      "right": {"tag": "baseField", "encoding": "koalaBearDirect", "counter": 3, "logicalLength": 2, "payload": ["5", "0"]},
+      "reason": "Occupied rate lanes and frame length are explicit; a stale lane cannot supply the zero."
+    },
+    {
+      "id": "scalar-commitment-type",
+      "profile": "outer-bn254-v1",
+      "left": {"tag": "baseField", "encoding": "koalaBearPacked8", "counter": 4, "logicalLength": 1, "payload": ["42"]},
+      "right": {"tag": "commitment", "encoding": "bn254Native", "counter": 4, "logicalLength": 1, "payload": ["42"]},
+      "reason": "Equal numeric payloads in distinct semantic types have distinct tags and encodings."
+    },
+    {
+      "id": "flat-nested-boundary",
+      "profile": "inner-koalabear-v1",
+      "left": {"tag": "sliceBegin", "encoding": "container", "counter": 5, "logicalLength": 2, "payload": []},
+      "right": {"tag": "containerBegin", "encoding": "container", "counter": 5, "logicalLength": 2, "payload": []},
+      "reason": "A homogeneous slice and a nested container cannot flatten to the same event."
+    },
+    {
+      "id": "squeeze-kind",
+      "profile": "inner-koalabear-v1",
+      "left": {"tag": "squeezeField", "encoding": "squeezeRequest", "counter": 6, "logicalLength": 4, "payload": []},
+      "right": {"tag": "squeezeBits", "encoding": "squeezeRequest", "counter": 6, "logicalLength": 4, "payload": []},
+      "reason": "Four field challenges and four challenge bits are distinct requests."
+    }
+  ],
+  "rejectionVectors": [
+    {"id": "missing-version", "envelope": {"protocolId": "p42.sp1.typed-transcript", "profile": "inner-koalabear-v1"}, "error": "missing transcript version"},
+    {"id": "legacy-version", "envelope": {"protocolId": "p42.sp1.typed-transcript", "version": 0, "profile": "inner-koalabear-v1"}, "error": "legacy transcript is not TypedTranscriptV1"},
+    {"id": "unknown-profile", "envelope": {"protocolId": "p42.sp1.typed-transcript", "version": 1, "profile": "outer-unknown"}, "error": "unknown transcript profile"},
+    {"id": "wrong-protocol", "envelope": {"protocolId": "sp1.legacy", "version": 1, "profile": "outer-bn254-v1"}, "error": "protocol identifier mismatch"}
+  ]
+}
