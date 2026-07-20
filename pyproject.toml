@@ -15,11 +15,19 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0,<10",
+  "setuptools>=75.0,<81",
 ]
+
+[build-system]
+requires = ["setuptools>=75.0,<81"]
+build-backend = "setuptools.build_meta"
 
 [project.scripts]
 p42-prizes = "p42_prizes.cli:main"
 p42-sp1-runtime-attestation = "p42_prizes.sp1_runtime_attestation:main"
+
+[tool.setuptools.package-data]
+p42_prizes = ["schema_resources/*.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

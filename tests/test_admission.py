@@ -37,6 +37,10 @@ from p42_prizes.bounded_process import OutputLimitExceeded
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _clean_git_env() -> dict[str, str]:
+    return {"PATH": os.environ.get("PATH", os.defpath)}
+
+
 def _portable_oci_graph(*, slug: str, version: str, source_commit: str, source_hash: str):
     platform_records = []
     raw_platforms = []
@@ -711,13 +715,14 @@ def _portable_release_fixture(tmp_path: Path) -> tuple[Path, dict, Path, str]:
         manifest["verifier"]["image_repository"] = f"{registry}/{slug}"
         manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
 
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
-    subprocess.run(["git", "config", "user.name", "P42 Test"], cwd=root, check=True)
-    subprocess.run(["git", "add", "."], cwd=root, check=True)
-    subprocess.run(["git", "commit", "-qm", "verifier source"], cwd=root, check=True)
+    git_env = _clean_git_env()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, env=git_env)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True, env=git_env)
+    subprocess.run(["git", "config", "user.name", "P42 Test"], cwd=root, check=True, env=git_env)
+    subprocess.run(["git", "add", "."], cwd=root, check=True, env=git_env)
+    subprocess.run(["git", "commit", "-qm", "verifier source"], cwd=root, check=True, env=git_env)
     source_commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True,
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True, env=git_env,
     ).stdout.strip()
     source_hashes = {
         slug: compute_source_hash(root / "problems" / slug) for slug in slugs
@@ -736,10 +741,10 @@ def _portable_release_fixture(tmp_path: Path) -> tuple[Path, dict, Path, str]:
         manifest["verifier"]["image"] = image_digest
         manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
         assert compute_source_hash(root / "problems" / slug) == source_hashes[slug]
-    subprocess.run(["git", "add", "."], cwd=root, check=True)
-    subprocess.run(["git", "commit", "-qm", "release config"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True, env=git_env)
+    subprocess.run(["git", "commit", "-qm", "release config"], cwd=root, check=True, env=git_env)
     release_commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True,
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True, env=git_env,
     ).stdout.strip()
     with admission._exact_git_snapshot(root, source_commit) as (_snapshot, source_archive):
         pass

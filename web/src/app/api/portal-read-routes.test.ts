@@ -22,6 +22,26 @@ const ADDRESS = `0x${"2".repeat(40)}`;
 const FUNDING_ADDRESS = `0x${"6".repeat(40)}`;
 const HASH = `0x${"3".repeat(64)}`;
 
+const FORBIDDEN_PUBLIC_KEYS = /(?:address|transactionhash|registry|destinationpool|donationtarget|donationwallet|walleturi|explorerurl)/i;
+
+function expectNoFundingDerivation(value: unknown, path = "payload"): void {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => expectNoFundingDerivation(entry, `${path}[${index}]`));
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const [key, entry] of Object.entries(value)) {
+      expect(key, `${path}.${key}`).not.toMatch(FORBIDDEN_PUBLIC_KEYS);
+      expectNoFundingDerivation(entry, `${path}.${key}`);
+    }
+    return;
+  }
+  if (typeof value === "string") {
+    expect(value, path).not.toContain(FUNDING_ADDRESS);
+    expect(value.toLowerCase(), path).not.toContain("basescan");
+    expect(value.toLowerCase(), path).not.toContain("ethereum:");
+  }
+}
 function provenance(index: number): ChainProvenance {
   return {
     settlementState: "testnet-indexed", chain: "Base Sepolia", chainId: 84532,
@@ -174,10 +194,15 @@ function payloadStrings(node: unknown, seen = new Set<object>()): string[] {
 }
 
 describe("chain portal API consumers", () => {
-  beforeEach(() => vi.mocked(loadPortalReadModel).mockResolvedValue(model()));
-  afterEach(() => vi.useRealTimers());
+  beforeEach(() => {
+    vi.mocked(loadPortalReadModel).mockResolvedValue(model());
+  });
+  afterEach(() => {
+    delete process.env.P42_FUNDING_RELEASE_ARTIFACTS;
+    vi.useRealTimers();
+  });
 
-  it("publishes chain frontier, pool, source, and actionability in list/detail APIs", async () => {
+  it("publishes only allowlisted non-actionable chain summaries in list/detail APIs", async () => {
     const listResponse = await problemsGet();
     const list = await listResponse.json();
     expect(listResponse.headers.get("x-p42-data-source")).toBe("chain-p42-v1");
@@ -185,23 +210,29 @@ describe("chain portal API consumers", () => {
       source: "chain-p42-v1", currentBest: "8/1", bountyEth: "5",
       pool: {
         totalFundedEth: "5",
-        sponsors: [{ principalEth: "2" }],
-        winningsDonations: [{ destinationPool: FUNDING_ADDRESS }],
       },
-      chainProvenance: { problemRegistryId: "1", checkpointBlock: 100 },
+      chainProvenance: {
+        settlementState: "testnet-indexed", reconciliationOk: true,
+        source: "indexer-artifacts-v2", fundingTargetDeployed: true,
+      },
     });
+    expect(Object.keys(list[0].chainProvenance).sort()).toEqual([
+      "fundingTargetDeployed", "note", "reconciliationOk", "settlementState", "source",
+    ]);
 
     const detailResponse = await problemGet(
       new Request(`http://localhost/api/problems/${launchProblems[0].slug}`),
       { params: Promise.resolve({ slug: launchProblems[0].slug }) },
     );
     expect(detailResponse.headers.get("x-p42-data-source")).toBe("chain-p42-v1");
-    await expect(detailResponse.json()).resolves.toMatchObject({
+    const detail = await detailResponse.json();
+    expect(detail).toMatchObject({
       source: "chain-p42-v1", currentBest: "8/1",
       funding: { canFund: true, canSubmit: true },
-      claimants: [{ finalEntitlementEth: "1", withdrawableBondEth: "0.2" }],
-      poolAddress: FUNDING_ADDRESS,
+      pool: { totalFundedEth: "5" },
+      chainProvenance: { settlementState: "testnet-indexed", reconciliationOk: true },
     });
+    expectNoFundingDerivation({ list, detail });
   });
 
   it("serializes no funding address or wallet URI after the publication deadline", async () => {
@@ -221,18 +252,9 @@ describe("chain portal API consumers", () => {
     expect(detailResponse.headers.get("cache-control")).toBe("no-store, max-age=0");
     expect(problemPageDynamic).toBe("force-dynamic");
     expect(problemPageRevalidate).toBe(0);
-    expect(list[0]).toMatchObject({
-      pool: { winningsDonations: [{ destinationPool: null }] },
-      donationWallet: { address: null },
-      donationTarget: null,
-      chainProvenance: { donationWalletAddress: null, poolAddress: null, fundingTargetDeployed: true },
-    });
+    expect(list[0]).toMatchObject({ chainProvenance: { fundingTargetDeployed: true } });
     expect(detail).toMatchObject({
-      poolAddress: null,
-      pool: { winningsDonations: [{ destinationPool: null }] },
-      donationWallet: { address: null },
-      donationTarget: null,
-      chainProvenance: { donationWalletAddress: null, poolAddress: null, fundingTargetDeployed: true },
+      chainProvenance: { fundingTargetDeployed: true },
       funding: { fundingDeadlineReached: true, canFund: false },
     });
     expect(fundingPanel?.props).toMatchObject({
@@ -267,8 +289,8 @@ describe("chain portal API consumers", () => {
       JSON.stringify({ list, detail, fundingPanelProps: fundingPanel?.props }),
       ...payloadStrings(page),
     ].join("\n");
+    expectNoFundingDerivation({ list, detail });
     expect(serializedPublicPayloads).not.toContain(FUNDING_ADDRESS);
-    expect(serializedPublicPayloads).not.toContain(`ethereum:${FUNDING_ADDRESS}`);
   });
 
   it("keeps address, wallet, and chain routing material out of pre-deadline Flight props", async () => {
@@ -303,7 +325,7 @@ describe("chain portal API consumers", () => {
     expect(flightFacingPayload).not.toContain("84532");
   });
 
-  it("serves the minimal no-store funding target only before D", async () => {
+  it("preserves the exact Phase 0 v3 null envelope before D", async () => {
     vi.useFakeTimers();
     vi.setSystemTime("2026-01-04T00:00:00.000Z");
     const response = await fundingTargetGet(
@@ -328,15 +350,24 @@ describe("chain portal API consumers", () => {
       checkpointBlock: 100,
       checkpointDigest: `sha256:${"6".repeat(64)}`,
       activationFinalizedBlock: 99,
-      target: {
-        address: FUNDING_ADDRESS,
-        asset: "ETH",
-        chain: "Base Sepolia",
-        chainId: 84532,
-        explorerUrl: `https://sepolia.basescan.org/address/${FUNDING_ADDRESS}`,
-        walletUri: `ethereum:${FUNDING_ADDRESS}@84532`,
-      },
+      target: null,
     });
+    expect(JSON.stringify(body)).not.toContain(FUNDING_ADDRESS);
+  });
+
+  it("does not let an unbound environment assertion authorize legal artifacts", async () => {
+    process.env.P42_FUNDING_RELEASE_ARTIFACTS = JSON.stringify({
+      terms: { uri: `https://example.com/${FUNDING_ADDRESS}`, sha256: `sha256:${"a".repeat(64)}` },
+    });
+    const response = await fundingTargetGet(
+      new Request(`http://localhost/api/problems/${launchProblems[0].slug}/funding-target`),
+      { params: Promise.resolve({ slug: launchProblems[0].slug }) },
+    );
+    const body = await response.json();
+    expect(body.target).toBeNull();
+    expect(JSON.stringify(body)).not.toContain(FUNDING_ADDRESS);
+    expect(JSON.stringify(body)).not.toContain("ethereum:");
+    delete process.env.P42_FUNDING_RELEASE_ARTIFACTS;
   });
 
   it.each([
@@ -363,9 +394,9 @@ describe("chain portal API consumers", () => {
   });
 
   it.each([
-    ["at authorization expiry", "2026-01-05T00:00:00.000Z", true],
-    ["one second after authorization expiry", "2026-01-05T00:00:01.000Z", false],
-  ])("applies Solidity authorization expiry %s", async (_label, serverObservedAt, publishes) => {
+    ["at authorization expiry", "2026-01-05T00:00:00.000Z"],
+    ["one second after authorization expiry", "2026-01-05T00:00:01.000Z"],
+  ])("remains legally fail-closed %s", async (_label, serverObservedAt) => {
     vi.useFakeTimers();
     vi.setSystemTime(serverObservedAt);
     const value = model();
@@ -384,8 +415,8 @@ describe("chain portal API consumers", () => {
       { params: Promise.resolve({ slug: launchProblems[0].slug }) },
     );
     const body = await response.json();
-    expect(body.target?.address ?? null).toBe(publishes ? FUNDING_ADDRESS : null);
-    expect(JSON.stringify(body).includes("ethereum:")).toBe(publishes);
+    expect(body.target).toBeNull();
+    expect(JSON.stringify(body)).not.toContain("ethereum:");
   });
 
   it("redacts every target field when the finalized cap remainder is zero", async () => {
@@ -473,7 +504,21 @@ describe("chain portal API consumers", () => {
       { params: Promise.resolve({ slug: launchProblems[0].slug }) },
     );
     const body = await response.json();
-    expect(body).toMatchObject({ fundingDeadline: null, serverObservedAt: null, target: null });
+    expect(body).toEqual({
+      schema: "p42-prizes/funding-target/v3",
+      slug: launchProblems[0].slug,
+      authorizationExpiresAt: null,
+      finalizedObservedAt: null,
+      fundingDeadline: null,
+      remainingCapWei: null,
+      serverObservedAt: null,
+      fundingAuthorizationDigest: null,
+      activationCompletionDigest: null,
+      checkpointBlock: null,
+      checkpointDigest: null,
+      activationFinalizedBlock: null,
+      target: null,
+    });
     expect(JSON.stringify(body)).not.toContain(FUNDING_ADDRESS);
   });
 

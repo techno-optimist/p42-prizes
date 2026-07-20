@@ -315,6 +315,7 @@ invoke the producer with explicit bindings and cumulative host counters:
 
 ```bash
 p42-prizes runner-health --queue runtime/runner-queue.json \
+  --trusted-root /srv/p42/runner \
   --output runtime/runner-health.json --signing-key /run/p42/health-ed25519.pem \
   --host-id chronos-dgx --boot-id "$BOOT_ID" --queue-id base-challenges \
   --chain-id 8453 --contract "$CHALLENGE_MANAGER" \

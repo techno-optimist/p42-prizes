@@ -21,7 +21,7 @@ const endpoints: Array<[string, string, string]> = [
   ["POST", "/api/submissions/reveal", "Reveal salt and solution; receive a non-settlement VerdictReport."],
   ["POST", "/api/solutions", "Developer shortcut: raw bytes to the canonical verifier runner."],
   ["POST", "/api/challenges", "Bonded dispute — fails closed (501) until challenges are enabled."],
-  ["POST", "/api/problems/{slug}/funding/coinbase-session", "Hard-disabled for v1; future funding remains wallet-first."],
+  ["POST", "/api/problems/{slug}/funding/coinbase-session", "Hard-disabled; no funding or destination-discovery flow is available."],
 ];
 
 export default function AgentsPage() {

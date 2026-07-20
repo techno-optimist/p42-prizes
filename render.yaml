@@ -4,6 +4,7 @@ services:
   - type: web
     name: p42-prizes
     runtime: node
+    autoDeployTrigger: off
     rootDir: ./web
     buildCommand: npm ci && npm run build:prizes
     startCommand: npm run db:migrate && exec env -u P42_PORTAL_MIGRATION_DATABASE_URL npm run start:prizes

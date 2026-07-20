@@ -1,11 +1,8 @@
 import { json } from "@/lib/api";
-import {
-  chainProvenanceForProblem,
-  publicDonationWallet,
-  publishedDonationTarget,
-} from "@/lib/chain-provenance";
+import { chainProvenanceForProblem } from "@/lib/chain-provenance";
 import { getProblemBySlug } from "@/lib/data";
 import { loadPortalReadModel } from "@/lib/indexer-read-model";
+import { publicProblemDetail } from "@/lib/public-problem";
 
 export async function GET(_req: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
@@ -16,15 +13,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ slug: s
     ...catalogProblem,
     source: "local-phase-0" as const,
     pool: null,
+    funding: null,
+    claimants: [],
     chainProvenance: chainProvenanceForProblem(catalogProblem),
   };
-  const chainProvenance = problem.chainProvenance;
-  const donationTarget = publishedDonationTarget(problem.donationWallet, chainProvenance);
-  return json({
-    ...problem,
-    poolAddress: donationTarget?.address ?? null,
-    donationWallet: publicDonationWallet(problem.donationWallet, chainProvenance),
-    donationTarget,
-    chainProvenance,
-  }, { headers: { "X-P42-Data-Source": problem.source } });
+  return json(publicProblemDetail(problem), { headers: { "X-P42-Data-Source": problem.source } });
 }

@@ -243,13 +243,26 @@ export interface PortalReadModel {
   provenance: PortalReadModelProvenance;
 }
 
-export interface FundingTargetV3 {
+export interface FundingTargetV4 {
   address: string;
   asset: "ETH";
   chain: "Base Sepolia" | "Base";
   chainId: 84532 | 8453;
   explorerUrl: string;
   walletUri: string;
+  releaseArtifacts: FundingReleaseArtifactsV1;
+}
+
+export interface FundingArtifactReference {
+  uri: string;
+  sha256: `sha256:${string}`;
+}
+
+export interface FundingReleaseArtifactsV1 {
+  terms: FundingArtifactReference;
+  privacy: FundingArtifactReference;
+  risk: FundingArtifactReference;
+  eligibility: FundingArtifactReference;
 }
 
 export interface FundingTargetEnvelopeV3 {
@@ -265,7 +278,20 @@ export interface FundingTargetEnvelopeV3 {
   checkpointBlock: number | null;
   checkpointDigest: string | null;
   activationFinalizedBlock: number | null;
-  target: FundingTargetV3 | null;
+  target: null;
+}
+
+export interface FundingAuthorizationBindingV2 {
+  schema: "p42-production-launch-authorization/v2";
+  authorizationDigest: `sha256:${string}`;
+  authorizationBytesDigest: `sha256:${string}`;
+  legalArtifactsDigest: `sha256:${string}`;
+}
+
+export interface FundingTargetEnvelopeV4 extends Omit<FundingTargetEnvelopeV3, "schema" | "target" | "fundingAuthorizationDigest"> {
+  schema: "p42-prizes/funding-target/v4";
+  authorizationBinding: FundingAuthorizationBindingV2;
+  target: FundingTargetV4;
 }
 
 export interface ActivityItem {

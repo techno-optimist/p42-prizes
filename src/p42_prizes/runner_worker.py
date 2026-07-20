@@ -790,7 +790,10 @@ def _run_job(
     da_evidence = job.get("da_evidence")
     resource_limits = _resource_limits_for_job(job, policy)
 
-    started = _parse_or_now(None)
+    claimed_started = job.get("started_at_utc")
+    if claimed_started is not None and not isinstance(claimed_started, str):
+        raise RunnerWorkerError("job.started_at_utc must be a UTC string when present")
+    started = _parse_or_now(claimed_started)
     da_result: dict[str, Any] | None = None
     if chain_claim is not None:
         da_result = _chain_da_result(job, chain_claim, solution)

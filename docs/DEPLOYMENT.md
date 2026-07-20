@@ -125,14 +125,19 @@ replay, but the portal rejects them for funding publication; migrate by
 regenerating and re-attesting a v4 checkpoint, not by rewriting an old artifact.
 
 The portal deliberately does not open RPC connections from the browser or web
-request path. Its `p42-prizes/funding-target/v3` response is bounded by the
-fresh, finalized, independently attested v4 checkpoint and exposes the exact
-nonzero `fundingAuthorizationDigest`, `activationCompletionDigest`, checkpoint
-block, and activation-finalization block. The client strictly parses and
-revalidates those values, requires an explicit acknowledgement of their
-displayed abbreviations, then requires a second trusted click before following
-the wallet URI. A browser-visible target is not evidence that a browser made a
-live `eth_call`.
+request path. The current `p42-prizes/funding-target/v3` response is the exact
+fail-closed contract and always has `target: null`. A future active target must
+use `p42-prizes/funding-target/v4` and be bounded by a signed launch-
+authorization version that includes the exact legal artifact references, the
+fresh independently attested checkpoint, and the reconciled activation. Launch
+authorization v1 has no legal-artifact field, so environment configuration
+cannot enable v4, and the activated-provenance loader explicitly rejects v1
+even when its historical activation and reconciliation artifacts otherwise
+agree. The reserved v4 schema names launch authorization v2 and a signed legal-
+artifact-set digest, but no v2 validator or client parser exists. An active
+implementation also requires a signed server-verified acknowledgement request;
+the server must not release an address, wallet URI, explorer URL, or equivalent
+network material before that acknowledgement succeeds.
 
 The repository's safe dual-RPC implementation remains the indexer/activation
 pipeline described above. Adding an unrelated single-provider or ad hoc
@@ -178,9 +183,11 @@ the validated schema and its singleton portal-state row exists.
 
 ### Release Contract
 
-Render must be configured to deploy GitHub `main`. Do not treat an otherwise
-successful manual deploy as proof of that: a manual deploy can rebuild a stale
-configured branch. After every release, run the checked-in, read-only guard:
+Render must be configured for GitHub `main` with autodeploy disabled. A merge
+must first pass the complete exact-main CI matrix; only then may an operator or
+agent trigger the exact proven commit. Do not treat an otherwise successful
+manual deploy as proof of that: a manual deploy can rebuild a stale configured
+branch. After every release, run the checked-in, read-only guard:
 
 ```bash
 make verify-render-release
@@ -189,18 +196,29 @@ make verify-render-release
 It fails closed unless all of the following agree:
 
 1. Render service `srv-d96pokeq1p3s73foqk60` is configured for `main`.
-2. Its one live deployment commit contains the latest first-parent GitHub
+2. Render reports `autoDeploy: no` and `autoDeployTrigger: off`, matching
+   `render.yaml`; a push cannot publish ahead of exact-main CI.
+3. Render reports the database-aware health check path
+   `/prizes/api/health`, matching `render.yaml`; the generic portal page is not
+   accepted as service readiness.
+4. Its one live deployment commit contains the latest first-parent GitHub
    `main` commit that touches `web/` or `render.yaml`, queried through the
    canonical `origin` remote.
-3. The Render origin and `projectforty2.ai` proxy return success for all prize
+5. The Render origin and `projectforty2.ai` proxy return success for all prize
    routes required by the portal.
 
-The guard makes 32 HTTP probes: paired Render/public checks for the portal
-home, cinematic intro, Build Week archive, problems API, capability API, and
-every exact-ten funding-target route, plus public checks for standings and the
-agent skill. Every funding-target response must be the exact fail-closed v3
-envelope with `target: null`. HTML probes require stable page identity markers,
-and every paired response must be equivalent.
+The guard makes 57 HTTP observations. The exact ordered 32-observation subset
+signed by source-release policy v1 remains unchanged: portal home, cinematic
+intro, Build Week archive, problems API, capability API, standings, public
+agent skill, and every exact-ten funding-target route. Another 25 mandatory
+observations cover the agent page, the direct skill response, all ten
+problem-detail APIs at both origins, and exact database-ready health JSON from
+Render and the public proxy. These supplemental checks must pass but do not
+silently rewrite the signed v1 policy. Every funding-target response must
+be the exact fail-closed v3 envelope with `target: null`; every public problem
+projection must omit actionable chain identifiers recursively. HTML probes
+require stable page identity markers, and every paired response must be
+equivalent.
 
 The guard requires an authenticated `render` CLI and the canonical `origin`
 remote. An isolated checkout can pass its GitHub remote explicitly:
@@ -633,7 +651,7 @@ Before pushing a prize-site change:
 7. Keep real ETH, onramp, and settlement language gated until audit, legal review, deterministic CI, and resolver work are complete.
 8. If changing contracts or protocol docs, also run `make contracts-test` and update `docs/GATE_LEDGER.md`.
 9. Stage only files changed for the current task.
-10. Push `main`, then run `make verify-render-release`. A `web/` or `render.yaml` change must receive a matching Render deployment; docs-only and release-tooling-only commits do not. Trigger the recovery deploy command only when the guard reports a missing or failed deploy-relevant change, and run the guard again afterward.
+10. Push `main`, wait for all seven exact-main CI jobs, trigger that immutable commit explicitly, then run `make verify-render-release`. A `web/` or `render.yaml` change must receive a matching Render deployment; docs-only and release-tooling-only commits do not. Trigger the recovery deploy command only when the guard reports a missing or failed deploy-relevant change, and run the guard again afterward.
 
 Known owner/external actions that agents cannot complete alone are tracked in
 `docs/HUMAN_ACTIONS.md`. Do not mark those gates closed without the named

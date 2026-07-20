@@ -1,31 +1,12 @@
 {
   "schema_version": "p42-prizes-release-guard-problems-v1",
-  "projection_sha256": "sha256:ec42d67bc8d67d3732fc363b371b6c2e4acffa256c107df887ad3501cb6a0137",
+  "projection_sha256": "sha256:e63bb870ab1833cc02166e6482be6dce4294ccac3e51013b02a1150a86878159",
   "phase0": {
-    "donationWallet": {
-      "chain": "Base Sepolia",
-      "asset": "ETH",
-      "address": null,
-      "status": "not-deployed",
-      "explorerUrl": null
-    },
-    "donationTarget": null,
     "chainProvenance": {
       "settlementState": "local-only",
-      "chain": "Base Sepolia",
-      "chainId": 84532,
-      "donationWalletAddress": null,
-      "poolAddress": null,
-      "poolRuntimeCodeHash": null,
-      "deploymentTransactionHash": null,
-      "registryAddress": null,
-      "problemRegistryId": null,
-      "verifierImageHash": "sha256:local-dev",
-      "admissionMatrixHash": null,
-      "deploymentCommit": null,
-      "indexedThroughBlock": null,
       "reconciliationOk": false,
-      "source": "static-portal-data"
+      "source": "static-portal-data",
+      "fundingTargetDeployed": false
     }
   },
   "boards": [

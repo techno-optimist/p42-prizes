@@ -1,5 +1,4 @@
 import { json } from "@/lib/api";
-import { publishedDonationTarget } from "@/lib/chain-provenance";
 import { loadPortalReadModel } from "@/lib/indexer-read-model";
 import type { FundingTargetEnvelopeV3 } from "@/lib/types";
 
@@ -75,15 +74,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ slu
     if (accountedBalance > cap || funding.remainingFundingCapWei !== (cap - accountedBalance).toString()) {
       return json(unavailable(slug));
     }
-    const authorizationTimestamp = Date.parse(funding.authorizationExpiresAt);
-    const deadlineTimestamp = Date.parse(funding.fundingDeadline);
     const effectiveTimestamp = Math.max(Date.parse(funding.publicationObservedAt), Date.now());
     const serverObservedAt = new Date(effectiveTimestamp).toISOString();
-    const authorizationExpired = Math.floor(effectiveTimestamp / 1000) > Math.floor(authorizationTimestamp / 1000);
-    const target = funding.canFund && !authorizationExpired && effectiveTimestamp < deadlineTimestamp
-      && funding.remainingFundingCapWei !== "0"
-      ? publishedDonationTarget(problem.donationWallet, problem.chainProvenance)
-      : null;
     const body: FundingTargetEnvelopeV3 = {
       schema: SCHEMA,
       slug,
@@ -97,14 +89,9 @@ export async function GET(_request: Request, { params }: { params: Promise<{ slu
       checkpointBlock: chainProvenance.checkpointBlock,
       checkpointDigest: model.provenance.checkpointDigest,
       activationFinalizedBlock: chainProvenance.activationFinalizedBlock,
-      target: target && {
-        address: target.address,
-        asset: target.asset,
-        chain: target.chain,
-        chainId: target.chainId as 84532 | 8453,
-        explorerUrl: target.explorerUrl,
-        walletUri: target.walletUri,
-      },
+      // Launch authorization v1 does not bind legal artifact bytes. Active
+      // targets require a future signed authority version and the v4 envelope.
+      target: null,
     };
     return json(body);
   } catch {

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.ai/prizes/schemas/funding-target-v3.schema.json",
+  "title": "P42 Phase 0 unavailable funding target",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "slug", "authorizationExpiresAt", "finalizedObservedAt",
+    "fundingDeadline", "remainingCapWei", "serverObservedAt",
+    "fundingAuthorizationDigest", "activationCompletionDigest",
+    "checkpointBlock", "checkpointDigest", "activationFinalizedBlock", "target"
+  ],
+  "properties": {
+    "schema": { "const": "p42-prizes/funding-target/v3" },
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "authorizationExpiresAt": { "type": ["string", "null"], "format": "date-time" },
+    "finalizedObservedAt": { "type": ["string", "null"], "format": "date-time" },
+    "fundingDeadline": { "type": ["string", "null"], "format": "date-time" },
+    "remainingCapWei": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/uintString" }] },
+    "serverObservedAt": { "type": ["string", "null"], "format": "date-time" },
+    "fundingAuthorizationDigest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
+    "activationCompletionDigest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
+    "checkpointBlock": { "type": ["integer", "null"], "minimum": 0 },
+    "checkpointDigest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
+    "activationFinalizedBlock": { "type": ["integer", "null"], "minimum": 0 },
+    "target": { "type": "null" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" },
+    "uintString": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" }
+  }
+}
