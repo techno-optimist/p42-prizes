@@ -289,9 +289,12 @@ def squeeze_continuations(
     if event["tag"] not in SQUEEZE_TAGS:
         return []
     profile = spec["fieldProfiles"][profile_name]
-    physical_outputs = event["logicalLength"]
-    if event["tag"] == "squeezeExtension":
-        physical_outputs *= 4
+    if event["tag"] == "squeezeBits":
+        physical_outputs = 1
+    elif event["tag"] == "squeezeExtension":
+        physical_outputs = event["logicalLength"] * 4
+    else:
+        physical_outputs = event["logicalLength"]
     remaining = max(0, physical_outputs - profile["rate"])
     count = (remaining + profile["rate"] - 1) // profile["rate"]
     result = []
@@ -328,6 +331,11 @@ def apply_event_state(state: dict[str, Any], event: dict[str, Any]) -> str:
         reject("INIT_REPEATED", "protocolInit cannot be repeated")
     if event["counter"] != state["nextCounter"]:
         reject("COUNTER", "event counter is not consecutive")
+    if tag in SQUEEZE_TAGS and state["collectionStack"]:
+        reject(
+            "SQUEEZE_IN_CONTAINER",
+            "squeeze is forbidden while a slice or container remains open",
+        )
 
     if tag == "protocolInit":
         state["mode"] = "absorbing"
@@ -351,8 +359,7 @@ def apply_event_state(state: dict[str, Any], event: dict[str, Any]) -> str:
             reject("CHILD_COUNT", "collection child count does not match declaration")
         state["collectionStack"].pop()
     elif tag in SQUEEZE_TAGS:
-        if state["collectionStack"]:
-            reject("SQUEEZE_IN_CONTAINER", "squeeze is forbidden inside an open collection")
+        pass
     else:
         observe_child(state)
 
@@ -491,13 +498,74 @@ def validate_rejection(
         raise ValueError(f"{rejection['id']}: rejection vector was accepted")
 
 
+def vector_category(vectors: dict[str, Any], category: str) -> list[dict[str, Any]]:
+    return {
+        "positive": vectors["positiveTranscripts"],
+        "collision-negative": vectors["collisionNegativeTranscripts"],
+        "rejection": vectors["rejectionVectors"],
+    }[category]
+
+
+def validate_global_vector_ids(vectors: dict[str, Any]) -> None:
+    seen: set[str] = set()
+    ids = []
+    for category in ("positive", "collision-negative", "rejection"):
+        for vector in vector_category(vectors, category):
+            vector_id = vector["id"]
+            if vector_id in seen:
+                reject(
+                    "DUPLICATE_VECTOR_ID",
+                    f"vector ID {vector_id!r} is duplicated across vector categories",
+                )
+            seen.add(vector_id)
+            ids.append(vector_id)
+    if vectors["idRegistry"] != sorted(ids):
+        reject("ID_REGISTRY", "idRegistry must equal the sorted global vector ID set")
+
+
+def validate_independent_state_regression(
+    spec: dict[str, Any], regression: dict[str, Any]
+) -> None:
+    state = copy.deepcopy(regression["before"])
+    validate_event_shape(spec, regression["profile"], regression["event"])
+    expected_error = regression["expectedErrorCode"]
+    try:
+        apply_event_state(state, regression["event"])
+    except TranscriptValidationError as exc:
+        if expected_error is None or exc.code != expected_error:
+            raise ValueError(
+                f"{regression['id']}: expected {expected_error or 'acceptance'}, got {exc.code}"
+            ) from exc
+    else:
+        if expected_error is not None:
+            raise ValueError(f"{regression['id']}: state transition was unexpectedly accepted")
+    if state != regression["expectedAfter"]:
+        raise ValueError(f"{regression['id']}: state transition did not match literal expectation")
+    continuations = squeeze_continuations(spec, regression["profile"], regression["event"])
+    if continuations != regression["expectedSqueezeContinuations"]:
+        raise ValueError(f"{regression['id']}: squeeze continuation expectation mismatch")
+
+
+def validate_hostile_id_mutation(vectors: dict[str, Any], mutation: dict[str, Any]) -> None:
+    hostile = copy.deepcopy(vectors)
+    source = vector_category(hostile, mutation["sourceCategory"])[mutation["sourceIndex"]]
+    target = vector_category(hostile, mutation["targetCategory"])[mutation["targetIndex"]]
+    target["id"] = source["id"]
+    try:
+        validate_global_vector_ids(hostile)
+    except TranscriptValidationError as exc:
+        if exc.code != mutation["expectedErrorCode"]:
+            raise ValueError(
+                f"{mutation['id']}: expected {mutation['expectedErrorCode']}, got {exc.code}"
+            ) from exc
+    else:
+        raise ValueError(f"{mutation['id']}: duplicate ID mutation was accepted")
+
+
 def validate_semantics(spec: dict[str, Any], vectors: dict[str, Any]) -> None:
     validate_spec_invariants(spec)
-    ids: set[str] = set()
+    validate_global_vector_ids(vectors)
     for vector in vectors["positiveTranscripts"]:
-        if vector["id"] in ids:
-            raise ValueError("vector IDs must be unique")
-        ids.add(vector["id"])
         decode_envelope(spec, vector["profile"], vector["envelopeHex"])
         generated = run_transcript(spec, vector["profile"], vector["events"])
         for key in ("expectedInitial", "expectedSteps", "expectedFinal"):
@@ -512,6 +580,20 @@ def validate_semantics(spec: dict[str, Any], vectors: dict[str, Any]) -> None:
 
     for rejection in vectors["rejectionVectors"]:
         validate_rejection(spec, rejection)
+
+    regression_ids: set[str] = set()
+    for regression in vectors["independentStateTransitionRegressions"]:
+        if regression["id"] in regression_ids:
+            raise ValueError("independent regression IDs must be unique")
+        regression_ids.add(regression["id"])
+        validate_independent_state_regression(spec, regression)
+
+    mutation_ids: set[str] = set()
+    for mutation in vectors["hostileCorpusMutations"]:
+        if mutation["id"] in mutation_ids:
+            raise ValueError("hostile mutation IDs must be unique")
+        mutation_ids.add(mutation["id"])
+        validate_hostile_id_mutation(vectors, mutation)
 
 
 def main() -> None:

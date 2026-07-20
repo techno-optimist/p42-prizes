@@ -4,6 +4,31 @@
   "cryptographicOutputsIncluded": false,
   "protocolId": "p42.sp1.typed-transcript",
   "version": 1,
+  "idRegistry": [
+    "counter-gap",
+    "declared-child-count",
+    "direct-trailing-zero",
+    "flat-nested-boundary",
+    "inner-ordered-lifecycle",
+    "inner-squeeze-bits-overflow",
+    "inner-squeeze-bits-zero",
+    "legacy-envelope-version",
+    "missing-envelope",
+    "noncanonical-envelope-hex",
+    "outer-extension-squeeze",
+    "outer-ordered-lifecycle",
+    "outer-squeeze-bits-overflow",
+    "packed-noncanonical-digit",
+    "packed-trailing-zero",
+    "packed-undeclared-high-digit",
+    "parameter-substitution",
+    "profile-substitution",
+    "repeated-versus-batched-squeeze",
+    "scalar-commitment-type",
+    "squeeze-inside-container",
+    "squeeze-inside-slice",
+    "unmatched-slice-end"
+  ],
   "positiveTranscripts": [
     {
       "id": "inner-ordered-lifecycle",
@@ -1484,56 +1509,7 @@
               ]
             }
           ],
-          "expectedSqueezeContinuations": [
-            {
-              "index": 0,
-              "occupied": 0,
-              "final": false,
-              "control": "1086324736",
-              "rateWords": [
-                "0",
-                "0",
-                "0",
-                "0",
-                "0",
-                "0",
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 1,
-              "occupied": 0,
-              "final": false,
-              "control": "1086324737",
-              "rateWords": [
-                "0",
-                "0",
-                "0",
-                "0",
-                "0",
-                "0",
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 2,
-              "occupied": 0,
-              "final": true,
-              "control": "1087373314",
-              "rateWords": [
-                "0",
-                "0",
-                "0",
-                "0",
-                "0",
-                "0",
-                "0",
-                "0"
-              ]
-            }
-          ],
+          "expectedSqueezeContinuations": [],
           "expectedAfter": {
             "mode": "absorbing",
             "nextCounter": 13,
@@ -2463,1268 +2439,7 @@
               ]
             }
           ],
-          "expectedSqueezeContinuations": [
-            {
-              "index": 0,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713344",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 1,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713345",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 2,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713346",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 3,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713347",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 4,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713348",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 5,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713349",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 6,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713350",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 7,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713351",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 8,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713352",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 9,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713353",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 10,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713354",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 11,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713355",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 12,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713356",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 13,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713357",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 14,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713358",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 15,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713359",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 16,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713360",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 17,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713361",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 18,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713362",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 19,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713363",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 20,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713364",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 21,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713365",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 22,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713366",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 23,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713367",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 24,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713368",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 25,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713369",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 26,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713370",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 27,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713371",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 28,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713372",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 29,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713373",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 30,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713374",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 31,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713375",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 32,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713376",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 33,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713377",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 34,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713378",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 35,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713379",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 36,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713380",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 37,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713381",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 38,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713382",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 39,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713383",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 40,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713384",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 41,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713385",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 42,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713386",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 43,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713387",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 44,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713388",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 45,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713389",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 46,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713390",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 47,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713391",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 48,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713392",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 49,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713393",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 50,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713394",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 51,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713395",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 52,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713396",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 53,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713397",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 54,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713398",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 55,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713399",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 56,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713400",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 57,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713401",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 58,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713402",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 59,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713403",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 60,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713404",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 61,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713405",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 62,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713406",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 63,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713407",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 64,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713408",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 65,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713409",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 66,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713410",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 67,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713411",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 68,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713412",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 69,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713413",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 70,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713414",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 71,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713415",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 72,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713416",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 73,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713417",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 74,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713418",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 75,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713419",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 76,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713420",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 77,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713421",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 78,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713422",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 79,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713423",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 80,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713424",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 81,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713425",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 82,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713426",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 83,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713427",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 84,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713428",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 85,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713429",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 86,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713430",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 87,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713431",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 88,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713432",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 89,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713433",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 90,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713434",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 91,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713435",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 92,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713436",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 93,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713437",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 94,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713438",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 95,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713439",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 96,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713440",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 97,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713441",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 98,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713442",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 99,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713443",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 100,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713444",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 101,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713445",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 102,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713446",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 103,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713447",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 104,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713448",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 105,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713449",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 106,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713450",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 107,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713451",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 108,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713452",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 109,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713453",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 110,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713454",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 111,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713455",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 112,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713456",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 113,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713457",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 114,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713458",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 115,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713459",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 116,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713460",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 117,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713461",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 118,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713462",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 119,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713463",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 120,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713464",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 121,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713465",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 122,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713466",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 123,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713467",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 124,
-              "occupied": 0,
-              "final": false,
-              "control": "1094713468",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            },
-            {
-              "index": 125,
-              "occupied": 0,
-              "final": true,
-              "control": "1095762045",
-              "rateWords": [
-                "0",
-                "0"
-              ]
-            }
-          ],
+          "expectedSqueezeContinuations": [],
           "expectedAfter": {
             "mode": "absorbing",
             "nextCounter": 6,
@@ -4457,6 +3172,170 @@
         }
       ],
       "expectedErrorCode": "UNDECLARED_PACKED_DIGIT"
+    },
+    {
+      "id": "squeeze-inside-slice",
+      "kind": "transcript",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001010101081000",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "sliceBegin",
+          "encoding": "container",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": []
+        },
+        {
+          "tag": "squeezeField",
+          "encoding": "squeezeRequest",
+          "counter": 2,
+          "logicalLength": 1,
+          "payload": []
+        }
+      ],
+      "expectedErrorCode": "SQUEEZE_IN_CONTAINER"
+    }
+  ],
+  "independentStateTransitionRegressions": [
+    {
+      "id": "slice-squeeze-rejection-is-atomic",
+      "profile": "inner-koalabear-v1",
+      "before": {
+        "mode": "absorbing",
+        "nextCounter": 2,
+        "collectionStack": [
+          {
+            "kind": "slice",
+            "declaredChildren": 1,
+            "observedChildren": 0
+          }
+        ],
+        "permutationStateStatus": "not-generated",
+        "permutationState": null
+      },
+      "event": {
+        "tag": "squeezeField",
+        "encoding": "squeezeRequest",
+        "counter": 2,
+        "logicalLength": 1,
+        "payload": []
+      },
+      "expectedErrorCode": "SQUEEZE_IN_CONTAINER",
+      "expectedAfter": {
+        "mode": "absorbing",
+        "nextCounter": 2,
+        "collectionStack": [
+          {
+            "kind": "slice",
+            "declaredChildren": 1,
+            "observedChildren": 0
+          }
+        ],
+        "permutationStateStatus": "not-generated",
+        "permutationState": null
+      },
+      "expectedSqueezeContinuations": []
+    },
+    {
+      "id": "container-squeeze-rejection-is-atomic",
+      "profile": "inner-koalabear-v1",
+      "before": {
+        "mode": "absorbing",
+        "nextCounter": 7,
+        "collectionStack": [
+          {
+            "kind": "container",
+            "declaredChildren": 2,
+            "observedChildren": 1
+          }
+        ],
+        "permutationStateStatus": "not-generated",
+        "permutationState": null
+      },
+      "event": {
+        "tag": "squeezeBits",
+        "encoding": "squeezeRequest",
+        "counter": 7,
+        "logicalLength": 30,
+        "payload": []
+      },
+      "expectedErrorCode": "SQUEEZE_IN_CONTAINER",
+      "expectedAfter": {
+        "mode": "absorbing",
+        "nextCounter": 7,
+        "collectionStack": [
+          {
+            "kind": "container",
+            "declaredChildren": 2,
+            "observedChildren": 1
+          }
+        ],
+        "permutationStateStatus": "not-generated",
+        "permutationState": null
+      },
+      "expectedSqueezeContinuations": []
+    },
+    {
+      "id": "outer-squeeze-bits-single-output-transition",
+      "profile": "outer-bn254-v1",
+      "before": {
+        "mode": "absorbing",
+        "nextCounter": 5,
+        "collectionStack": [],
+        "permutationStateStatus": "not-generated",
+        "permutationState": null
+      },
+      "event": {
+        "tag": "squeezeBits",
+        "encoding": "squeezeRequest",
+        "counter": 5,
+        "logicalLength": 253,
+        "payload": []
+      },
+      "expectedErrorCode": null,
+      "expectedSqueezeContinuations": [],
+      "expectedAfter": {
+        "mode": "absorbing",
+        "nextCounter": 6,
+        "collectionStack": [],
+        "permutationStateStatus": "not-generated",
+        "permutationState": null
+      }
+    }
+  ],
+  "hostileCorpusMutations": [
+    {
+      "id": "duplicate-positive-into-collision",
+      "sourceCategory": "positive",
+      "sourceIndex": 0,
+      "targetCategory": "collision-negative",
+      "targetIndex": 0,
+      "expectedErrorCode": "DUPLICATE_VECTOR_ID"
+    },
+    {
+      "id": "duplicate-rejection-into-positive",
+      "sourceCategory": "rejection",
+      "sourceIndex": 0,
+      "targetCategory": "positive",
+      "targetIndex": 1,
+      "expectedErrorCode": "DUPLICATE_VECTOR_ID"
     }
   ]
 }
