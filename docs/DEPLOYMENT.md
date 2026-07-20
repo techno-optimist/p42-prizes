@@ -204,12 +204,17 @@ It fails closed unless all of the following agree:
 4. The Render origin and `projectforty2.ai` proxy return success for all prize
    routes required by the portal.
 
-The guard makes 32 HTTP probes: paired Render/public checks for the portal
-home, cinematic intro, Build Week archive, problems API, capability API, and
-every exact-ten funding-target route, plus public checks for standings and the
-agent skill. Every funding-target response must be the exact fail-closed v3
-envelope with `target: null`. HTML probes require stable page identity markers,
-and every paired response must be equivalent.
+The guard makes 55 HTTP observations. The exact ordered 32-observation subset
+signed by source-release policy v1 remains unchanged: portal home, cinematic
+intro, Build Week archive, problems API, capability API, standings, public
+agent skill, and every exact-ten funding-target route. Another 23 mandatory
+observations cover the agent page, the direct skill response, and all ten
+problem-detail APIs at both origins. These supplemental checks must pass but do
+not silently rewrite the signed v1 policy. Every funding-target response must
+be the exact fail-closed v3 envelope with `target: null`; every public problem
+projection must omit actionable chain identifiers recursively. HTML probes
+require stable page identity markers, and every paired response must be
+equivalent.
 
 The guard requires an authenticated `render` CLI and the canonical `origin`
 remote. An isolated checkout can pass its GitHub remote explicitly:

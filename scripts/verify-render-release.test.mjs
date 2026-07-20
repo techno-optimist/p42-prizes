@@ -14,7 +14,9 @@ import {
   parseCommitId,
   parseRemoteHead,
   probeUrls,
+  releaseGuardRoutes,
   runtimeCommitArgs,
+  sourceReleaseV3Routes,
   validateBoardManifest,
   validateProbeBody,
 } from "./verify-render-release.mjs";
@@ -281,6 +283,18 @@ test("probeUrls retains the standalone and proxied prize paths", () => {
       `https://public.example/prizes/api/problems/${slug}/funding-target`,
     ));
   }
+});
+
+test("expanded probes preserve the signed 32-observation v3 authority contract", () => {
+  const count = (routes) => routes.reduce((total, route) => total + route.origins.length, 0);
+  assert.equal(count(sourceReleaseV3Routes()), 32);
+  assert.equal(count(releaseGuardRoutes()), 55);
+  assert.deepEqual(
+    sourceReleaseV3Routes().filter((route) => route.id === "skill")[0].origins,
+    ["public"],
+  );
+  assert.equal(sourceReleaseV3Routes().some((route) => route.id === "agents"), false);
+  assert.equal(sourceReleaseV3Routes().some((route) => route.id.startsWith("problem-detail-")), false);
 });
 
 test("page probes require stable identity markers", () => {

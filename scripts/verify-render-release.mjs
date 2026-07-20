@@ -278,6 +278,18 @@ export function releaseGuardRoutes() {
   return [...PROBE_ROUTES, ...problemDetailRoutes(), ...fundingTargetRoutes()];
 }
 
+export function sourceReleaseV3Routes() {
+  const authorityRouteIds = new Set([
+    "home", "intro", "build-week", "problems", "capabilities", "standings", "skill",
+  ]);
+  const authorityRoutes = PROBE_ROUTES
+    .filter((route) => authorityRouteIds.has(route.id))
+    .map((route) => route.id === "skill"
+      ? Object.freeze({ ...route, origins: Object.freeze(["public"]) })
+      : route);
+  return [...authorityRoutes, ...fundingTargetRoutes()];
+}
+
 function configuredProbes(renderOrigin, publicOrigin) {
   const origins = { render: renderOrigin, public: publicOrigin };
   return releaseGuardRoutes().flatMap((route) => route.origins.map((origin) => ({
@@ -725,6 +737,9 @@ export async function main(argv = process.argv.slice(2)) {
   const probeResults = await Promise.all(configured.map(probe));
   assertProbeEquivalence(probeResults);
   const urls = configured.map((probeConfig) => probeConfig.url);
+  const authorityRouteCount = sourceReleaseV3Routes()
+    .reduce((count, route) => count + route.origins.length, 0);
+  const supplementalRouteCount = urls.length - authorityRouteCount;
 
   process.stdout.write(
     [
@@ -735,7 +750,8 @@ export async function main(argv = process.argv.slice(2)) {
       `  live commit: ${liveCommit}`,
       `  mode: ${expectedLiveCommit === null ? "current release" : "pinned rollback"}`,
       `  board projection: ${EXPECTED_BOARD_MANIFEST.projection_sha256}`,
-      `  routes: ${urls.length}/${urls.length} healthy`,
+      `  routes: ${authorityRouteCount}/${authorityRouteCount} healthy`,
+      `  supplemental routes: ${supplementalRouteCount}/${supplementalRouteCount} healthy`,
     ].join("\n") + "\n",
   );
 }

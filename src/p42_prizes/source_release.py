@@ -41,9 +41,9 @@ GUARD_COMMAND = ("node", "scripts/verify-render-release.mjs")
 GUARD_PROGRAM_PATH = "scripts/verify-render-release.mjs"
 WORKFLOW_CLOSURE_ALGORITHM = "p42-git-ls-tree-closure/v1"
 WORKFLOW_CLOSURE_ROOTS = (".",)
-GUARD_POLICY_EXPORT_SCRIPT = """import { releaseGuardRoutes } from './scripts/verify-render-release.mjs';
+GUARD_POLICY_EXPORT_SCRIPT = """import { sourceReleaseV3Routes } from './scripts/verify-render-release.mjs';
 const origins = {render: 'https://p42-prizes.onrender.com', public: 'https://projectforty2.ai'};
-const rows = releaseGuardRoutes().flatMap((route) => route.origins.map((origin) => ({
+const rows = sourceReleaseV3Routes().flatMap((route) => route.origins.map((origin) => ({
   routeId: route.id, origin, url: new URL(route.path, origins[origin]).toString()
 })));
 process.stdout.write(JSON.stringify(rows));"""
