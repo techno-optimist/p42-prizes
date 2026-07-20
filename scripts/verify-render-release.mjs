@@ -192,6 +192,19 @@ export function findService(payload, serviceId) {
   return service;
 }
 
+export function assertServiceReleaseConfig(service, branch) {
+  if (service.branch !== branch) {
+    throw new Error(
+      `Render service ${service.id} deploys ${JSON.stringify(service.branch)}, expected ${JSON.stringify(branch)}.`,
+    );
+  }
+  if (service.autoDeploy !== "no" || service.autoDeployTrigger !== "off") {
+    throw new Error(
+      `Render service ${service.id} must disable autodeploy so exact-main CI precedes deployment.`,
+    );
+  }
+}
+
 export function findLiveDeploy(payload) {
   const deployments = Array.isArray(payload) ? payload : [];
   const liveDeployments = deployments.filter((deployment) => deployment?.status === "live");
@@ -665,11 +678,7 @@ export async function main(argv = process.argv.slice(2)) {
     commandJson("render", ["deploys", "list", options.serviceId, "--output", "json"]),
   ]);
   const service = findService(services, options.serviceId);
-  if (service.branch !== options.branch) {
-    throw new Error(
-      `Render service ${options.serviceId} deploys ${JSON.stringify(service.branch)}, expected ${JSON.stringify(options.branch)}.`,
-    );
-  }
+  assertServiceReleaseConfig(service, options.branch);
 
   const liveDeploy = findLiveDeploy(deployments);
   const liveCommit = liveDeploy.commit.id.toLowerCase();

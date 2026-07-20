@@ -5,6 +5,7 @@ import {
   DEPLOY_RELEVANT_PATHS,
   EXPECTED_BOARD_MANIFEST,
   assertProbeEquivalence,
+  assertServiceReleaseConfig,
   assertRollbackRelease,
   assertReleaseAncestry,
   findLiveDeploy,
@@ -84,10 +85,16 @@ function ancestry(...pairs) {
 
 test("findService unwraps Render CLI service records", () => {
   const service = findService(
-    [{ service: { id: "srv-prizes", branch: "main" } }],
+    [{ service: { id: "srv-prizes", branch: "main", autoDeploy: "no", autoDeployTrigger: "off" } }],
     "srv-prizes",
   );
   assert.equal(service.branch, "main");
+  assert.doesNotThrow(() => assertServiceReleaseConfig(service, "main"));
+  assert.throws(
+    () => assertServiceReleaseConfig({ ...service, autoDeploy: "yes", autoDeployTrigger: "commit" }, "main"),
+    /must disable autodeploy/,
+  );
+  assert.throws(() => assertServiceReleaseConfig(service, "release"), /expected "release"/);
 });
 
 test("findLiveDeploy requires exactly one SHA-pinned live deploy", () => {
