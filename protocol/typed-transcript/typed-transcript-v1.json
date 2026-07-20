@@ -7,18 +7,34 @@
   "fieldProfiles": {
     "inner-koalabear-v1": {
       "profileId": 1,
+      "fieldId": 1,
+      "permutationId": 1,
       "modulus": "2130706433",
       "width": 16,
       "rate": 8,
-      "capacity": 8
+      "capacity": 8,
+      "maxSqueezeBits": 30,
+      "supportsSqueezeExtension": true
     },
     "outer-bn254-v1": {
       "profileId": 2,
+      "fieldId": 2,
+      "permutationId": 2,
       "modulus": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
       "width": 3,
       "rate": 2,
-      "capacity": 1
+      "capacity": 1,
+      "maxSqueezeBits": 253,
+      "supportsSqueezeExtension": false
     }
+  },
+  "versionEnvelope": {
+    "wireLengthBytes": 16,
+    "wireMagicHex": "0x5034325454563100",
+    "wireIntegerByteOrder": "big-endian",
+    "fieldWordBytes": 2,
+    "fieldWordByteOrder": "big-endian",
+    "reservedFinalByte": 0
   },
   "constants": {
     "protocolMagic": 1345597953,
@@ -62,6 +78,7 @@
     "bn254Native": 6,
     "container": 7,
     "squeezeRequest": 8,
-    "koalaBearDigest8Packed8": 9
+    "koalaBearDigest8Packed8": 9,
+    "versionEnvelopeU16": 10
   }
 }

@@ -4,116 +4,4459 @@
   "cryptographicOutputsIncluded": false,
   "protocolId": "p42.sp1.typed-transcript",
   "version": 1,
-  "formatVectors": [
+  "positiveTranscripts": [
     {
-      "id": "init-inner",
+      "id": "inner-ordered-lifecycle",
       "profile": "inner-koalabear-v1",
-      "event": {"tag": "protocolInit", "encoding": "none", "counter": 0, "logicalLength": 0, "payload": []},
-      "expectedFrameWords": ["1345597953", "1", "1", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "1162757121"],
-      "expectedBlocks": [
-        {"index": 0, "occupied": 8, "final": false, "control": "1084751872", "rateWords": ["1345597953", "1", "1", "0", "0", "0", "0", "0"]},
-        {"index": 1, "occupied": 8, "final": false, "control": "1084751873", "rateWords": ["0", "0", "0", "0", "0", "0", "0", "0"]},
-        {"index": 2, "occupied": 1, "final": true, "control": "1085341698", "rateWords": ["1162757121", "0", "0", "0", "0", "0", "0", "0"]}
-      ]
+      "envelopeHex": "0x50343254545631000001010101081000",
+      "expectedInitial": {
+        "mode": "uninitialized",
+        "nextCounter": 0,
+        "collectionStack": [],
+        "permutationStateStatus": "exact",
+        "permutationState": [
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0"
+        ]
+      },
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": [
+            "7"
+          ]
+        },
+        {
+          "tag": "containerBegin",
+          "encoding": "container",
+          "counter": 2,
+          "logicalLength": 2,
+          "payload": []
+        },
+        {
+          "tag": "sliceBegin",
+          "encoding": "container",
+          "counter": 3,
+          "logicalLength": 2,
+          "payload": []
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 4,
+          "logicalLength": 1,
+          "payload": [
+            "5"
+          ]
+        },
+        {
+          "tag": "extensionField",
+          "encoding": "extension4KoalaBearDirect",
+          "counter": 5,
+          "logicalLength": 1,
+          "payload": [
+            "1",
+            "2",
+            "3",
+            "4"
+          ]
+        },
+        {
+          "tag": "sliceEnd",
+          "encoding": "container",
+          "counter": 6,
+          "logicalLength": 0,
+          "payload": []
+        },
+        {
+          "tag": "digest",
+          "encoding": "koalaBearDigest8",
+          "counter": 7,
+          "logicalLength": 1,
+          "payload": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ]
+        },
+        {
+          "tag": "containerEnd",
+          "encoding": "container",
+          "counter": 8,
+          "logicalLength": 0,
+          "payload": []
+        },
+        {
+          "tag": "squeezeField",
+          "encoding": "squeezeRequest",
+          "counter": 9,
+          "logicalLength": 10,
+          "payload": []
+        },
+        {
+          "tag": "squeezeField",
+          "encoding": "squeezeRequest",
+          "counter": 10,
+          "logicalLength": 1,
+          "payload": []
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 11,
+          "logicalLength": 2,
+          "payload": [
+            "9",
+            "0"
+          ]
+        },
+        {
+          "tag": "squeezeBits",
+          "encoding": "squeezeRequest",
+          "counter": 12,
+          "logicalLength": 30,
+          "payload": []
+        }
+      ],
+      "expectedSteps": [
+        {
+          "index": 0,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "uninitialized",
+            "nextCounter": 0,
+            "collectionStack": [],
+            "permutationStateStatus": "exact",
+            "permutationState": [
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0"
+            ]
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "1",
+            "10",
+            "0",
+            "0",
+            "0",
+            "0",
+            "16",
+            "0",
+            "0",
+            "0",
+            "8",
+            "0",
+            "0",
+            "0",
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "1",
+                "10",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "16",
+                "0",
+                "0",
+                "0",
+                "8",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751874",
+              "rateWords": [
+                "20532",
+                "12884",
+                "21590",
+                "12544",
+                "1",
+                "257",
+                "264",
+                "4096"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341699",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 1,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 1,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 1,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "16",
+            "1",
+            "1",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "7",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "16",
+                "1",
+                "1",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "1",
+                "0",
+                "0",
+                "0",
+                "1",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 2,
+              "final": true,
+              "control": "1085407234",
+              "rateWords": [
+                "7",
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 2,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 2,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 2,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "34",
+            "7",
+            "2",
+            "0",
+            "0",
+            "0",
+            "2",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "34",
+                "7",
+                "2",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "2",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341698",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 3,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 0
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 3,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 3,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 0
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "32",
+            "7",
+            "3",
+            "0",
+            "0",
+            "0",
+            "2",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "32",
+                "7",
+                "3",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "2",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341698",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 4,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              },
+              {
+                "kind": "slice",
+                "declaredChildren": 2,
+                "observedChildren": 0
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 4,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 4,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              },
+              {
+                "kind": "slice",
+                "declaredChildren": 2,
+                "observedChildren": 0
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "16",
+            "1",
+            "4",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "5",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "16",
+                "1",
+                "4",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "1",
+                "0",
+                "0",
+                "0",
+                "1",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 2,
+              "final": true,
+              "control": "1085407234",
+              "rateWords": [
+                "5",
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 5,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              },
+              {
+                "kind": "slice",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 5,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 5,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              },
+              {
+                "kind": "slice",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "17",
+            "3",
+            "5",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "4",
+            "0",
+            "0",
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "17",
+                "3",
+                "5",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "1",
+                "0",
+                "0",
+                "0",
+                "4",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 5,
+              "final": true,
+              "control": "1085603842",
+              "rateWords": [
+                "1",
+                "2",
+                "3",
+                "4",
+                "1162757121",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 6,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              },
+              {
+                "kind": "slice",
+                "declaredChildren": 2,
+                "observedChildren": 2
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 6,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 6,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              },
+              {
+                "kind": "slice",
+                "declaredChildren": 2,
+                "observedChildren": 2
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "33",
+            "7",
+            "6",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "33",
+                "7",
+                "6",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341698",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 7,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 7,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 7,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "18",
+            "5",
+            "7",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "8",
+            "0",
+            "0",
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "18",
+                "5",
+                "7",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "1",
+                "0",
+                "0",
+                "0",
+                "8",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751874",
+              "rateWords": [
+                "1",
+                "2",
+                "3",
+                "4",
+                "5",
+                "6",
+                "7",
+                "8"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341699",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 8,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 2
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 8,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 8,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 2
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "35",
+            "7",
+            "8",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "35",
+                "7",
+                "8",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341698",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 9,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 9,
+          "transitionKind": "squeeze",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 9,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "48",
+            "8",
+            "9",
+            "0",
+            "0",
+            "0",
+            "10",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "48",
+                "8",
+                "9",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "10",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341698",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [
+            {
+              "index": 0,
+              "occupied": 0,
+              "final": true,
+              "control": "1087373312",
+              "rateWords": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 10,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 10,
+          "transitionKind": "squeeze",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 10,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "48",
+            "8",
+            "10",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "48",
+                "8",
+                "10",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "1",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341698",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 11,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 11,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 11,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "16",
+            "1",
+            "11",
+            "0",
+            "0",
+            "0",
+            "2",
+            "0",
+            "0",
+            "0",
+            "2",
+            "0",
+            "0",
+            "0",
+            "9",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "16",
+                "1",
+                "11",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "2",
+                "0",
+                "0",
+                "0",
+                "2",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 3,
+              "final": true,
+              "control": "1085472770",
+              "rateWords": [
+                "9",
+                "0",
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 12,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 12,
+          "transitionKind": "squeeze",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 12,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "49",
+            "8",
+            "12",
+            "0",
+            "0",
+            "0",
+            "30",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "49",
+                "8",
+                "12",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "30",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341698",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [
+            {
+              "index": 0,
+              "occupied": 0,
+              "final": false,
+              "control": "1086324736",
+              "rateWords": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 0,
+              "final": false,
+              "control": "1086324737",
+              "rateWords": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 0,
+              "final": true,
+              "control": "1087373314",
+              "rateWords": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 13,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        }
+      ],
+      "expectedFinal": {
+        "mode": "absorbing",
+        "nextCounter": 13,
+        "collectionStack": [],
+        "permutationStateStatus": "not-generated",
+        "permutationState": null
+      }
     },
     {
-      "id": "base-seven-inner",
-      "profile": "inner-koalabear-v1",
-      "event": {"tag": "baseField", "encoding": "koalaBearDirect", "counter": 1, "logicalLength": 1, "payload": ["7"]},
-      "expectedFrameWords": ["1345597953", "1", "16", "1", "1", "0", "0", "0", "1", "0", "0", "0", "1", "0", "0", "0", "7", "1162757121"],
-      "expectedBlocks": [
-        {"index": 0, "occupied": 8, "final": false, "control": "1084751872", "rateWords": ["1345597953", "1", "16", "1", "1", "0", "0", "0"]},
-        {"index": 1, "occupied": 8, "final": false, "control": "1084751873", "rateWords": ["1", "0", "0", "0", "1", "0", "0", "0"]},
-        {"index": 2, "occupied": 2, "final": true, "control": "1085407234", "rateWords": ["7", "1162757121", "0", "0", "0", "0", "0", "0"]}
-      ]
-    },
-    {
-      "id": "packed-one-two-outer",
+      "id": "outer-ordered-lifecycle",
       "profile": "outer-bn254-v1",
-      "event": {"tag": "baseField", "encoding": "koalaBearPacked8", "counter": 1, "logicalLength": 2, "payload": ["4294967297"]},
-      "expectedFrameWords": ["1345597953", "1", "16", "2", "1", "0", "0", "0", "2", "0", "0", "0", "1", "0", "0", "0", "4294967297", "1162757121"],
-      "expectedBlocks": [
-        {"index": 0, "occupied": 2, "final": false, "control": "1092747264", "rateWords": ["1345597953", "1"]},
-        {"index": 1, "occupied": 2, "final": false, "control": "1092747265", "rateWords": ["16", "2"]},
-        {"index": 2, "occupied": 2, "final": false, "control": "1092747266", "rateWords": ["1", "0"]},
-        {"index": 3, "occupied": 2, "final": false, "control": "1092747267", "rateWords": ["0", "0"]},
-        {"index": 4, "occupied": 2, "final": false, "control": "1092747268", "rateWords": ["2", "0"]},
-        {"index": 5, "occupied": 2, "final": false, "control": "1092747269", "rateWords": ["0", "0"]},
-        {"index": 6, "occupied": 2, "final": false, "control": "1092747270", "rateWords": ["1", "0"]},
-        {"index": 7, "occupied": 2, "final": false, "control": "1092747271", "rateWords": ["0", "0"]},
-        {"index": 8, "occupied": 2, "final": true, "control": "1093795848", "rateWords": ["4294967297", "1162757121"]}
-      ]
-    },
-    {
-      "id": "extension-one-inner",
-      "profile": "inner-koalabear-v1",
-      "event": {"tag": "extensionField", "encoding": "extension4KoalaBearDirect", "counter": 2, "logicalLength": 1, "payload": ["1", "2", "3", "4"]},
-      "expectedFrameWords": ["1345597953", "1", "17", "3", "2", "0", "0", "0", "1", "0", "0", "0", "4", "0", "0", "0", "1", "2", "3", "4", "1162757121"],
-      "expectedBlocks": [
-        {"index": 0, "occupied": 8, "final": false, "control": "1084751872", "rateWords": ["1345597953", "1", "17", "3", "2", "0", "0", "0"]},
-        {"index": 1, "occupied": 8, "final": false, "control": "1084751873", "rateWords": ["1", "0", "0", "0", "4", "0", "0", "0"]},
-        {"index": 2, "occupied": 5, "final": true, "control": "1085603842", "rateWords": ["1", "2", "3", "4", "1162757121", "0", "0", "0"]}
-      ]
-    },
-    {
-      "id": "squeeze-one-outer",
-      "profile": "outer-bn254-v1",
-      "event": {"tag": "squeezeField", "encoding": "squeezeRequest", "counter": 2, "logicalLength": 1, "payload": []},
-      "expectedFrameWords": ["1345597953", "1", "48", "8", "2", "0", "0", "0", "1", "0", "0", "0", "0", "0", "0", "0", "1162757121"],
-      "expectedBlocks": [
-        {"index": 0, "occupied": 2, "final": false, "control": "1092747264", "rateWords": ["1345597953", "1"]},
-        {"index": 1, "occupied": 2, "final": false, "control": "1092747265", "rateWords": ["48", "8"]},
-        {"index": 2, "occupied": 2, "final": false, "control": "1092747266", "rateWords": ["2", "0"]},
-        {"index": 3, "occupied": 2, "final": false, "control": "1092747267", "rateWords": ["0", "0"]},
-        {"index": 4, "occupied": 2, "final": false, "control": "1092747268", "rateWords": ["1", "0"]},
-        {"index": 5, "occupied": 2, "final": false, "control": "1092747269", "rateWords": ["0", "0"]},
-        {"index": 6, "occupied": 2, "final": false, "control": "1092747270", "rateWords": ["0", "0"]},
-        {"index": 7, "occupied": 2, "final": false, "control": "1092747271", "rateWords": ["0", "0"]},
-        {"index": 8, "occupied": 1, "final": true, "control": "1093730312", "rateWords": ["1162757121", "0"]}
-      ]
+      "envelopeHex": "0x50343254545631000001020202020300",
+      "expectedInitial": {
+        "mode": "uninitialized",
+        "nextCounter": 0,
+        "collectionStack": [],
+        "permutationStateStatus": "exact",
+        "permutationState": [
+          "0",
+          "0",
+          "0"
+        ]
+      },
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearPacked8",
+          "counter": 1,
+          "logicalLength": 2,
+          "payload": [
+            "4294967297"
+          ]
+        },
+        {
+          "tag": "commitment",
+          "encoding": "bn254Native",
+          "counter": 2,
+          "logicalLength": 1,
+          "payload": [
+            "42"
+          ]
+        },
+        {
+          "tag": "squeezeField",
+          "encoding": "squeezeRequest",
+          "counter": 3,
+          "logicalLength": 3,
+          "payload": []
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearPacked8",
+          "counter": 4,
+          "logicalLength": 1,
+          "payload": [
+            "7"
+          ]
+        },
+        {
+          "tag": "squeezeBits",
+          "encoding": "squeezeRequest",
+          "counter": 5,
+          "logicalLength": 253,
+          "payload": []
+        }
+      ],
+      "expectedSteps": [
+        {
+          "index": 0,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "uninitialized",
+            "nextCounter": 0,
+            "collectionStack": [],
+            "permutationStateStatus": "exact",
+            "permutationState": [
+              "0",
+              "0",
+              "0"
+            ]
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "1",
+            "10",
+            "0",
+            "0",
+            "0",
+            "0",
+            "16",
+            "0",
+            "0",
+            "0",
+            "8",
+            "0",
+            "0",
+            "0",
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747264",
+              "rateWords": [
+                "1345597953",
+                "1"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747265",
+              "rateWords": [
+                "1",
+                "10"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747266",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747267",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 4,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747268",
+              "rateWords": [
+                "16",
+                "0"
+              ]
+            },
+            {
+              "index": 5,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747269",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 6,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747270",
+              "rateWords": [
+                "8",
+                "0"
+              ]
+            },
+            {
+              "index": 7,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747271",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 8,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747272",
+              "rateWords": [
+                "20532",
+                "12884"
+              ]
+            },
+            {
+              "index": 9,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747273",
+              "rateWords": [
+                "21590",
+                "12544"
+              ]
+            },
+            {
+              "index": 10,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747274",
+              "rateWords": [
+                "1",
+                "514"
+              ]
+            },
+            {
+              "index": 11,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747275",
+              "rateWords": [
+                "514",
+                "768"
+              ]
+            },
+            {
+              "index": 12,
+              "occupied": 1,
+              "final": true,
+              "control": "1093730316",
+              "rateWords": [
+                "1162757121",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 1,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 1,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 1,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "16",
+            "2",
+            "1",
+            "0",
+            "0",
+            "0",
+            "2",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "4294967297",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747264",
+              "rateWords": [
+                "1345597953",
+                "1"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747265",
+              "rateWords": [
+                "16",
+                "2"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747266",
+              "rateWords": [
+                "1",
+                "0"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747267",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 4,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747268",
+              "rateWords": [
+                "2",
+                "0"
+              ]
+            },
+            {
+              "index": 5,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747269",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 6,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747270",
+              "rateWords": [
+                "1",
+                "0"
+              ]
+            },
+            {
+              "index": 7,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747271",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 8,
+              "occupied": 2,
+              "final": true,
+              "control": "1093795848",
+              "rateWords": [
+                "4294967297",
+                "1162757121"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 2,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 2,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 2,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "19",
+            "6",
+            "2",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "42",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747264",
+              "rateWords": [
+                "1345597953",
+                "1"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747265",
+              "rateWords": [
+                "19",
+                "6"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747266",
+              "rateWords": [
+                "2",
+                "0"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747267",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 4,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747268",
+              "rateWords": [
+                "1",
+                "0"
+              ]
+            },
+            {
+              "index": 5,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747269",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 6,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747270",
+              "rateWords": [
+                "1",
+                "0"
+              ]
+            },
+            {
+              "index": 7,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747271",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 8,
+              "occupied": 2,
+              "final": true,
+              "control": "1093795848",
+              "rateWords": [
+                "42",
+                "1162757121"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 3,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 3,
+          "transitionKind": "squeeze",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 3,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "48",
+            "8",
+            "3",
+            "0",
+            "0",
+            "0",
+            "3",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747264",
+              "rateWords": [
+                "1345597953",
+                "1"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747265",
+              "rateWords": [
+                "48",
+                "8"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747266",
+              "rateWords": [
+                "3",
+                "0"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747267",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 4,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747268",
+              "rateWords": [
+                "3",
+                "0"
+              ]
+            },
+            {
+              "index": 5,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747269",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 6,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747270",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 7,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747271",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 8,
+              "occupied": 1,
+              "final": true,
+              "control": "1093730312",
+              "rateWords": [
+                "1162757121",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [
+            {
+              "index": 0,
+              "occupied": 0,
+              "final": true,
+              "control": "1095761920",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 4,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 4,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 4,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "16",
+            "2",
+            "4",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "7",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747264",
+              "rateWords": [
+                "1345597953",
+                "1"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747265",
+              "rateWords": [
+                "16",
+                "2"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747266",
+              "rateWords": [
+                "4",
+                "0"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747267",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 4,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747268",
+              "rateWords": [
+                "1",
+                "0"
+              ]
+            },
+            {
+              "index": 5,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747269",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 6,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747270",
+              "rateWords": [
+                "1",
+                "0"
+              ]
+            },
+            {
+              "index": 7,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747271",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 8,
+              "occupied": 2,
+              "final": true,
+              "control": "1093795848",
+              "rateWords": [
+                "7",
+                "1162757121"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 5,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 5,
+          "transitionKind": "squeeze",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 5,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "49",
+            "8",
+            "5",
+            "0",
+            "0",
+            "0",
+            "253",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747264",
+              "rateWords": [
+                "1345597953",
+                "1"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747265",
+              "rateWords": [
+                "49",
+                "8"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747266",
+              "rateWords": [
+                "5",
+                "0"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747267",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 4,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747268",
+              "rateWords": [
+                "253",
+                "0"
+              ]
+            },
+            {
+              "index": 5,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747269",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 6,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747270",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 7,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747271",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 8,
+              "occupied": 1,
+              "final": true,
+              "control": "1093730312",
+              "rateWords": [
+                "1162757121",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [
+            {
+              "index": 0,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713344",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713345",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713346",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713347",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 4,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713348",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 5,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713349",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 6,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713350",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 7,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713351",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 8,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713352",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 9,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713353",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 10,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713354",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 11,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713355",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 12,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713356",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 13,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713357",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 14,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713358",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 15,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713359",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 16,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713360",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 17,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713361",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 18,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713362",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 19,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713363",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 20,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713364",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 21,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713365",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 22,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713366",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 23,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713367",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 24,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713368",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 25,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713369",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 26,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713370",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 27,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713371",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 28,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713372",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 29,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713373",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 30,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713374",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 31,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713375",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 32,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713376",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 33,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713377",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 34,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713378",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 35,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713379",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 36,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713380",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 37,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713381",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 38,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713382",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 39,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713383",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 40,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713384",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 41,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713385",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 42,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713386",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 43,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713387",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 44,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713388",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 45,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713389",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 46,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713390",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 47,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713391",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 48,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713392",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 49,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713393",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 50,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713394",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 51,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713395",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 52,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713396",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 53,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713397",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 54,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713398",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 55,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713399",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 56,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713400",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 57,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713401",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 58,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713402",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 59,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713403",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 60,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713404",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 61,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713405",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 62,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713406",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 63,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713407",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 64,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713408",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 65,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713409",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 66,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713410",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 67,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713411",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 68,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713412",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 69,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713413",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 70,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713414",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 71,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713415",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 72,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713416",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 73,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713417",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 74,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713418",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 75,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713419",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 76,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713420",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 77,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713421",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 78,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713422",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 79,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713423",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 80,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713424",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 81,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713425",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 82,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713426",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 83,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713427",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 84,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713428",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 85,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713429",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 86,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713430",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 87,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713431",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 88,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713432",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 89,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713433",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 90,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713434",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 91,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713435",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 92,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713436",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 93,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713437",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 94,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713438",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 95,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713439",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 96,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713440",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 97,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713441",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 98,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713442",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 99,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713443",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 100,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713444",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 101,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713445",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 102,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713446",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 103,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713447",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 104,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713448",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 105,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713449",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 106,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713450",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 107,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713451",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 108,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713452",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 109,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713453",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 110,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713454",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 111,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713455",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 112,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713456",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 113,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713457",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 114,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713458",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 115,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713459",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 116,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713460",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 117,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713461",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 118,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713462",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 119,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713463",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 120,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713464",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 121,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713465",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 122,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713466",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 123,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713467",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 124,
+              "occupied": 0,
+              "final": false,
+              "control": "1094713468",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 125,
+              "occupied": 0,
+              "final": true,
+              "control": "1095762045",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 6,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        }
+      ],
+      "expectedFinal": {
+        "mode": "absorbing",
+        "nextCounter": 6,
+        "collectionStack": [],
+        "permutationStateStatus": "not-generated",
+        "permutationState": null
+      }
     }
   ],
-  "negativePairs": [
+  "collisionNegativeTranscripts": [
     {
       "id": "packed-trailing-zero",
       "profile": "outer-bn254-v1",
-      "left": {"tag": "baseField", "encoding": "koalaBearPacked8", "counter": 1, "logicalLength": 1, "payload": ["7"]},
-      "right": {"tag": "baseField", "encoding": "koalaBearPacked8", "counter": 1, "logicalLength": 2, "payload": ["7"]},
-      "reason": "The packed payload aliases arithmetically, but logical length changes the frame."
+      "left": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearPacked8",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": [
+            "7"
+          ]
+        }
+      ],
+      "right": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearPacked8",
+          "counter": 1,
+          "logicalLength": 2,
+          "payload": [
+            "7"
+          ]
+        }
+      ],
+      "reason": "The packed integer aliases, but the ordered frame binds logical length."
     },
     {
       "id": "direct-trailing-zero",
       "profile": "inner-koalabear-v1",
-      "left": {"tag": "baseField", "encoding": "koalaBearDirect", "counter": 3, "logicalLength": 1, "payload": ["5"]},
-      "right": {"tag": "baseField", "encoding": "koalaBearDirect", "counter": 3, "logicalLength": 2, "payload": ["5", "0"]},
-      "reason": "Occupied rate lanes and frame length are explicit; a stale lane cannot supply the zero."
+      "left": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": [
+            "5"
+          ]
+        }
+      ],
+      "right": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 1,
+          "logicalLength": 2,
+          "payload": [
+            "5",
+            "0"
+          ]
+        }
+      ],
+      "reason": "Lane occupancy and logical length distinguish a trailing zero."
     },
     {
       "id": "scalar-commitment-type",
       "profile": "outer-bn254-v1",
-      "left": {"tag": "baseField", "encoding": "koalaBearPacked8", "counter": 4, "logicalLength": 1, "payload": ["42"]},
-      "right": {"tag": "commitment", "encoding": "bn254Native", "counter": 4, "logicalLength": 1, "payload": ["42"]},
-      "reason": "Equal numeric payloads in distinct semantic types have distinct tags and encodings."
+      "left": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearPacked8",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": [
+            "42"
+          ]
+        }
+      ],
+      "right": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "commitment",
+          "encoding": "bn254Native",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": [
+            "42"
+          ]
+        }
+      ],
+      "reason": "Equal numeric payloads in different semantic types use different tags."
     },
     {
       "id": "flat-nested-boundary",
       "profile": "inner-koalabear-v1",
-      "left": {"tag": "sliceBegin", "encoding": "container", "counter": 5, "logicalLength": 2, "payload": []},
-      "right": {"tag": "containerBegin", "encoding": "container", "counter": 5, "logicalLength": 2, "payload": []},
-      "reason": "A homogeneous slice and a nested container cannot flatten to the same event."
+      "left": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 1,
+          "logicalLength": 2,
+          "payload": [
+            "5",
+            "6"
+          ]
+        }
+      ],
+      "right": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "sliceBegin",
+          "encoding": "container",
+          "counter": 1,
+          "logicalLength": 2,
+          "payload": []
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 2,
+          "logicalLength": 1,
+          "payload": [
+            "5"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 3,
+          "logicalLength": 1,
+          "payload": [
+            "6"
+          ]
+        },
+        {
+          "tag": "sliceEnd",
+          "encoding": "container",
+          "counter": 4,
+          "logicalLength": 0,
+          "payload": []
+        }
+      ],
+      "reason": "A flat vector and an ordered slice have different event boundaries."
     },
     {
-      "id": "squeeze-kind",
+      "id": "repeated-versus-batched-squeeze",
       "profile": "inner-koalabear-v1",
-      "left": {"tag": "squeezeField", "encoding": "squeezeRequest", "counter": 6, "logicalLength": 4, "payload": []},
-      "right": {"tag": "squeezeBits", "encoding": "squeezeRequest", "counter": 6, "logicalLength": 4, "payload": []},
-      "reason": "Four field challenges and four challenge bits are distinct requests."
+      "left": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "squeezeField",
+          "encoding": "squeezeRequest",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": []
+        },
+        {
+          "tag": "squeezeField",
+          "encoding": "squeezeRequest",
+          "counter": 2,
+          "logicalLength": 1,
+          "payload": []
+        }
+      ],
+      "right": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "squeezeField",
+          "encoding": "squeezeRequest",
+          "counter": 1,
+          "logicalLength": 2,
+          "payload": []
+        }
+      ],
+      "reason": "Repeated scalar squeezes and one batched squeeze are distinct transcripts."
     }
   ],
   "rejectionVectors": [
-    {"id": "missing-version", "envelope": {"protocolId": "p42.sp1.typed-transcript", "profile": "inner-koalabear-v1"}, "error": "missing transcript version"},
-    {"id": "legacy-version", "envelope": {"protocolId": "p42.sp1.typed-transcript", "version": 0, "profile": "inner-koalabear-v1"}, "error": "legacy transcript is not TypedTranscriptV1"},
-    {"id": "unknown-profile", "envelope": {"protocolId": "p42.sp1.typed-transcript", "version": 1, "profile": "outer-unknown"}, "error": "unknown transcript profile"},
-    {"id": "wrong-protocol", "envelope": {"protocolId": "sp1.legacy", "version": 1, "profile": "outer-bn254-v1"}, "error": "protocol identifier mismatch"}
+    {
+      "id": "missing-envelope",
+      "kind": "envelope",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": null,
+      "events": [],
+      "expectedErrorCode": "ENVELOPE_MISSING"
+    },
+    {
+      "id": "legacy-envelope-version",
+      "kind": "envelope",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000000010101081000",
+      "events": [],
+      "expectedErrorCode": "ENVELOPE_VERSION"
+    },
+    {
+      "id": "profile-substitution",
+      "kind": "envelope",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001020202020300",
+      "events": [],
+      "expectedErrorCode": "ENVELOPE_PROFILE"
+    },
+    {
+      "id": "parameter-substitution",
+      "kind": "envelope",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001010101071000",
+      "events": [],
+      "expectedErrorCode": "ENVELOPE_PARAMETERS"
+    },
+    {
+      "id": "noncanonical-envelope-hex",
+      "kind": "envelope",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0X50343254545631000001010101081000",
+      "events": [],
+      "expectedErrorCode": "ENVELOPE_CANONICAL"
+    },
+    {
+      "id": "counter-gap",
+      "kind": "transcript",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001010101081000",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 2,
+          "logicalLength": 1,
+          "payload": [
+            "1"
+          ]
+        }
+      ],
+      "expectedErrorCode": "COUNTER"
+    },
+    {
+      "id": "unmatched-slice-end",
+      "kind": "transcript",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001010101081000",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "sliceEnd",
+          "encoding": "container",
+          "counter": 1,
+          "logicalLength": 0,
+          "payload": []
+        }
+      ],
+      "expectedErrorCode": "NESTING"
+    },
+    {
+      "id": "declared-child-count",
+      "kind": "transcript",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001010101081000",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "sliceBegin",
+          "encoding": "container",
+          "counter": 1,
+          "logicalLength": 2,
+          "payload": []
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 2,
+          "logicalLength": 1,
+          "payload": [
+            "1"
+          ]
+        },
+        {
+          "tag": "sliceEnd",
+          "encoding": "container",
+          "counter": 3,
+          "logicalLength": 0,
+          "payload": []
+        }
+      ],
+      "expectedErrorCode": "CHILD_COUNT"
+    },
+    {
+      "id": "squeeze-inside-container",
+      "kind": "transcript",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001010101081000",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "containerBegin",
+          "encoding": "container",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": []
+        },
+        {
+          "tag": "squeezeField",
+          "encoding": "squeezeRequest",
+          "counter": 2,
+          "logicalLength": 1,
+          "payload": []
+        }
+      ],
+      "expectedErrorCode": "SQUEEZE_IN_CONTAINER"
+    },
+    {
+      "id": "inner-squeeze-bits-zero",
+      "kind": "transcript",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001010101081000",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "squeezeBits",
+          "encoding": "squeezeRequest",
+          "counter": 1,
+          "logicalLength": 0,
+          "payload": []
+        }
+      ],
+      "expectedErrorCode": "EVENT_SHAPE"
+    },
+    {
+      "id": "inner-squeeze-bits-overflow",
+      "kind": "transcript",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001010101081000",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "squeezeBits",
+          "encoding": "squeezeRequest",
+          "counter": 1,
+          "logicalLength": 31,
+          "payload": []
+        }
+      ],
+      "expectedErrorCode": "SQUEEZE_BITS_RANGE"
+    },
+    {
+      "id": "outer-squeeze-bits-overflow",
+      "kind": "transcript",
+      "profile": "outer-bn254-v1",
+      "envelopeHex": "0x50343254545631000001020202020300",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "squeezeBits",
+          "encoding": "squeezeRequest",
+          "counter": 1,
+          "logicalLength": 254,
+          "payload": []
+        }
+      ],
+      "expectedErrorCode": "SQUEEZE_BITS_RANGE"
+    },
+    {
+      "id": "outer-extension-squeeze",
+      "kind": "transcript",
+      "profile": "outer-bn254-v1",
+      "envelopeHex": "0x50343254545631000001020202020300",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "squeezeExtension",
+          "encoding": "squeezeRequest",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": []
+        }
+      ],
+      "expectedErrorCode": "OUTER_EXTENSION_SQUEEZE_FORBIDDEN"
+    },
+    {
+      "id": "packed-noncanonical-digit",
+      "kind": "transcript",
+      "profile": "outer-bn254-v1",
+      "envelopeHex": "0x50343254545631000001020202020300",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearPacked8",
+          "counter": 1,
+          "logicalLength": 2,
+          "payload": [
+            "4575657223555907585"
+          ]
+        }
+      ],
+      "expectedErrorCode": "NONCANONICAL_KB_DIGIT"
+    },
+    {
+      "id": "packed-undeclared-high-digit",
+      "kind": "transcript",
+      "profile": "outer-bn254-v1",
+      "envelopeHex": "0x50343254545631000001020202020300",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearPacked8",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": [
+            "2147483648"
+          ]
+        }
+      ],
+      "expectedErrorCode": "UNDECLARED_PACKED_DIGIT"
+    }
   ]
 }

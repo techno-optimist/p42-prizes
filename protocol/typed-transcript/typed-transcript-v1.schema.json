@@ -4,7 +4,7 @@
   "title": "P42 TypedTranscriptV1 design constants",
   "type": "object",
   "additionalProperties": false,
-  "required": ["artifactStatus", "remediatesIssue164", "protocolId", "version", "fieldProfiles", "constants", "phases", "eventTags", "encodingTags"],
+  "required": ["artifactStatus", "remediatesIssue164", "protocolId", "version", "fieldProfiles", "versionEnvelope", "constants", "phases", "eventTags", "encodingTags"],
   "properties": {
     "$schema": {"type": "string"},
     "artifactStatus": {"const": "design-only-non-activating"},
@@ -20,6 +20,19 @@
         "outer-bn254-v1": {"$ref": "#/$defs/profile"}
       }
     },
+    "versionEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wireLengthBytes", "wireMagicHex", "wireIntegerByteOrder", "fieldWordBytes", "fieldWordByteOrder", "reservedFinalByte"],
+      "properties": {
+        "wireLengthBytes": {"const": 16},
+        "wireMagicHex": {"const": "0x5034325454563100"},
+        "wireIntegerByteOrder": {"const": "big-endian"},
+        "fieldWordBytes": {"const": 2},
+        "fieldWordByteOrder": {"const": "big-endian"},
+        "reservedFinalByte": {"const": 0}
+      }
+    },
     "constants": {"$ref": "#/$defs/uniqueIntegerMap"},
     "phases": {"$ref": "#/$defs/uniqueIntegerMap"},
     "eventTags": {"$ref": "#/$defs/uniqueIntegerMap"},
@@ -29,13 +42,17 @@
     "profile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["profileId", "modulus", "width", "rate", "capacity"],
+      "required": ["profileId", "fieldId", "permutationId", "modulus", "width", "rate", "capacity", "maxSqueezeBits", "supportsSqueezeExtension"],
       "properties": {
         "profileId": {"type": "integer", "minimum": 1, "maximum": 15},
+        "fieldId": {"type": "integer", "minimum": 1, "maximum": 255},
+        "permutationId": {"type": "integer", "minimum": 1, "maximum": 255},
         "modulus": {"type": "string", "pattern": "^[1-9][0-9]+$"},
         "width": {"type": "integer", "minimum": 2},
         "rate": {"type": "integer", "minimum": 1},
-        "capacity": {"type": "integer", "minimum": 1}
+        "capacity": {"type": "integer", "minimum": 1},
+        "maxSqueezeBits": {"type": "integer", "minimum": 1},
+        "supportsSqueezeExtension": {"type": "boolean"}
       }
     },
     "uniqueIntegerMap": {

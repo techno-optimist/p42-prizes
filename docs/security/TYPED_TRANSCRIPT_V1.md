@@ -42,6 +42,10 @@ legacy challenger.
 Array order is left to right. All field inputs MUST be canonical integers, not
 values accepted only after modular reduction.
 
+Every range in this document is half-open. `[a, b)` includes `a` and excludes
+`b`. All normative index formulas use this form; implementation-language
+shorthand is non-normative.
+
 The machine-readable constants are normative:
 
 `protocol/typed-transcript/typed-transcript-v1.json`
@@ -51,20 +55,28 @@ The machine-readable constants are normative:
 ### `inner-koalabear-v1`
 
 - profile ID: `1`
+- field ID: `1`
+- permutation ID: `1`
 - field modulus: `2130706433`
 - Poseidon2 width: `16`
 - rate: `8`
 - capacity: `8`
+- maximum `squeezeBits` request: `30`
+- `squeezeExtension`: supported
 - canonical source limb: one KoalaBear element in `[0, 2130706433)`
 
 ### `outer-bn254-v1`
 
 - profile ID: `2`
+- field ID: `2`
+- permutation ID: `2`
 - field modulus:
   `21888242871839275222246405745257275088548364400416034343698204186575808495617`
 - Poseidon2 width: `3`
 - rate: `2`
 - capacity: `1`
+- maximum `squeezeBits` request: `253`
+- `squeezeExtension`: forbidden
 - canonical native limb: one BN254 scalar in `[0, modulus)`
 
 The profiles share event semantics and framing but use their own permutation
@@ -84,6 +96,10 @@ All constants below fit canonically in both target fields.
 | `LENGTH_LIMBS` | `4` | four little-endian limbs, exactly 64 bits |
 | `KB_PACKING_RADIX` | `2^31` | injective KoalaBear-to-BN254 packing radix |
 | `KB_PER_BN254_WORD` | `8` | at most 248 packed bits |
+
+The canonical version envelope is exactly 16 bytes. Its first eight bytes are
+`0x5034325454563100`, the ASCII bytes for `P42TTV1` followed by one zero byte.
+It is mapped to eight target-field words as specified below.
 
 The four fixed length limbs are present even when the encoded value is zero.
 Non-minimal or variable-width representations are forbidden.
@@ -106,7 +122,7 @@ events and then absorb the resulting field elements as an untyped slice.
 
 | Event | Tag | Meaning of logical length |
 | --- | ---: | --- |
-| `protocolInit` | `0x01` | always zero |
+| `protocolInit` | `0x01` | exactly 16 envelope bytes |
 | `baseField` | `0x10` | number of base-field elements |
 | `extensionField` | `0x11` | number of four-coefficient extension elements |
 | `digest` | `0x12` | number of typed digests |
@@ -130,7 +146,7 @@ again while constructing the recursion circuit.
 
 | Encoding | Tag | Canonical payload |
 | --- | ---: | --- |
-| `none` | `0` | empty, only for protocol initialization |
+| `none` | `0` | reserved; not valid in a V1 event |
 | `koalaBearDirect` | `1` | one canonical KoalaBear word per element |
 | `koalaBearPacked8` | `2` | groups of up to eight KoalaBear words packed into BN254 |
 | `extension4KoalaBearDirect` | `3` | four canonical coefficients per extension element |
@@ -140,6 +156,7 @@ again while constructing the recursion circuit.
 | `container` | `7` | empty payload for collection boundary events |
 | `squeezeRequest` | `8` | empty payload for a typed squeeze request |
 | `koalaBearDigest8Packed8` | `9` | exactly one packed BN254 word per eight-word digest |
+| `versionEnvelopeU16` | `10` | eight big-endian `u16` words from the canonical 16-byte envelope |
 
 An implementation MUST reject an event/encoding combination not listed here.
 It MUST NOT infer an encoding from payload length.
@@ -154,15 +171,26 @@ against the KoalaBear modulus before using it.
 
 ### KoalaBear packed into BN254
 
-For canonical KoalaBear values `x[0..k]`, where `1 <= k <= 8`:
+For canonical KoalaBear values `x[0, k)`, where `1 <= k <= 8`:
 
 ```text
-pack(x) = sum(x[i] * 2^(31*i), i = 0..k-1)
+pack(x) = sum(x[i] * 2^(31*i), i in [0, k))
 ```
 
-The source values are ordered least-significant first. Each source value MUST
-be range-checked. No shift, sentinel, implicit high limb, modular truncation,
-or `reduce_31`/`split_32` disagreement is permitted.
+The source values are ordered least-significant first. A host, recursion DSL,
+executor, and Gnark implementation MUST constrain the reverse decomposition of
+every supplied packed word `y`. For each `i` in `[0, k)`:
+
+```text
+digit[i] = floor(y / 2^(31*i)) mod 2^31
+0 <= digit[i] < 2130706433
+```
+
+It MUST also constrain `floor(y / 2^(31*k)) = 0` and reconstruct `y` from the
+digits with the packing equation above. Merely proving `y < 2^(31*k)` is not
+sufficient because values in `[2130706433, 2^31)` are not canonical
+KoalaBear elements. No shift, sentinel, implicit high limb, modular
+truncation, or `reduce_31`/`split_32` disagreement is permitted.
 
 The last partial group is packed without appending semantic zero values. Its
 actual source length remains bound by the event's logical length and payload
@@ -193,10 +221,10 @@ PROTOCOL_MAGIC
 VERSION
 EVENT_TAG
 ENCODING_TAG
-event_counter[0..4]
-logical_length[0..4]
-payload_word_count[0..4]
-payload[0..payload_word_count]
+event_counter[0, 4)
+logical_length[0, 4)
+payload_word_count[0, 4)
+payload[0, payload_word_count)
 FRAME_END
 ```
 
@@ -208,12 +236,16 @@ renumbered during recursion witness generation.
 `protocolInit` MUST be the first frame and exactly:
 
 - counter zero;
-- logical length zero;
-- `none` encoding; and
-- empty payload.
+- logical length `16`;
+- `versionEnvelopeU16` encoding; and
+- the eight field words obtained from the exact canonical envelope for the
+  selected profile.
 
 Initialization is performed by absorbing this frame into an all-zero state.
-Using a nonzero initial state is forbidden.
+This first permutation cryptographically binds the envelope before any proof
+material or squeeze request is accepted. Using a nonzero initial state,
+absorbing an empty initialization frame, or carrying the envelope only as
+unhashed metadata is forbidden.
 
 ## Duplex block framing
 
@@ -223,8 +255,8 @@ blocks.
 
 For every block with zero-based `block_index`:
 
-1. Preserve the current capacity lanes `state[R..W]`.
-2. Set every rate lane `state[0..R]` to zero.
+1. Preserve the current capacity lanes `state[R, W)`.
+2. Set every rate lane `state[0, R)` to zero.
 3. Copy the chunk into rate lanes starting at lane zero.
 4. Compute the capacity control word:
 
@@ -244,7 +276,7 @@ control = 0x40000000
 For event absorption, `phase_id` is `1`. `is_final` is one only on the final
 block. `occupied_rate_lanes` is the actual chunk length, never the rate. This
 procedure eliminates retained, caller-controlled rate data from unoccupied
-lanes. Capacity lanes beyond `state[R]` remain chaining state.
+lanes. Capacity lanes in `state[R + 1, W)` remain chaining state.
 
 Fixed-length compression functions MAY remain separate only if their type and
 domain cannot be reached through the variable-length transcript API. A
@@ -279,10 +311,15 @@ phase `1`, then enter `Squeezing` and read outputs from the final permutation's
 rate lanes in lane order.
 
 - `squeezeField(n)` consumes `n` base-field outputs.
-- `squeezeExtension(n)` consumes `4*n` base-field outputs and groups them in
-  the fixed extension coefficient order.
-- `squeezeBits(b)` requires `1 <= b <= floor(log2(field_modulus))`, consumes one
-  base-field output, and returns its `b` low-order bits in little-endian order.
+- Under `inner-koalabear-v1`, `squeezeExtension(n)` consumes `4*n` base-field
+  outputs and groups them in the fixed extension coefficient order.
+- Under `outer-bn254-v1`, `squeezeExtension` is forbidden. V1 defines no outer
+  extension field, coefficient basis, or challenge conversion, and the API
+  MUST reject the request before mutating transcript state.
+- `squeezeBits(b)` consumes one base-field output and returns its `b` low-order
+  bits in little-endian order. The exact accepted ranges are `[1, 31)` for
+  `inner-koalabear-v1` and `[1, 254)` for `outer-bn254-v1`. Zero, `31` inner,
+  `254` outer, and all larger requests MUST be rejected before state mutation.
 
 If more physical outputs are required after the current rate lanes are
 exhausted, perform a squeeze-continuation block:
@@ -302,33 +339,70 @@ batched request and several scalar requests are intentionally distinct.
 ## Version envelope and legacy rejection
 
 Every proof, recursion witness, serialized challenger state, and native
-verification request MUST carry this descriptor before any transcript bytes:
+verification request MUST begin with one canonical 16-byte binary envelope.
+JSON objects and language-native structs are diagnostic representations only;
+they are not canonical wire encodings.
 
-```json
-{
-  "protocolId": "p42.sp1.typed-transcript",
-  "version": 1,
-  "profile": "inner-koalabear-v1"
-}
-```
+The bytes are:
 
-A serialized live state additionally carries:
+| Half-open byte range | Encoding |
+| --- | --- |
+| `[0, 8)` | fixed `0x5034325454563100` |
+| `[8, 10)` | protocol version as unsigned big-endian `u16`; exactly `1` |
+| `[10, 11)` | profile ID |
+| `[11, 12)` | field ID |
+| `[12, 13)` | permutation ID |
+| `[13, 14)` | rate |
+| `[14, 15)` | width |
+| `[15, 16)` | reserved; exactly zero |
 
-```json
-{
-  "stateEncoding": "canonical-field-decimal-v1",
-  "mode": "absorbing",
-  "eventCounter": 9,
-  "collectionStack": [],
-  "state": ["... exactly W canonical decimal words ..."]
-}
-```
+The only canonical envelope bytes are therefore:
+
+- inner: `0x50343254545631000001010101081000`
+- outer: `0x50343254545631000001020202020300`
+
+When represented as JSON, the envelope MUST be one lowercase, `0x`-prefixed,
+32-hex-digit string containing those exact bytes. Alternate field order,
+uppercase prefix, omitted zeroes, numeric JSON fields, and additional fields
+are not alternate encodings; they are invalid.
+
+For cryptographic binding, split the 16 bytes into the eight half-open pairs
+`[2*i, 2*i + 2)` for `i` in `[0, 8)`. Interpret each pair as one unsigned
+big-endian `u16`. Those eight integers are the complete `protocolInit` payload.
+The resulting field words are:
+
+- inner: `[20532, 12884, 21590, 12544, 1, 257, 264, 4096]`
+- outer: `[20532, 12884, 21590, 12544, 1, 514, 514, 768]`
+
+The event frame also carries version `1`, event tag `protocolInit`, encoding
+tag `versionEnvelopeU16`, counter zero, logical length `16`, and payload word
+count `8`. The all-zero initial state MUST absorb this complete frame before
+any other event. Native verification MUST compare the external 16-byte
+envelope with the profile selected by the verifier and require the absorbed
+initialization payload to match it. This binds routing metadata into the
+Fiat-Shamir transcript rather than trusting an uncommitted dispatch field.
+
+A serialized live-state JSON object has exactly six fields in this order:
+`transcriptEnvelope`, `stateEncoding`, `mode`, `eventCounter`,
+`collectionStack`, and `state`. `transcriptEnvelope` is the canonical hex value
+above; `stateEncoding` is the literal `canonical-field-decimal-v1`; `mode` is
+`absorbing`; and `eventCounter` is the next expected unsigned 64-bit counter.
+No additional fields are permitted.
+
+`state` contains exactly `W` canonical, base-10 strings in lane order;
+leading zeroes are forbidden except for the string `"0"`. The collection stack
+uses ordered records with exactly `kind`, `declaredChildren`, and
+`observedChildren`. Binary proof formats MAY use a different outer container
+only if they encode the same envelope bytes and state values canonically and
+the decoding is version-specific and non-fallback.
 
 TypedTranscriptV1 MUST reject:
 
-- a missing protocol ID, version, or profile;
+- a missing, noncanonical, truncated, or extended 16-byte envelope;
 - version zero or any unknown version;
-- an unknown or mismatched profile;
+- an unknown or mismatched profile, field, permutation, rate, or width;
+- a nonzero reserved byte;
+- a `protocolInit` payload that differs from the external envelope;
 - a state array with the wrong width or noncanonical words;
 - a nonempty output or input buffer from a legacy challenger;
 - an event counter or collection stack inconsistent with the witness; and
@@ -405,15 +479,32 @@ permission to reuse an unversioned identity.
 
 ## Shared vectors
 
-`typed-transcript-vectors-v1.json` contains two classes of structural vectors:
+`typed-transcript-vectors-v1.json` contains three classes of ordered structural
+vectors:
 
-- positive format vectors with exact event words, rate-lane clearing, block
-  occupancy, final flags, and capacity controls; and
-- collision-negative pairs whose canonical event frames must differ.
+- positive transcripts with an exact envelope, all events in order, an exact
+  initial snapshot, exact before/after structural snapshots for every step,
+  exact frame words, absorb blocks, squeeze-continuation blocks, and an exact
+  final structural snapshot;
+- collision-negative transcript pairs whose complete ordered encodings must
+  differ; and
+- rejection transcripts covering envelope substitution, counter gaps,
+  unbalanced or miscounted nesting, squeeze inside a collection, profile bit
+  bounds, forbidden outer extension squeeze, noncanonical packed digits, and
+  undeclared high digits.
 
 The initial vectors are independent of the vulnerable code. They intentionally
 stop before permutation output. `cryptographicOutputsIncluded` is fixed to
-`false`.
+`false`. The initial all-zero permutation state is exact. Subsequent and final
+permutation states are explicitly `not-generated` with a JSON `null` state;
+this is a refusal to invent cryptographic expectations, not a wildcard that a
+future implementation may ignore.
+
+The initial positive transcripts already exercise consecutive counters,
+balanced nested slice/container boundaries, repeated squeeze, squeeze
+continuation, and absorb-after-squeeze. Their per-step expectations make event
+reordering, flattening, or buffered-squeeze reuse observable to every future
+implementation.
 
 A cryptographic implementation MUST extend the corpus with, for each profile:
 
@@ -423,8 +514,10 @@ A cryptographic implementation MUST extend the corpus with, for each profile:
 4. empty, one-word, exact-rate, partial-rate, and multiblock events;
 5. minimum, maximum canonical, and rejected noncanonical inputs;
 6. high-limb packed values and eight-to-nine-limb boundaries;
-7. repeated squeeze and absorb-after-squeeze transitions;
-8. nested collection balance and child-count failures;
+7. the existing repeated-squeeze and absorb-after-squeeze structural cases
+   augmented with exact permutation states and outputs;
+8. the existing nested collection balance and child-count cases augmented with
+   exact implementation results;
 9. `[x]` versus `[x, 0]`, scalar versus digest/commitment, flat versus nested,
    host-shift, stale-lane, and padding-free collision regressions; and
 10. V0/V1 proof, state, VK, and profile substitution rejection.
@@ -442,11 +535,13 @@ python3 protocol/typed-transcript/validate_vectors.py
 ```
 
 The validator checks JSON Schema validity, tag/profile uniqueness, profile
-dimensions, event shape, canonical frame construction, zero-padded block
-layout, capacity controls, and structural separation of collision-negative
-pairs. It does not invoke Poseidon2, SP1, a recursion executor, Gnark, or a
-verifier. Its success MUST NOT be described as remediation or cryptographic
-closure.
+dimensions, exact envelope bytes and field words, consecutive counters,
+ordered nesting, event shape, base-`2^31` digit decomposition and KoalaBear
+range checks, profile-specific squeeze bounds, canonical frame construction,
+zero-padded block layout, capacity controls, initial/final/per-step structural
+snapshots, and structural separation of collision-negative transcripts. It
+does not invoke Poseidon2, SP1, a recursion executor, Gnark, or a verifier. Its
+success MUST NOT be described as remediation or cryptographic closure.
 
 ## Closure requirements outside this artifact
 
