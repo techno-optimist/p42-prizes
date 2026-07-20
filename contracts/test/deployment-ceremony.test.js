@@ -189,6 +189,22 @@ describe("production deployment runbook command contract", () => {
       "P42_PRIMARY_RPC_OPERATOR_ID", "P42_SECONDARY_BASE_SEPOLIA_RPC_URL",
       "P42_SECONDARY_RPC_OPERATOR_ID",
     ]) assert.match(ceremonyRunbook, new RegExp(requiredInput));
+    const deploymentCommand = ceremonyRunbook
+      .split("```")
+      .find((block) => block.startsWith("bash\n") && block.includes("npm run deploy:base-sepolia"));
+    assert.ok(deploymentCommand, "multi-board runbook must contain a fenced production deployment command");
+    for (const requiredAdmissionInput of [
+      "P42_PRODUCTION_IMAGE_DOSSIER_SHA256",
+      "P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_PATH",
+      "P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_SHA256",
+      "P42_ADMISSION_HOST_SET_BUNDLES_JSON",
+    ]) {
+      assert.match(
+        deploymentCommand,
+        new RegExp(requiredAdmissionInput),
+        `production deployment command must supply ${requiredAdmissionInput}`,
+      );
+    }
 
     const deploymentReadme = readFileSync(
       resolve(REPO_ROOT, "deployments/base-sepolia/README.md"),
