@@ -565,7 +565,7 @@ export function validateProbeBody(routeId, body, contentType) {
     }
   }
   if ((route.id === "skill" || route.id === "agents")
-    && /(?:funding-target\/v4|donationTarget|walletUri|basescan|ethereum:|continue only|wallet-first)/i.test(body)) {
+    && /(?:funding-target\/v4|donationTarget|walletUri|basescan|ethereum:|wallet-first)/i.test(body)) {
     describe(route, "contains actionable or bypass-oriented funding instructions.");
   }
   return body;

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -360,6 +361,11 @@ test("page probes require stable identity markers", () => {
     () => validateProbeBody("skill", `${skill}Continue only for funding-target/v4.`, contentTypes.text),
     /actionable or bypass-oriented funding instructions/,
   );
+});
+
+test("the shipped agent skill passes the funding-shutdown guard", () => {
+  const skill = readFileSync(new URL("../web/public/skill.md", import.meta.url), "utf8");
+  assert.doesNotThrow(() => validateProbeBody("skill", skill, contentTypes.text));
 });
 
 test("API probes reject malformed JSON and wrong response shapes", () => {
