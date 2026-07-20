@@ -121,10 +121,11 @@
     "gateway": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "outerEnvelopeBytes", "outerProfile", "wireShape", "forwardedShape", "payloadSemantics", "trustedConfigSource", "preVerificationEnvelopeBindingCheck", "bindingSource", "stripAfterValidationOnly", "silentSdkStrippingAllowed", "legacyVerifierPinning", "structuralTestPins"],
+      "required": ["name", "outerEnvelopeBytes", "selectorBytes", "outerProfile", "wireShape", "forwardedShape", "payloadSemantics", "trustedConfigSource", "preVerificationEnvelopeBindingCheck", "bindingSource", "stripAfterValidationOnly", "silentSdkStrippingAllowed", "legacyVerifierPinning", "structuralTestPins"],
       "properties": {
         "name": {"const": "p42-v1"},
         "outerEnvelopeBytes": {"const": 16},
+        "selectorBytes": {"const": 4},
         "outerProfile": {"const": "outer-bn254-rate-koalabear-v1"},
         "wireShape": {"const": "envelope16-selector4-opaque-payload"},
         "forwardedShape": {"const": "selector4-opaque-payload"},
@@ -149,20 +150,19 @@
     "modeTags": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["core", "compressed", "shrink", "wrap", "groth16", "plonk"],
+      "required": ["core", "compressed", "shrink", "wrap"],
       "properties": {
         "core": {"const": 1}, "compressed": {"const": 2}, "shrink": {"const": 3},
-        "wrap": {"const": 4}, "groth16": {"const": 5}, "plonk": {"const": 6}
+        "wrap": {"const": 4}
       }
     },
     "testSelectors": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["core", "compressed", "shrink", "wrap", "groth16", "plonk"],
+      "required": ["core", "compressed", "shrink", "wrap"],
       "properties": {
         "core": {"const": "0x01000001"}, "compressed": {"const": "0x02000002"},
-        "shrink": {"const": "0x03000003"}, "wrap": {"const": "0x04000004"},
-        "groth16": {"const": "0x11223344"}, "plonk": {"const": "0xa1b2c3d4"}
+        "shrink": {"const": "0x03000003"}, "wrap": {"const": "0x04000004"}
       }
     },
     "verifierPin": {

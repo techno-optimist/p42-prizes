@@ -464,7 +464,7 @@ MUST NOT be inferred from payload length, selector bytes, a failed parse, or an
 SDK default. The machine-readable matrix in `typed-transcript-v1.json` is
 normative.
 
-| Proof mode | V0 decoder | V1 decoder | V1 profile | V1 gateway action |
+| Proof mode | V0 decoder | V1 entry point | V1 profile | V1 gateway action |
 | --- | --- | --- | --- | --- |
 | core | `legacy-v0-core` | `typed-v1-core` | `inner-koalabear-v1` | none |
 | compressed | `legacy-v0-compressed` | `typed-v1-compressed` | `inner-koalabear-v1` | none |
@@ -473,10 +473,11 @@ normative.
 | Groth16 | `legacy-v0-groth16` | `p42-v1-gateway-groth16` | `outer-bn254-rate-koalabear-v1` | validate, select, check, strip, call |
 | Plonk | `legacy-v0-plonk` | `p42-v1-gateway-plonk` | `outer-bn254-rate-koalabear-v1` | validate, select, check, strip, call |
 
-Each V0 and V1 decoder is a distinct type and entry point. Parse failure MUST
-NOT trigger a retry with another version or proof mode. Core, compressed,
-shrink, and wrap V1 formats carry their exact profile envelope and reject the
-corresponding V0 shape. Groth16 and Plonk use the gateway format below.
+Each recursive V0 and V1 decoder is a distinct type and entry point. Parse
+failure MUST NOT trigger a retry with another version or proof mode. Core,
+compressed, shrink, and wrap V1 formats carry their exact profile envelope and
+reject the corresponding V0 shape. Groth16 and Plonk are terminal modes and use
+only the opaque gateway format below in this artifact.
 
 ### Decoder-only synthetic proof wire
 
@@ -491,9 +492,10 @@ TypedV1  := envelope[16] || LegacyV0
 `payload_length_be` is the exact payload byte length. A decoder MUST reject a
 short payload as `PROOF_WIRE_LENGTH` and any byte after the declared payload as
 `PROOF_TRAILING_BYTES`; trailing bytes are not an extension mechanism. Mode
-tags are `1` core, `2` compressed, `3` shrink, `4` wrap, `5` Groth16, and `6`
-Plonk. The selected decoder entry point supplies the expected mode and selector;
-neither is inferred from the proof.
+tags are `1` core, `2` compressed, `3` shrink, and `4` wrap. The selected
+decoder entry point supplies the expected mode and selector; neither is
+inferred from the proof. This synthetic grammar does not define Groth16 or
+Plonk proof decoding.
 
 A V1 decoder first requires and validates the exact 16-byte envelope for the
 selected mode, then decodes the complete legacy-shaped suffix. A V0 decoder
@@ -504,11 +506,11 @@ length, malformed headers, and trailing bytes are terminal errors. There is no
 downgrade retry or fallback decoder.
 
 The committed corpus contains literal bytes and expected decoded objects for
-every mode under both decoder versions. It also contains, for every mode, both
-cross-version directions and malformed, trailing-byte, wrong-magic,
-wrong-version, wrong-mode, wrong-length, and forbidden-fallback cases. The
-`structuralTestSelectors` values are deterministic corpus fixtures, not
-deployment selector claims.
+the four recursive modes under both decoder versions. It also contains, for
+each of those four modes, both cross-version directions and malformed,
+trailing-byte, wrong-magic, wrong-version, wrong-mode, wrong-length, and
+forbidden-fallback cases. The `structuralTestSelectors` values are deterministic
+corpus fixtures, not deployment selector claims.
 
 This grammar is not gateway calldata and MUST NOT be applied to the gateway
 suffix. In particular, its synthetic mode tag and payload-length word do not
@@ -567,6 +569,13 @@ gateway MUST NOT normalize, replace, or reinterpret the selector. Failure at
 any step MUST occur before forwarding. SDKs MUST preserve the envelope and call
 the V1 gateway explicitly; silent SDK stripping, automatic legacy fallback,
 and direct forwarding of a V1 suffix around the gateway are prohibited.
+
+For each terminal mode, the gateway corpus includes literal legacy
+`selector[4] || opaque_payload` bytes without a V1 envelope and requires the V1
+gateway to reject them. The reverse direction, rejection of an enveloped V1
+wire by a V0 Groth16 or Plonk verifier decoder, belongs to that separate legacy
+decoder and is not demonstrated by this gateway model. Neither direction
+invents a synthetic mode tag or payload-length field at the gateway boundary.
 
 The schemas and gateway vectors validate ordering, exact envelope parameters,
 profile/parameter substitution, selector checks, suffix preservation, and
@@ -663,13 +672,14 @@ routing, and gateway vectors:
   digits, and undeclared high digits;
 - outer rate-word extraction cases for KoalaBear scalar modulus reduction,
   four-coefficient SP1 extension grouping, and `[1, 31)` bit challenges;
-- literal V0/V1 proof wires and decoded outcomes for every proof mode, including
-  both cross-version directions and malformed, trailing, downgrade/fallback,
-  wrong-magic, wrong-version, wrong-mode, and wrong-length rejection; and
+- literal V0/V1 proof wires and decoded outcomes for the four recursive proof
+  modes, including both cross-version directions and malformed, trailing,
+  downgrade/fallback, wrong-magic, wrong-version, wrong-mode, and wrong-length
+  rejection; and
 - P42 V1 gateway cases for exact envelope validation, substitution rejection,
   opaque payload preservation, and the full configured-selector, wire-selector,
   address, codehash, VK, circuit, and cross-mode mismatch matrix independently
-  for both Groth16 and Plonk.
+  for both Groth16 and Plonk, plus literal legacy-without-envelope rejection.
 
 The initial vectors are independent of the vulnerable code. They intentionally
 stop before permutation output. `cryptographicOutputsIncluded` is fixed to

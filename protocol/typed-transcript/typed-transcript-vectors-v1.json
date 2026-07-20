@@ -43,6 +43,7 @@
     "flat-nested-boundary",
     "gateway-groth16-cross-mode-config",
     "gateway-groth16-envelope-missing",
+    "gateway-groth16-legacy-without-v1-envelope",
     "gateway-groth16-opaque-routing-like-payload",
     "gateway-groth16-parameter-substitution",
     "gateway-groth16-profile-substitution",
@@ -55,6 +56,7 @@
     "gateway-groth16-wrong-wire-selector",
     "gateway-plonk-cross-mode-config",
     "gateway-plonk-envelope-missing",
+    "gateway-plonk-legacy-without-v1-envelope",
     "gateway-plonk-opaque-routing-like-payload",
     "gateway-plonk-parameter-substitution",
     "gateway-plonk-profile-substitution",
@@ -65,22 +67,6 @@
     "gateway-plonk-wrong-configured-selector",
     "gateway-plonk-wrong-vk",
     "gateway-plonk-wrong-wire-selector",
-    "groth16-v0-malformed",
-    "groth16-v0-to-v1",
-    "groth16-v0-trailing-byte",
-    "groth16-v0-valid",
-    "groth16-v0-wrong-length",
-    "groth16-v0-wrong-mode",
-    "groth16-v1-downgrade-fallback-forbidden",
-    "groth16-v1-malformed",
-    "groth16-v1-to-v0",
-    "groth16-v1-trailing-byte",
-    "groth16-v1-valid",
-    "groth16-v1-wrong-length",
-    "groth16-v1-wrong-magic",
-    "groth16-v1-wrong-mode",
-    "groth16-v1-wrong-version",
-    "groth16-v1-wrong-version-fallback-forbidden",
     "inner-ordered-lifecycle",
     "inner-squeeze-bits-overflow",
     "inner-squeeze-bits-zero",
@@ -101,22 +87,6 @@
     "packed-trailing-zero",
     "packed-undeclared-high-digit",
     "parameter-substitution",
-    "plonk-v0-malformed",
-    "plonk-v0-to-v1",
-    "plonk-v0-trailing-byte",
-    "plonk-v0-valid",
-    "plonk-v0-wrong-length",
-    "plonk-v0-wrong-mode",
-    "plonk-v1-downgrade-fallback-forbidden",
-    "plonk-v1-malformed",
-    "plonk-v1-to-v0",
-    "plonk-v1-trailing-byte",
-    "plonk-v1-valid",
-    "plonk-v1-wrong-length",
-    "plonk-v1-wrong-magic",
-    "plonk-v1-wrong-mode",
-    "plonk-v1-wrong-version",
-    "plonk-v1-wrong-version-fallback-forbidden",
     "profile-substitution",
     "repeated-versus-batched-squeeze",
     "scalar-extension-type",
@@ -4394,350 +4364,6 @@
       "expectedOutcome": null,
       "expectedErrorCode": "ENVELOPE_VERSION",
       "case": "v1-wrong-version-fallback-forbidden"
-    },
-    {
-      "id": "groth16-v0-valid",
-      "proofMode": "groth16",
-      "decoderVersion": "v0",
-      "wireHex": "0x11223344050003dead05",
-      "fallbackAllowed": false,
-      "expectedOutcome": {
-        "decoder": "legacy-v0-groth16",
-        "version": "v0",
-        "mode": "groth16",
-        "selectorHex": "0x11223344",
-        "payloadHex": "0xdead05"
-      },
-      "expectedErrorCode": null,
-      "case": "v0-valid"
-    },
-    {
-      "id": "groth16-v1-valid",
-      "proofMode": "groth16",
-      "decoderVersion": "v1",
-      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
-      "fallbackAllowed": false,
-      "expectedOutcome": {
-        "decoder": "p42-v1-gateway-groth16",
-        "version": "v1",
-        "mode": "groth16",
-        "selectorHex": "0x11223344",
-        "payloadHex": "0xdead05"
-      },
-      "expectedErrorCode": null,
-      "case": "v1-valid"
-    },
-    {
-      "id": "groth16-v0-to-v1",
-      "proofMode": "groth16",
-      "decoderVersion": "v1",
-      "wireHex": "0x11223344050003dead05",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "V0_TO_V1_DECODER",
-      "case": "v0-to-v1"
-    },
-    {
-      "id": "groth16-v1-to-v0",
-      "proofMode": "groth16",
-      "decoderVersion": "v0",
-      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "V1_TO_V0_DECODER",
-      "case": "v1-to-v0"
-    },
-    {
-      "id": "groth16-v0-malformed",
-      "proofMode": "groth16",
-      "decoderVersion": "v0",
-      "wireHex": "0x00",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "PROOF_WIRE_LENGTH",
-      "case": "v0-malformed"
-    },
-    {
-      "id": "groth16-v1-malformed",
-      "proofMode": "groth16",
-      "decoderVersion": "v1",
-      "wireHex": "0x00",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "PROOF_WIRE_LENGTH",
-      "case": "v1-malformed"
-    },
-    {
-      "id": "groth16-v0-trailing-byte",
-      "proofMode": "groth16",
-      "decoderVersion": "v0",
-      "wireHex": "0x11223344050003dead05ff",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "PROOF_TRAILING_BYTES",
-      "case": "v0-trailing-byte"
-    },
-    {
-      "id": "groth16-v1-trailing-byte",
-      "proofMode": "groth16",
-      "decoderVersion": "v1",
-      "wireHex": "0x5034325454563100000102020202030011223344050003dead05ff",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "PROOF_TRAILING_BYTES",
-      "case": "v1-trailing-byte"
-    },
-    {
-      "id": "groth16-v1-wrong-magic",
-      "proofMode": "groth16",
-      "decoderVersion": "v1",
-      "wireHex": "0x5134325454563100000102020202030011223344050003dead05",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "ENVELOPE_MAGIC",
-      "case": "v1-wrong-magic"
-    },
-    {
-      "id": "groth16-v1-wrong-version",
-      "proofMode": "groth16",
-      "decoderVersion": "v1",
-      "wireHex": "0x5034325454563100000202020202030011223344050003dead05",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "ENVELOPE_VERSION",
-      "case": "v1-wrong-version"
-    },
-    {
-      "id": "groth16-v0-wrong-mode",
-      "proofMode": "groth16",
-      "decoderVersion": "v0",
-      "wireHex": "0x11223344060003dead05",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "WRONG_PROOF_MODE",
-      "case": "v0-wrong-mode"
-    },
-    {
-      "id": "groth16-v1-wrong-mode",
-      "proofMode": "groth16",
-      "decoderVersion": "v1",
-      "wireHex": "0x5034325454563100000102020202030011223344060003dead05",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "WRONG_PROOF_MODE",
-      "case": "v1-wrong-mode"
-    },
-    {
-      "id": "groth16-v0-wrong-length",
-      "proofMode": "groth16",
-      "decoderVersion": "v0",
-      "wireHex": "0x11223344050004dead05",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "PROOF_WIRE_LENGTH",
-      "case": "v0-wrong-length"
-    },
-    {
-      "id": "groth16-v1-wrong-length",
-      "proofMode": "groth16",
-      "decoderVersion": "v1",
-      "wireHex": "0x5034325454563100000102020202030011223344050004dead05",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "PROOF_WIRE_LENGTH",
-      "case": "v1-wrong-length"
-    },
-    {
-      "id": "groth16-v1-downgrade-fallback-forbidden",
-      "proofMode": "groth16",
-      "decoderVersion": "v1",
-      "wireHex": "0x11223344050003dead05",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "V0_TO_V1_DECODER",
-      "case": "v1-downgrade-fallback-forbidden"
-    },
-    {
-      "id": "groth16-v1-wrong-version-fallback-forbidden",
-      "proofMode": "groth16",
-      "decoderVersion": "v1",
-      "wireHex": "0x5034325454563100000202020202030011223344050003dead05",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "ENVELOPE_VERSION",
-      "case": "v1-wrong-version-fallback-forbidden"
-    },
-    {
-      "id": "plonk-v0-valid",
-      "proofMode": "plonk",
-      "decoderVersion": "v0",
-      "wireHex": "0xa1b2c3d4060003dead06",
-      "fallbackAllowed": false,
-      "expectedOutcome": {
-        "decoder": "legacy-v0-plonk",
-        "version": "v0",
-        "mode": "plonk",
-        "selectorHex": "0xa1b2c3d4",
-        "payloadHex": "0xdead06"
-      },
-      "expectedErrorCode": null,
-      "case": "v0-valid"
-    },
-    {
-      "id": "plonk-v1-valid",
-      "proofMode": "plonk",
-      "decoderVersion": "v1",
-      "wireHex": "0x50343254545631000001020202020300a1b2c3d4060003dead06",
-      "fallbackAllowed": false,
-      "expectedOutcome": {
-        "decoder": "p42-v1-gateway-plonk",
-        "version": "v1",
-        "mode": "plonk",
-        "selectorHex": "0xa1b2c3d4",
-        "payloadHex": "0xdead06"
-      },
-      "expectedErrorCode": null,
-      "case": "v1-valid"
-    },
-    {
-      "id": "plonk-v0-to-v1",
-      "proofMode": "plonk",
-      "decoderVersion": "v1",
-      "wireHex": "0xa1b2c3d4060003dead06",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "V0_TO_V1_DECODER",
-      "case": "v0-to-v1"
-    },
-    {
-      "id": "plonk-v1-to-v0",
-      "proofMode": "plonk",
-      "decoderVersion": "v0",
-      "wireHex": "0x50343254545631000001020202020300a1b2c3d4060003dead06",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "V1_TO_V0_DECODER",
-      "case": "v1-to-v0"
-    },
-    {
-      "id": "plonk-v0-malformed",
-      "proofMode": "plonk",
-      "decoderVersion": "v0",
-      "wireHex": "0x00",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "PROOF_WIRE_LENGTH",
-      "case": "v0-malformed"
-    },
-    {
-      "id": "plonk-v1-malformed",
-      "proofMode": "plonk",
-      "decoderVersion": "v1",
-      "wireHex": "0x00",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "PROOF_WIRE_LENGTH",
-      "case": "v1-malformed"
-    },
-    {
-      "id": "plonk-v0-trailing-byte",
-      "proofMode": "plonk",
-      "decoderVersion": "v0",
-      "wireHex": "0xa1b2c3d4060003dead06ff",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "PROOF_TRAILING_BYTES",
-      "case": "v0-trailing-byte"
-    },
-    {
-      "id": "plonk-v1-trailing-byte",
-      "proofMode": "plonk",
-      "decoderVersion": "v1",
-      "wireHex": "0x50343254545631000001020202020300a1b2c3d4060003dead06ff",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "PROOF_TRAILING_BYTES",
-      "case": "v1-trailing-byte"
-    },
-    {
-      "id": "plonk-v1-wrong-magic",
-      "proofMode": "plonk",
-      "decoderVersion": "v1",
-      "wireHex": "0x51343254545631000001020202020300a1b2c3d4060003dead06",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "ENVELOPE_MAGIC",
-      "case": "v1-wrong-magic"
-    },
-    {
-      "id": "plonk-v1-wrong-version",
-      "proofMode": "plonk",
-      "decoderVersion": "v1",
-      "wireHex": "0x50343254545631000002020202020300a1b2c3d4060003dead06",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "ENVELOPE_VERSION",
-      "case": "v1-wrong-version"
-    },
-    {
-      "id": "plonk-v0-wrong-mode",
-      "proofMode": "plonk",
-      "decoderVersion": "v0",
-      "wireHex": "0xa1b2c3d4010003dead06",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "WRONG_PROOF_MODE",
-      "case": "v0-wrong-mode"
-    },
-    {
-      "id": "plonk-v1-wrong-mode",
-      "proofMode": "plonk",
-      "decoderVersion": "v1",
-      "wireHex": "0x50343254545631000001020202020300a1b2c3d4010003dead06",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "WRONG_PROOF_MODE",
-      "case": "v1-wrong-mode"
-    },
-    {
-      "id": "plonk-v0-wrong-length",
-      "proofMode": "plonk",
-      "decoderVersion": "v0",
-      "wireHex": "0xa1b2c3d4060004dead06",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "PROOF_WIRE_LENGTH",
-      "case": "v0-wrong-length"
-    },
-    {
-      "id": "plonk-v1-wrong-length",
-      "proofMode": "plonk",
-      "decoderVersion": "v1",
-      "wireHex": "0x50343254545631000001020202020300a1b2c3d4060004dead06",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "PROOF_WIRE_LENGTH",
-      "case": "v1-wrong-length"
-    },
-    {
-      "id": "plonk-v1-downgrade-fallback-forbidden",
-      "proofMode": "plonk",
-      "decoderVersion": "v1",
-      "wireHex": "0xa1b2c3d4060003dead06",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "V0_TO_V1_DECODER",
-      "case": "v1-downgrade-fallback-forbidden"
-    },
-    {
-      "id": "plonk-v1-wrong-version-fallback-forbidden",
-      "proofMode": "plonk",
-      "decoderVersion": "v1",
-      "wireHex": "0x50343254545631000002020202020300a1b2c3d4060003dead06",
-      "fallbackAllowed": false,
-      "expectedOutcome": null,
-      "expectedErrorCode": "ENVELOPE_VERSION",
-      "case": "v1-wrong-version-fallback-forbidden"
     }
   ],
   "gatewayVectors": [
@@ -4763,7 +4389,8 @@
           "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "circuitId": "p42-typed-v1-groth16-structural-fixture"
-        }
+        },
+        "gatewayIdentity": "p42-v1-gateway-groth16"
       },
       "expectedErrorCode": null
     },
@@ -4789,7 +4416,8 @@
           "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "circuitId": "p42-typed-v1-groth16-structural-fixture"
-        }
+        },
+        "gatewayIdentity": "p42-v1-gateway-groth16"
       },
       "expectedErrorCode": null
     },
@@ -4808,6 +4436,22 @@
       },
       "expectedOutcome": null,
       "expectedErrorCode": "ENVELOPE_MISSING"
+    },
+    {
+      "id": "gateway-groth16-legacy-without-v1-envelope",
+      "case": "legacy-without-v1-envelope",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x112233446c65676163792d6f70617175652d7061796c6f6164",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MAGIC"
     },
     {
       "id": "gateway-groth16-profile-substitution",
@@ -4975,7 +4619,8 @@
           "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
           "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
           "circuitId": "p42-typed-v1-plonk-structural-fixture"
-        }
+        },
+        "gatewayIdentity": "p42-v1-gateway-plonk"
       },
       "expectedErrorCode": null
     },
@@ -5001,7 +4646,8 @@
           "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
           "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
           "circuitId": "p42-typed-v1-plonk-structural-fixture"
-        }
+        },
+        "gatewayIdentity": "p42-v1-gateway-plonk"
       },
       "expectedErrorCode": null
     },
@@ -5020,6 +4666,22 @@
       },
       "expectedOutcome": null,
       "expectedErrorCode": "ENVELOPE_MISSING"
+    },
+    {
+      "id": "gateway-plonk-legacy-without-v1-envelope",
+      "case": "legacy-without-v1-envelope",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0xa1b2c3d46c65676163792d6f70617175652d7061796c6f6164",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MAGIC"
     },
     {
       "id": "gateway-plonk-profile-substitution",

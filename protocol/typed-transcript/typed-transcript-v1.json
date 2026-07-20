@@ -112,19 +112,18 @@
     "modeBytes": 1,
     "payloadLengthBytes": 2,
     "payloadLengthByteOrder": "big-endian",
-    "modeTags": {"core": 1, "compressed": 2, "shrink": 3, "wrap": 4, "groth16": 5, "plonk": 6},
+    "modeTags": {"core": 1, "compressed": 2, "shrink": 3, "wrap": 4},
     "structuralTestSelectors": {
       "core": "0x01000001",
       "compressed": "0x02000002",
       "shrink": "0x03000003",
-      "wrap": "0x04000004",
-      "groth16": "0x11223344",
-      "plonk": "0xa1b2c3d4"
+      "wrap": "0x04000004"
     }
   },
   "gateway": {
     "name": "p42-v1",
     "outerEnvelopeBytes": 16,
+    "selectorBytes": 4,
     "outerProfile": "outer-bn254-rate-koalabear-v1",
     "wireShape": "envelope16-selector4-opaque-payload",
     "forwardedShape": "selector4-opaque-payload",

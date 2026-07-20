@@ -159,7 +159,7 @@
       "properties": {
         "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
         "case": {"enum": ["v0-valid", "v1-valid", "v0-to-v1", "v1-to-v0", "v0-malformed", "v1-malformed", "v0-trailing-byte", "v1-trailing-byte", "v1-wrong-magic", "v1-wrong-version", "v0-wrong-mode", "v1-wrong-mode", "v0-wrong-length", "v1-wrong-length", "v1-downgrade-fallback-forbidden", "v1-wrong-version-fallback-forbidden"]},
-        "proofMode": {"enum": ["core", "compressed", "shrink", "wrap", "groth16", "plonk"]},
+        "proofMode": {"enum": ["core", "compressed", "shrink", "wrap"]},
         "decoderVersion": {"enum": ["v0", "v1"]},
         "wireHex": {"type": "string", "pattern": "^0x(?:[0-9a-f]{2})*$"},
         "fallbackAllowed": {"const": false},
@@ -179,7 +179,7 @@
       ],
       "properties": {
         "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
-        "case": {"enum": ["valid", "opaque-routing-like-payload", "envelope-missing", "profile-substitution", "parameter-substitution", "wrong-configured-selector", "wrong-wire-selector", "wrong-address", "wrong-codehash", "wrong-vk", "wrong-circuit", "cross-mode-config"]},
+        "case": {"enum": ["valid", "opaque-routing-like-payload", "envelope-missing", "legacy-without-v1-envelope", "profile-substitution", "parameter-substitution", "wrong-configured-selector", "wrong-wire-selector", "wrong-address", "wrong-codehash", "wrong-vk", "wrong-circuit", "cross-mode-config"]},
         "trustedEntryPointMode": {"enum": ["groth16", "plonk"]},
         "wireHex": {"type": "string", "pattern": "^0x(?:[0-9a-f]{2})*$"},
         "trustedDeploymentConfig": {"$ref": "#/$defs/verifierPin"},
@@ -196,7 +196,7 @@
       "properties": {
         "decoder": {"type": "string", "minLength": 1},
         "version": {"enum": ["v0", "v1"]},
-        "mode": {"enum": ["core", "compressed", "shrink", "wrap", "groth16", "plonk"]},
+        "mode": {"enum": ["core", "compressed", "shrink", "wrap"]},
         "selectorHex": {"type": "string", "pattern": "^0x[0-9a-f]{8}$"},
         "payloadHex": {"type": "string", "pattern": "^0x(?:[0-9a-f]{2})*$"}
       }
@@ -217,9 +217,10 @@
     "gatewayOutcome": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["forwardedHex", "verifierIdentity"],
+      "required": ["forwardedHex", "gatewayIdentity", "verifierIdentity"],
       "properties": {
         "forwardedHex": {"type": "string", "pattern": "^0x(?:[0-9a-f]{2})+$"},
+        "gatewayIdentity": {"enum": ["p42-v1-gateway-groth16", "p42-v1-gateway-plonk"]},
         "verifierIdentity": {"$ref": "#/$defs/verifierPin"}
       }
     },

@@ -503,6 +503,7 @@ def validate_spec_invariants(spec: dict[str, Any]) -> None:
     gateway = spec["gateway"]
     if not (
         gateway["outerEnvelopeBytes"] == 16
+        and gateway["selectorBytes"] == 4
         and gateway["outerProfile"] == "outer-bn254-rate-koalabear-v1"
         and gateway["wireShape"] == "envelope16-selector4-opaque-payload"
         and gateway["forwardedShape"] == "selector4-opaque-payload"
@@ -527,12 +528,12 @@ def validate_spec_invariants(spec: dict[str, Any]) -> None:
         or wire["payloadLengthByteOrder"] != "big-endian"
         or wire["modeTags"] != {
             "core": 1, "compressed": 2, "shrink": 3,
-            "wrap": 4, "groth16": 5, "plonk": 6,
+            "wrap": 4,
         }
     ):
         reject("SPEC_PROOF_WIRE", "proof wire parameters are not frozen V1")
     for mode, pin in gateway["structuralTestPins"].items():
-        if pin["mode"] != mode or pin["selectorHex"] != wire["structuralTestSelectors"][mode]:
+        if pin["mode"] != mode or len(decode_hex_bytes(pin["selectorHex"], "SPEC_GATEWAY_PIN")) != gateway["selectorBytes"]:
             reject("SPEC_GATEWAY_PIN", f"structural gateway pin mismatch for {mode}")
 
 
@@ -797,7 +798,7 @@ def run_gateway(spec: dict[str, Any], vector: dict[str, Any]) -> dict[str, Any]:
     configured = vector["trustedDeploymentConfig"]
     validate_gateway_pin(expected_pin, configured)
     selector_start = envelope_length
-    selector_end = selector_start + spec["proofWire"]["selectorBytes"]
+    selector_end = selector_start + spec["gateway"]["selectorBytes"]
     if len(wire) < selector_end:
         reject("GATEWAY_SELECTOR_PAYLOAD", "legacy-shaped selector plus payload is truncated")
     configured_selector = bytes.fromhex(configured["selectorHex"][2:])
@@ -806,6 +807,7 @@ def run_gateway(spec: dict[str, Any], vector: dict[str, Any]) -> dict[str, Any]:
     forwarded = wire[envelope_length:]
     return {
         "forwardedHex": "0x" + forwarded.hex(),
+        "gatewayIdentity": spec["proofModeRouting"][mode]["v1Decoder"],
         "verifierIdentity": configured,
     }
 
@@ -876,7 +878,10 @@ def validate_semantics(spec: dict[str, Any], vectors: dict[str, Any]) -> None:
         "v1-wrong-length", "v1-downgrade-fallback-forbidden",
         "v1-wrong-version-fallback-forbidden",
     }
-    for mode in spec["proofModeRouting"]:
+    decoder_modes = set(spec["proofWire"]["modeTags"])
+    if {vector["proofMode"] for vector in vectors["proofDecodingVectors"]} != decoder_modes:
+        reject("DECODER_VECTOR_MODES", "decoder corpus must cover exactly the synthetic decoder modes")
+    for mode in decoder_modes:
         actual = {
             vector["case"] for vector in vectors["proofDecodingVectors"]
             if vector["proofMode"] == mode
@@ -888,6 +893,7 @@ def validate_semantics(spec: dict[str, Any], vectors: dict[str, Any]) -> None:
 
     expected_gateway_cases = {
         "valid", "opaque-routing-like-payload", "envelope-missing",
+        "legacy-without-v1-envelope",
         "profile-substitution", "parameter-substitution", "wrong-configured-selector",
         "wrong-wire-selector", "wrong-address", "wrong-codehash", "wrong-vk",
         "wrong-circuit", "cross-mode-config",
