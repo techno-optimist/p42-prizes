@@ -1,26 +1,28 @@
 # Production Gate Ledger
 
-Status date: 2026-07-18.
+Status date: 2026-07-20.
 
 Status: Phase 0 local/testnet-shaped portal. NO-GO for real ETH and NO-GO for
 a canonical Base Sepolia settlement pilot on the current source. Not externally
 audited. Not legally reviewed. No real ETH should be accepted until every Gate 2
 item in this ledger is green.
 
-July 18 snapshot: the final integration candidate combines the canonical
-deployment command, hardened DGX runtime, external SP1 runtime observation, and
-a 32-probe release guard that directly requires all ten funding targets to be
-null. It is not merged to `main`, deployed, or release-authorized yet. The
-external v3 trust root, bootstrap ratification, and current receipt remain open.
-Historical live evidence
-for exact source commit `5a4d25d3862d75d2b573e93f33f60ad72662aef7`
-bound that commit to the canonical board projection and reported 12/12 healthy
-routes. The integration candidate contains later deploy-relevant changes and has
-no corresponding live release-guard evidence yet. The public funding-target API
-remains fail-closed with no published target, and Build Week is absent from site
-navigation while its direct historical route remains available. This is
-historical source and live-portal evidence, not current release authorization or
-funding activation. The current source still lacks a fresh canonical
+July 20 snapshot: PR #188 merged the hardening candidate to `main` at
+`12501870647aa362eb79bebdf786573a74321562`; its exact-main run exposed a
+UTC-midnight resolver-test defect. PR #192 fixed that defect and merged at
+`30ff480af66332a03c8ecc42d3b11fc0029dbf61` after all seven PR-head jobs passed.
+Its exact-main push run `29718185198` is still in progress and therefore is not
+yet release evidence. Render autodeploy is disabled; live remains historical
+commit `529c2b110eb0a08754f92f0a47d71adcdc32d61b`, so no current-source live guard
+exists. The present release train expands the guard to 55 mandatory observations:
+the signed source-release v1 authority subset remains exactly 32, while 23
+supplemental observations cover agent and problem-detail shutdown surfaces.
+All ten funding endpoints remain exact v3 `target: null`; launch authorization
+v1 cannot publish funding, and the general problem APIs omit actionable chain
+identifiers. Build Week is absent from navigation while its direct historical
+route remains available. This is merged/local source evidence plus historical
+live-portal evidence, not current live release authorization or funding
+activation. The current source still lacks a fresh canonical
 47-contract deployment, current manifest/reconciliation, live agent wallet
 run, immutable registry images, trusted four-host verifier matrices, strict
 open-witness launch boards, external audit, and counsel approval. Historical
@@ -54,7 +56,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 
 | Gate | Current status | Evidence today | Exit criteria |
 | --- | --- | --- | --- |
-| Gate 0: Public repo / unfunded portal | Live and fail-closed; exact-head CI and externally ratified v3 source authority remain open | Local verifier/web/API/contract gates, a published CI workflow, live least-privilege PostgreSQL authority, a 26-case production migration receipt, a concurrency/ACL rehearsal, and a fresh 32-route release guard with every funding target null. This authorizes the public unfunded portal only; it does not authorize testnet settlement or real ETH. | Complete final exact-head CI and independent artifact replay; establish the externally pinned and threshold-ratified v3 source-release chain; retain a successful push run and release guard for each source release; upgrade the private repository/account tier or make the repository public so protected branch/ruleset enforcement is available; enable private vulnerability reporting through a supported GitHub surface |
+| Gate 0: Public repo / unfunded portal | Historical live portal is fail-closed; current exact-main CI, deploy, guard, and externally ratified v3 source authority remain open | Local verifier/web/API/contract gates, a published CI workflow, historical least-privilege PostgreSQL authority and release receipt, and a local 55-observation guard whose exact 32-observation authority subset is unchanged while 23 supplemental checks cover shutdown surfaces. Every current funding target is null. This authorizes no testnet settlement or real ETH. | Complete exact-main CI, deploy that immutable commit explicitly, retain the fresh 55-observation live guard, and independently replay artifacts; establish the externally pinned and threshold-ratified v3 source-release chain; upgrade the private repository/account tier or make the repository public so protected branch/ruleset enforcement is available; enable private vulnerability reporting through a supported GitHub surface |
 | Gate 1: Base Sepolia testnet | Open - no current canonical DA-refactored deployment or current reconciliation | Python reference model, portal-local commit/reveal, local DA/permanence evidence validator, DGX/Hermes verifier-runner runbook plus burst-drill validator, local Hardhat contract scaffold tests for registry/pool/payout/submission/challenge/resolver invariants plus seeded payout/bond property checks, Base Sepolia deployment-manifest scaffold, read-only reconciliation script, and stale historical Base Sepolia evidence for old bytecode | Fresh deployed verified DA-refactored contracts, current testnet addresses, current manifest, current indexer reconciliation, on-chain-at-reveal DA verified on that deployment, live agent wallet/operator run, DGX reveal-watcher dry run, integrated resolver transcript, runner burst report, strict open-witness launch-board evidence, and a fresh adversarial campaign report |
 | Gate 2: Real ETH pilot | Blocked | Conservative copy, gate docs, tested admission tooling, immutable-image `admit-ready` scaffold, signed exact-ten host collector, draft wallet/session policy, opt-in mutation API-key gate, and legal memo validator | External audit, counsel-signed legal memo, KYC/sanctions/ToS approval, immutable registry image digests, collected trusted four-host verifier matrix, named multisig/guardian, distributed state/abuse controls, incident drill, bug bounty |
 | Gate 3: Scale | Blocked by Gate 1/2 | Spec only | Fraud-proof/equivalent verifier execution proof, independent monitoring, censorship fallback, incident-free caps review |
@@ -68,8 +70,8 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 | Portal honesty copy | Pass for Phase 0 | Homepage and problem pages must say Phase 0/testnet/not audited/no real settlement | Keep copy aligned with this posture before every public deploy |
 | CID-bound commit/reveal | Pass | `web/src/lib/portal-state.ts` and route tests | None |
 | Solver signature for non-local commits | Pass | EIP-191 authorization tests | None |
-| Challenge/onramp fail closed | Pass | `501` challenge route; Base Sepolia wallet onramp `409` | None |
-| Per-problem donation pools | Phase 0 only | API/UI expose dedicated `donationWallet` state for all 10 boards, all currently `not-deployed` with no address or transfer action | Deploy and reconcile a bytecode-backed Base Sepolia pool per problem before publishing an address; do not imply mainnet settlement or real-value custody |
+| Challenge/onramp fail closed | Pass | `501` challenge route; Coinbase Onramp capability returns unconditional `503` and creates no session | None |
+| Per-problem donation pools | Structurally dormant | Internal models retain per-problem pool state, but general list/detail APIs omit wallet, pool, registry, transaction, destination, explorer, and transfer identifiers. The dedicated endpoint emits exact v3 `target: null`; v4 is a reserved schema rejected by the client. | Implement and externally review a new signed launch-authorization version that binds exact legal artifacts and an acknowledgement protocol; deploy and reconcile bytecode-backed pools before any actionable target can be published |
 | Solver winnings reinvestment | Source-complete, deployment pending | A solver may atomically direct a matured award into another active pool in the same frozen canonical registry. The source claim rolls back on any destination failure, the destination sponsorship remains attributed to the solver, and frontier/title records are unchanged. The autonomous agent accepts only manifest-bound destinations, preflights armed/open/cap/deadline state, waits without exhausting its retry budget, and falls back to an ordinary claim during the final 24 hours before expiry rather than destroy an award. Multi-board checkpoints bind the source settlement to the destination sponsorship by transaction, solver, both pools, gross award, fee, and net amount. Economically this is recycled sponsorship, including the destination's ordinary zero-credit refund policy, rather than an irrevocable charitable gift | Deploy, externally audit, reconcile, and expose only authorization-bound production destinations |
 | Portal state/rate limits/idempotency/events | Pass on live Render PostgreSQL 18.4 for the unfunded portal; provider-superuser authority remains an operational precondition | [`portal-db-cutover-2026-07-18.json`](evidence/portal-db-cutover-2026-07-18.json) binds source `6a2aa37`, live deploy `dep-d9djfhcvikkc73b7qbpg`, the preprovisioned `p42_portal` schema, distinct owner/runtime credentials, the empty-state import checksum, and the fail-closed start command that runs migration then unsets the owner URL before launching Next.js. Render jobs passed all 26 migration/tamper cases and the production concurrency rehearsal: two state-lock connections, direct history mutation and truncate denial, stale-transition rejection, 10,000 acceptances, six simultaneous exact readers with zero mutual blockers, one observed transition blocker, 2 ms release latency against a 2,000 ms ceiling, and eight atomic rate-limit increments. The authenticated live guard then bound branch/runtime/live commit, board projection `sha256:ec42d67bc8d67d3732fc363b371b6c2e4acffa256c107df887ad3501cb6a0137`, 32/32 routes, and all-null funding targets. PostgreSQL provider superusers remain outside application ACL control, and any restore, provider upgrade, role-graph change, or schema migration invalidates this receipt until replayed. | Retain the final exact-head CI and source-release v3 authorization chain; monitor role/schema/function/OID drift and rerun provisioning checks, migration integration, concurrency rehearsal, and the live guard after every relevant provider or source change. Do not publish a funding target from this unfunded receipt. |
 | Security disclosure text | Pass in repo | `SECURITY.md` | Repo owner must enable GitHub private vulnerability reporting |
