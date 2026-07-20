@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import fcntl
 from functools import lru_cache
 import hashlib
+from importlib.resources import files
 import json
 import math
 import os
@@ -1597,9 +1598,12 @@ def _read_private_regular_bytes(path: Path) -> bytes:
 
 @lru_cache(maxsize=1)
 def _runner_transcript_validator() -> jsonschema.Draft202012Validator:
-    schema_path = Path(__file__).resolve().parents[2] / "schemas/runner-transcript.schema.json"
     try:
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        schema = json.loads(
+            files("p42_prizes").joinpath(
+                "schema_resources/runner-transcript.schema.json"
+            ).read_text(encoding="utf-8")
+        )
         jsonschema.Draft202012Validator.check_schema(schema)
         return jsonschema.Draft202012Validator(schema)
     except (OSError, ValueError, jsonschema.SchemaError) as exc:
