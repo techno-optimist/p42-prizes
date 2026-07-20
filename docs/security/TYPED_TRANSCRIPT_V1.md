@@ -65,7 +65,7 @@ The machine-readable constants are normative:
 - `squeezeExtension`: supported
 - canonical source limb: one KoalaBear element in `[0, 2130706433)`
 
-### `outer-bn254-v1`
+### `outer-bn254-rate-koalabear-v1`
 
 - profile ID: `2`
 - field ID: `2`
@@ -75,13 +75,19 @@ The machine-readable constants are normative:
 - Poseidon2 width: `3`
 - rate: `2`
 - capacity: `1`
-- maximum `squeezeBits` request: `253`
-- `squeezeExtension`: forbidden
-- canonical native limb: one BN254 scalar in `[0, modulus)`
+- maximum `squeezeBits` request: `30`
+- `squeezeExtension`: supported using the existing SP1 four-coefficient
+  KoalaBear extension basis
+- rate-word field: BN254
+- exposed challenge field: KoalaBear only
 
 The profiles share event semantics and framing but use their own permutation
-and field. Their challenge values are not expected to equal one another.
-Equality is required between implementations of the same profile.
+and rate-word field. Both expose only typed KoalaBear scalar, SP1 extension,
+and `[1, 31)` bit challenges. The outer profile is a bounded adapter around
+BN254 rate words; it is not a native-BN254 challenger and does not define a
+new BN254 PCS. Equality is required between implementations of the same
+profile only after the successor fork fixes the exact permutations and SP1
+extension basis.
 
 ## Constants
 
@@ -152,7 +158,6 @@ again while constructing the recursion circuit.
 | `extension4KoalaBearDirect` | `3` | four canonical coefficients per extension element |
 | `extension4KoalaBearPacked8` | `4` | flattened coefficients packed in groups of eight |
 | `koalaBearDigest8` | `5` | eight direct KoalaBear words per digest |
-| `bn254Native` | `6` | one canonical BN254 word per digest or commitment |
 | `container` | `7` | empty payload for collection boundary events |
 | `squeezeRequest` | `8` | empty payload for a typed squeeze request |
 | `koalaBearDigest8Packed8` | `9` | exactly one packed BN254 word per eight-word digest |
@@ -200,17 +205,21 @@ have different frames.
 ### Extension values
 
 An extension element is exactly four KoalaBear coefficients in the basis and
-coefficient order already fixed by the reviewed SP1 field configuration.
-Implementations MUST document and test that basis. The outer profile flattens
-the coefficients in element order, then applies the same eight-limb packing.
+coefficient order used by the successor SP1 fork. This design does not assert
+that basis has received cryptographic review. Implementations MUST pin and test
+it in the successor SP1 fork. The
+outer profile flattens coefficients in element order, then applies the same
+eight-limb packing. This document does not choose a replacement extension or
+PCS representation.
 
 ### Digests and commitments
 
 Digest and commitment events are distinct even when their numeric payloads
 match. An inner KoalaBear digest has exactly eight canonical words. The outer
-encoding of that digest has exactly one packed word. A native BN254 digest or
-commitment has exactly one canonical BN254 word. No digest may be silently
-split into scalar observations.
+encoding of that digest has exactly one packed word. `bn254Native` is not a V1
+encoding: adding it would expand this bounded transcript adapter into an
+unreviewed native-BN254 PCS redesign. No digest may be silently split into
+scalar observations.
 
 ## Event frame
 
@@ -242,10 +251,12 @@ renumbered during recursion witness generation.
   selected profile.
 
 Initialization is performed by absorbing this frame into an all-zero state.
-This first permutation cryptographically binds the envelope before any proof
-material or squeeze request is accepted. Using a nonzero initial state,
-absorbing an empty initialization frame, or carrying the envelope only as
-unhashed metadata is forbidden.
+The intended successor implementation MUST make this first permutation bind
+the envelope before any proof material or squeeze request is accepted. These
+design files do not contain permutation outputs and therefore do not establish
+that binding cryptographically. Using a nonzero initial state, absorbing an
+empty initialization frame, or carrying the envelope only as unhashed metadata
+is forbidden.
 
 ## Duplex block framing
 
@@ -324,18 +335,35 @@ A squeeze is itself an event. Absorb the applicable typed squeeze frame using
 phase `1`, then enter `Squeezing` and read outputs from the final permutation's
 rate lanes in lane order.
 
-- `squeezeField(n)` consumes `n` base-field outputs.
-- Under `inner-koalabear-v1`, `squeezeExtension(n)` consumes `4*n` base-field
-  outputs and groups them in the fixed extension coefficient order.
-- Under `outer-bn254-v1`, `squeezeExtension` is forbidden. V1 defines no outer
-  extension field, coefficient basis, or challenge conversion, and the API
-  MUST reject the request before mutating transcript state.
+- `squeezeField(n)` returns `n` canonical KoalaBear scalars under both
+  profiles.
+- `squeezeExtension(n)` returns `n` values in the existing four-coefficient
+  SP1 KoalaBear extension under both profiles.
 - `squeezeBits(b)` consumes exactly one physical base-field output, regardless
   of `b`, and returns its `b` low-order bits in little-endian order. It never
-  creates a squeeze-continuation block. The exact accepted ranges are
-  `[1, 31)` for
-  `inner-koalabear-v1` and `[1, 254)` for `outer-bn254-v1`. Zero, `31` inner,
-  `254` outer, and all larger requests MUST be rejected before state mutation.
+  creates a squeeze-continuation block. The exact accepted range is `[1, 31)`
+  under both profiles. Zero, `31`, and all larger requests MUST be rejected
+  before state mutation.
+
+For `outer-bn254-rate-koalabear-v1`, a physical output is a canonical BN254
+rate word `w`. It is converted as follows; no BN254 challenge is exposed:
+
+1. For a scalar coefficient, compute `c = w mod 2130706433` using the canonical
+   integer representative of `w`. Return `c` as a canonical KoalaBear scalar.
+   Exactly one BN254 rate word is consumed.
+2. For one extension challenge, extract exactly four consecutive scalar
+   coefficients, preserving order, then group them in the SP1 extension basis
+   pinned by the successor fork. Exactly four rate words are consumed.
+3. For `squeezeBits(b)`, where `1 <= b <= 30`, return `w mod 2^b` and consume
+   exactly one rate word.
+
+Every source word MUST first be canonical in BN254. Exhaustion, a noncanonical
+source word, or a request outside the stated types and bounds fails before any
+challenge is returned. This one-word-per-coefficient rule is fixed and bounded;
+there is no rejection loop or variable challenge-consumption schedule. The
+committed extraction vectors exercise zero and modulus reduction, extension
+grouping, bit bounds, and source-word range checks. They are arithmetic vectors
+over supplied rate words, not Poseidon2 outputs.
 
 If more physical outputs are required after the current rate lanes are
 exhausted, perform a squeeze-continuation block:
@@ -429,6 +457,75 @@ verifier entry point. There is no automatic detection, fallback, conversion,
 or in-place state upgrade. A V1 proof envelope presented to a legacy verifier
 must also fail closed.
 
+## Proof-mode and profile routing
+
+Routing is selected by an explicit proof-mode entry point before decoding. It
+MUST NOT be inferred from payload length, selector bytes, a failed parse, or an
+SDK default. The machine-readable matrix in `typed-transcript-v1.json` is
+normative.
+
+| Proof mode | V0 decoder | V1 decoder | V1 profile | V1 gateway action |
+| --- | --- | --- | --- | --- |
+| core | `legacy-v0-core` | `typed-v1-core` | `inner-koalabear-v1` | none |
+| compressed | `legacy-v0-compressed` | `typed-v1-compressed` | `inner-koalabear-v1` | none |
+| shrink | `legacy-v0-shrink` | `typed-v1-shrink` | `inner-koalabear-v1` | none |
+| wrap | `legacy-v0-wrap` | `typed-v1-wrap` | `outer-bn254-rate-koalabear-v1` | none |
+| Groth16 | `legacy-v0-groth16` | `p42-v1-gateway-groth16` | `outer-bn254-rate-koalabear-v1` | validate, bind, strip, forward |
+| Plonk | `legacy-v0-plonk` | `p42-v1-gateway-plonk` | `outer-bn254-rate-koalabear-v1` | validate, bind, strip, forward |
+
+Each V0 and V1 decoder is a distinct type and entry point. A V0 input to a V1
+decoder returns `V0_TO_V1_DECODER`; a V1 input to a V0 decoder returns
+`V1_TO_V0_DECODER`. Parse failure MUST NOT trigger a retry with another version
+or proof mode. Core, compressed, shrink, and wrap V1 formats carry their exact
+profile envelope and reject the corresponding V0 shape. Groth16 and Plonk use
+the gateway format below.
+
+This matrix does not claim that the listed V1 decoders, circuits, keys, or
+proofs exist. It fixes the route an implementation must take.
+
+## P42 V1 Groth16/Plonk gateway
+
+The P42 V1 gateway wire shape is exactly:
+
+```text
+outer_envelope[16] || legacy_selector || legacy_payload
+```
+
+The suffix is deliberately the byte-for-byte legacy-shaped SP1
+`selector || payload`; the design does not redefine the SP1 proof payload or
+the BN254 PCS. Groth16 and Plonk have distinct gateway entry points and distinct
+deployment pins.
+
+Before calling the separately pinned, mode-specific SP1 verifier, the gateway
+MUST perform these steps in order:
+
+1. Require exactly 16 leading envelope bytes. Missing, truncated, extended,
+   noncanonical, or SDK-stripped envelopes fail closed.
+2. Require the exact outer bytes
+   `0x50343254545631000001020202020300`, including version `1`, profile `2`,
+   field `2`, permutation `2`, rate `2`, width `3`, and reserved byte `0`.
+3. Select the expected successor fork, wrapping VK, proof mode, selector, and
+   separately pinned SP1 verifier from deployment configuration. No value may
+   be selected only from attacker-controlled proof bytes.
+4. Verify through that pin that the successor wrapping proof's statement and
+   TypedTranscriptV1 initialization bind the same 16 envelope bytes. Merely
+   placing the envelope beside an otherwise legacy proof is insufficient.
+5. Only after steps 1-4 succeed, remove exactly the first 16 bytes and forward
+   the unchanged `selector || payload` suffix to the pinned SP1 verifier.
+
+The forwarded suffix MUST be byte-identical to the received suffix. The
+gateway MUST NOT normalize, replace, or reinterpret the selector. Failure at
+any step MUST occur before forwarding. SDKs MUST preserve the envelope and call
+the V1 gateway explicitly; silent SDK stripping, automatic legacy fallback,
+and direct forwarding of a V1 suffix around the gateway are prohibited.
+
+The schemas and gateway vectors validate ordering, exact envelope parameters,
+profile/parameter substitution, missing or unbound envelopes, wrong-mode
+routing, and suffix preservation. They do not verify a wrapping proof or prove
+that transcript binding has been implemented. Exact successor fork, VK,
+selector, contract address, chain, and codehash pins remain release artifacts
+outside this design and are mandatory before activation.
+
 ## Required implementation sites
 
 A complete implementation requires one reviewed SP1/Slop fork and coordinated
@@ -495,20 +592,24 @@ permission to reuse an unversioned identity.
 
 ## Shared vectors
 
-`typed-transcript-vectors-v1.json` contains three classes of ordered structural
-vectors:
+`typed-transcript-vectors-v1.json` contains ordered structural, extraction,
+routing, and gateway vectors:
 
 - positive transcripts with an exact envelope, all events in order, an exact
   initial snapshot, exact before/after structural snapshots for every step,
   exact frame words, absorb blocks, squeeze-continuation blocks, and an exact
   final structural snapshot;
 - collision-negative transcript pairs whose complete ordered encodings must
-  differ; and
+  differ;
 - rejection transcripts covering envelope substitution, counter gaps,
   unbalanced or miscounted nesting, squeeze inside both collection kinds,
-  profile bit
-  bounds, forbidden outer extension squeeze, noncanonical packed digits, and
-  undeclared high digits.
+  profile bit bounds, forbidden native-BN254 PCS input, noncanonical packed
+  digits, and undeclared high digits;
+- outer rate-word extraction cases for KoalaBear scalar modulus reduction,
+  four-coefficient SP1 extension grouping, and `[1, 31)` bit challenges;
+- all V0/V1 proof-mode routes plus cross-version rejection; and
+- P42 V1 gateway cases for exact envelope validation, substitution rejection,
+  proof-bound-envelope presence, mode rejection, and exact suffix forwarding.
 
 The initial vectors are independent of the vulnerable code. They intentionally
 stop before permutation output. `cryptographicOutputsIncluded` is fixed to
@@ -518,10 +619,11 @@ this is a refusal to invent cryptographic expectations, not a wildcard that a
 future implementation may ignore.
 
 `idRegistry` is the sorted projection of every ID in the positive,
-collision-negative, and rejection categories. JSON Schema requires registry
-entries to be unique. The semantic validator additionally requires the
-registry to equal the complete projection and rejects any duplicate across or
-within those three categories as `DUPLICATE_VECTOR_ID`. Committed hostile
+collision-negative, rejection, extraction, proof-decoding, and gateway
+categories. JSON Schema requires registry entries to be unique. The semantic
+validator additionally requires the registry to equal the complete projection
+and rejects any duplicate across or within those categories as
+`DUPLICATE_VECTOR_ID`. Committed adversarial
 corpus mutations substitute a positive ID into a collision-negative vector and
 a rejection ID into a positive vector; both must fail.
 
@@ -530,7 +632,7 @@ slice and an open container. Each supplies literal before and expected-after
 snapshots around a forbidden squeeze. These expectations are not generated by
 the ordered-transcript helper. The validator executes the transition and
 requires the specified error plus byte-for-byte structural state equality.
-An additional literal regression accepts outer `squeezeBits(253)`, requires the
+An additional literal regression accepts outer `squeezeBits(30)`, requires the
 counter to advance by exactly one, and requires an empty continuation list.
 That expectation is committed independently of ordered-vector regeneration.
 
@@ -574,11 +676,13 @@ ordered nesting, event shape, base-`2^31` digit decomposition and KoalaBear
 range checks, profile-specific squeeze bounds, canonical frame construction,
 zero-padded block layout, capacity controls, initial/final/per-step structural
 snapshots, and structural separation of collision-negative transcripts. It
-also enforces the global ID registry, executes hostile duplicate-ID mutations,
-and checks independently asserted pre-mutation rejection snapshots for open
-slices and containers. It does not invoke Poseidon2, SP1, a recursion executor,
-Gnark, or a verifier. Its
-success MUST NOT be described as remediation or cryptographic closure.
+also checks bounded BN254-rate-word extraction into KoalaBear values, the
+proof-mode decoder matrix, P42 V1 gateway ordering and suffix preservation,
+the global ID registry, duplicate-ID mutations, and independently asserted
+pre-mutation rejection snapshots for open slices and containers. It does not
+invoke Poseidon2, SP1, a recursion executor, Gnark, a gateway contract, or a
+verifier. Its success MUST NOT be described as remediation or cryptographic
+closure.
 
 ## Closure requirements outside this artifact
 

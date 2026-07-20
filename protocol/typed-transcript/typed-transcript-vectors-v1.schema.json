@@ -4,7 +4,7 @@
   "title": "TypedTranscriptV1 ordered structural vectors",
   "type": "object",
   "additionalProperties": false,
-  "required": ["artifactStatus", "cryptographicOutputsIncluded", "protocolId", "version", "idRegistry", "positiveTranscripts", "collisionNegativeTranscripts", "rejectionVectors", "independentStateTransitionRegressions", "hostileCorpusMutations"],
+  "required": ["artifactStatus", "cryptographicOutputsIncluded", "protocolId", "version", "idRegistry", "positiveTranscripts", "collisionNegativeTranscripts", "rejectionVectors", "outerChallengeExtractionVectors", "proofDecodingVectors", "gatewayVectors", "independentStateTransitionRegressions", "hostileCorpusMutations"],
   "properties": {
     "$schema": {"type": "string"},
     "artifactStatus": {"const": "design-only-non-activating"},
@@ -20,12 +20,15 @@
     "positiveTranscripts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/transcript"}},
     "collisionNegativeTranscripts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/collisionPair"}},
     "rejectionVectors": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/rejection"}},
+    "outerChallengeExtractionVectors": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/outerExtraction"}},
+    "proofDecodingVectors": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/proofDecoding"}},
+    "gatewayVectors": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/gatewayVector"}},
     "independentStateTransitionRegressions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stateRegression"}},
     "hostileCorpusMutations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/hostileMutation"}}
   },
   "$defs": {
     "word": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"},
-    "profile": {"enum": ["inner-koalabear-v1", "outer-bn254-v1"]},
+    "profile": {"enum": ["inner-koalabear-v1", "outer-bn254-rate-koalabear-v1"]},
     "event": {
       "type": "object",
       "additionalProperties": false,
@@ -128,6 +131,47 @@
         "envelopeHex": {"type": ["string", "null"]},
         "events": {"type": "array", "items": {"$ref": "#/$defs/event"}},
         "expectedErrorCode": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"}
+      }
+    },
+    "outerExtraction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "rateWords", "bits", "expectedValues", "expectedConsumedRateWords", "expectedErrorCode"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "kind": {"enum": ["scalar", "extension", "bits"]},
+        "rateWords": {"type": "array", "items": {"$ref": "#/$defs/word"}},
+        "bits": {"type": ["integer", "null"], "minimum": 0},
+        "expectedValues": {"type": "array", "items": {"$ref": "#/$defs/word"}},
+        "expectedConsumedRateWords": {"type": ["integer", "null"], "minimum": 0},
+        "expectedErrorCode": {"type": ["string", "null"], "pattern": "^[A-Z][A-Z0-9_]*$"}
+      }
+    },
+    "proofDecoding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "proofMode", "decoderVersion", "inputVersion", "expectedDecoder", "expectedErrorCode"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "proofMode": {"enum": ["core", "compressed", "shrink", "wrap", "groth16", "plonk"]},
+        "decoderVersion": {"enum": ["v0", "v1"]},
+        "inputVersion": {"enum": ["v0", "v1"]},
+        "expectedDecoder": {"type": ["string", "null"]},
+        "expectedErrorCode": {"type": ["string", "null"], "pattern": "^[A-Z][A-Z0-9_]*$"}
+      }
+    },
+    "gatewayVector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "proofMode", "presentedEnvelopeHex", "successorProofBoundEnvelopeHex", "selectorPayloadHex", "expectedForwardedHex", "expectedErrorCode"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "proofMode": {"enum": ["core", "compressed", "shrink", "wrap", "groth16", "plonk"]},
+        "presentedEnvelopeHex": {"type": ["string", "null"]},
+        "successorProofBoundEnvelopeHex": {"type": ["string", "null"]},
+        "selectorPayloadHex": {"type": "string"},
+        "expectedForwardedHex": {"type": ["string", "null"]},
+        "expectedErrorCode": {"type": ["string", "null"], "pattern": "^[A-Z][A-Z0-9_]*$"}
       }
     },
     "stateRegression": {

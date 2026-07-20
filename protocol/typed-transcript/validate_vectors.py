@@ -166,7 +166,7 @@ def validate_event_shape(
     packed_width = constants["koalaBearValuesPerBn254Word"]
     packing_radix = constants["koalaBearPackingRadix"]
     kb_modulus = int(spec["fieldProfiles"]["inner-koalabear-v1"]["modulus"])
-    bn254_modulus = int(spec["fieldProfiles"]["outer-bn254-v1"]["modulus"])
+    bn254_modulus = int(spec["fieldProfiles"]["outer-bn254-rate-koalabear-v1"]["modulus"])
     profile = spec["fieldProfiles"][profile_name]
     is_inner = profile_name == "inner-koalabear-v1"
     expected_payload_length: int | None = None
@@ -197,8 +197,6 @@ def validate_event_shape(
             expected_payload_length = logical_length * 8
         elif not is_inner and encoding == "koalaBearDigest8Packed8":
             expected_payload_length = logical_length
-        elif not is_inner and encoding == "bn254Native":
-            expected_payload_length = logical_length
     elif tag in {"sliceBegin", "containerBegin"} and encoding == "container":
         expected_payload_length = 0
     elif tag in {"sliceEnd", "containerEnd"} and encoding == "container":
@@ -211,10 +209,7 @@ def validate_event_shape(
         if tag == "squeezeBits" and logical_length > profile["maxSqueezeBits"]:
             reject("SQUEEZE_BITS_RANGE", "squeezeBits exceeds the profile bound")
         if tag == "squeezeExtension" and not profile["supportsSqueezeExtension"]:
-            reject(
-                "OUTER_EXTENSION_SQUEEZE_FORBIDDEN",
-                "outer-bn254-v1 has no defined extension challenge encoding",
-            )
+            reject("EXTENSION_SQUEEZE_FORBIDDEN", "profile has no extension challenge encoding")
         expected_payload_length = 0
 
     if expected_payload_length is None or payload_length != expected_payload_length:
@@ -235,8 +230,6 @@ def validate_event_shape(
             decompose_packed_word(word, packed_width, packing_radix, kb_modulus)
             if word >= bn254_modulus:
                 reject("NONCANONICAL_BN254_WORD", "packed digest is outside BN254")
-    elif encoding == "bn254Native" and any(word < 0 or word >= bn254_modulus for word in payload):
-        reject("NONCANONICAL_BN254_WORD", "native BN254 payload word is noncanonical")
 
 
 def block_control(
@@ -425,8 +418,10 @@ def validate_spec_invariants(spec: dict[str, Any]) -> None:
             "capacity": 8,
             "maxSqueezeBits": 30,
             "supportsSqueezeExtension": True,
+            "rateField": "koalabear",
+            "challengeField": "koalabear",
         },
-        "outer-bn254-v1": {
+        "outer-bn254-rate-koalabear-v1": {
             "profileId": 2,
             "fieldId": 2,
             "permutationId": 2,
@@ -434,8 +429,10 @@ def validate_spec_invariants(spec: dict[str, Any]) -> None:
             "width": 3,
             "rate": 2,
             "capacity": 1,
-            "maxSqueezeBits": 253,
-            "supportsSqueezeExtension": False,
+            "maxSqueezeBits": 30,
+            "supportsSqueezeExtension": True,
+            "rateField": "bn254",
+            "challengeField": "koalabear",
         },
     }
     if spec["fieldProfiles"] != expected_profiles:
@@ -459,9 +456,8 @@ def validate_spec_invariants(spec: dict[str, Any]) -> None:
             reject("SPEC_WIDTH", "profile width must equal rate plus capacity")
         if profile["rate"] > 15:
             reject("SPEC_RATE", "the occupied-lane control field is four bits")
-        expected_bits = int(profile["modulus"]).bit_length() - 1
-        if profile["maxSqueezeBits"] != expected_bits:
-            reject("SPEC_SQUEEZE_BITS", "maxSqueezeBits must equal floor(log2(modulus))")
+        if profile["maxSqueezeBits"] != 30:
+            reject("SPEC_SQUEEZE_BITS", "all exposed V1 bit challenges must be less than 31 bits")
     constants = spec["constants"]
     if not (
         constants["occupiedShift"] == constants["blockIndexBits"]
@@ -478,6 +474,41 @@ def validate_spec_invariants(spec: dict[str, Any]) -> None:
         maximum = block_control(spec, profile, "squeezeContinuation", 65535, profile["rate"], True)
         if maximum >= int(profile["modulus"]):
             reject("SPEC_CONTROL_RANGE", f"capacity control is noncanonical for {profile_name}")
+    extraction = spec["outerChallengeExtraction"]
+    if extraction != {
+        "source": "bn254-rate-word",
+        "scalarMethod": "bn254-mod-koalabear",
+        "koalaBearModulus": 2130706433,
+        "extensionDegree": 4,
+        "extensionBasis": "sp1-koalabear-extension4-pinned-by-successor-fork",
+        "bitsMethod": "low-bits",
+        "minChallengeBits": 1,
+        "maxChallengeBits": 30,
+        "nativeBn254Challenges": False,
+    }:
+        reject("SPEC_OUTER_EXTRACTION", "outer challenge extraction parameters are not frozen V1")
+    expected_modes = {"core", "compressed", "shrink", "wrap", "groth16", "plonk"}
+    if set(spec["proofModeRouting"]) != expected_modes:
+        reject("SPEC_PROOF_MODES", "proof-mode routing matrix must be exhaustive")
+    for mode, route in spec["proofModeRouting"].items():
+        expected_profile = (
+            "inner-koalabear-v1" if mode in {"core", "compressed", "shrink"}
+            else "outer-bn254-rate-koalabear-v1"
+        )
+        expected_gateway = "validate-bind-strip-forward" if mode in {"groth16", "plonk"} else "none"
+        if route["v1Profile"] != expected_profile or route["gateway"] != expected_gateway:
+            reject("SPEC_PROOF_ROUTE", f"invalid V1 route for {mode}")
+        if route["v0Decoder"] == route["v1Decoder"]:
+            reject("SPEC_DECODER_ALIAS", f"V0 and V1 decoders alias for {mode}")
+    gateway = spec["gateway"]
+    if not (
+        gateway["outerEnvelopeBytes"] == 16
+        and gateway["outerProfile"] == "outer-bn254-rate-koalabear-v1"
+        and gateway["requiresSuccessorProofEnvelopeBinding"]
+        and gateway["stripAfterValidationOnly"]
+        and not gateway["silentSdkStrippingAllowed"]
+    ):
+        reject("SPEC_GATEWAY", "P42 V1 gateway invariants are not frozen")
 
 
 def validate_rejection(
@@ -503,13 +534,19 @@ def vector_category(vectors: dict[str, Any], category: str) -> list[dict[str, An
         "positive": vectors["positiveTranscripts"],
         "collision-negative": vectors["collisionNegativeTranscripts"],
         "rejection": vectors["rejectionVectors"],
+        "outer-extraction": vectors["outerChallengeExtractionVectors"],
+        "proof-decoding": vectors["proofDecodingVectors"],
+        "gateway": vectors["gatewayVectors"],
     }[category]
 
 
 def validate_global_vector_ids(vectors: dict[str, Any]) -> None:
     seen: set[str] = set()
     ids = []
-    for category in ("positive", "collision-negative", "rejection"):
+    for category in (
+        "positive", "collision-negative", "rejection", "outer-extraction",
+        "proof-decoding", "gateway",
+    ):
         for vector in vector_category(vectors, category):
             vector_id = vector["id"]
             if vector_id in seen:
@@ -562,6 +599,119 @@ def validate_hostile_id_mutation(vectors: dict[str, Any], mutation: dict[str, An
         raise ValueError(f"{mutation['id']}: duplicate ID mutation was accepted")
 
 
+def extract_outer_challenge(
+    spec: dict[str, Any], vector: dict[str, Any]
+) -> tuple[list[str], int]:
+    outer = spec["fieldProfiles"]["outer-bn254-rate-koalabear-v1"]
+    modulus = int(outer["modulus"])
+    extraction = spec["outerChallengeExtraction"]
+    words = [int(word) for word in vector["rateWords"]]
+    if any(word < 0 or word >= modulus for word in words):
+        reject("NONCANONICAL_BN254_RATE_WORD", "outer rate word is not canonical BN254")
+    kind = vector["kind"]
+    if kind == "bits":
+        bits = vector.get("bits")
+        if bits is None or not extraction["minChallengeBits"] <= bits <= extraction["maxChallengeBits"]:
+            reject("SQUEEZE_BITS_RANGE", "outer bit challenge must be in [1, 31)")
+        if not words:
+            reject("EXTRACTION_EXHAUSTED", "bit extraction requires one rate word")
+        return [str(words[0] % (1 << bits))], 1
+
+    required = 1 if kind == "scalar" else extraction["extensionDegree"]
+    if len(words) < required:
+        reject("EXTRACTION_EXHAUSTED", "rate words contain too few KoalaBear coefficients")
+    values = [str(word % extraction["koalaBearModulus"]) for word in words[:required]]
+    return values, required
+
+
+def validate_outer_extraction(spec: dict[str, Any], vector: dict[str, Any]) -> None:
+    expected_error = vector["expectedErrorCode"]
+    try:
+        values, consumed = extract_outer_challenge(spec, vector)
+    except TranscriptValidationError as exc:
+        if expected_error != exc.code:
+            raise ValueError(f"{vector['id']}: expected {expected_error}, got {exc.code}") from exc
+    else:
+        if expected_error is not None:
+            raise ValueError(f"{vector['id']}: extraction was unexpectedly accepted")
+        if values != vector["expectedValues"] or consumed != vector["expectedConsumedRateWords"]:
+            raise ValueError(f"{vector['id']}: outer extraction expectation mismatch")
+
+
+def decode_hex_bytes(value: str, code: str) -> bytes:
+    if not value.startswith("0x"):
+        reject(code, "byte string must use lowercase 0x-prefixed hex")
+    try:
+        decoded = bytes.fromhex(value[2:])
+    except ValueError:
+        reject(code, "byte string is not hexadecimal")
+    if value != "0x" + decoded.hex():
+        reject(code, "byte string is not canonical lowercase hex")
+    return decoded
+
+
+def route_proof_decoder(spec: dict[str, Any], vector: dict[str, Any]) -> str:
+    route = spec["proofModeRouting"][vector["proofMode"]]
+    decoder_version = vector["decoderVersion"]
+    input_version = vector["inputVersion"]
+    if decoder_version != input_version:
+        reject(
+            "V0_TO_V1_DECODER" if decoder_version == "v1" else "V1_TO_V0_DECODER",
+            "proof versions cannot be auto-detected, converted, or passed across decoders",
+        )
+    return route[f"{decoder_version}Decoder"]
+
+
+def validate_decoding_vector(spec: dict[str, Any], vector: dict[str, Any]) -> None:
+    expected_error = vector["expectedErrorCode"]
+    try:
+        decoder = route_proof_decoder(spec, vector)
+    except TranscriptValidationError as exc:
+        if expected_error != exc.code:
+            raise ValueError(f"{vector['id']}: expected {expected_error}, got {exc.code}") from exc
+    else:
+        if expected_error is not None:
+            raise ValueError(f"{vector['id']}: cross-version decode was unexpectedly accepted")
+        if decoder != vector["expectedDecoder"]:
+            raise ValueError(f"{vector['id']}: decoder route mismatch")
+
+
+def run_gateway(spec: dict[str, Any], vector: dict[str, Any]) -> str:
+    if vector["proofMode"] not in {"groth16", "plonk"}:
+        reject("GATEWAY_PROOF_MODE", "P42 V1 gateway accepts only Groth16 or Plonk")
+    presented = vector["presentedEnvelopeHex"]
+    if presented is None:
+        reject("ENVELOPE_MISSING", "P42 V1 gateway requires the outer envelope")
+    presented_bytes = decode_envelope(
+        spec, "outer-bn254-rate-koalabear-v1", presented
+    )
+    bound = vector["successorProofBoundEnvelopeHex"]
+    if bound is None:
+        reject("GATEWAY_ENVELOPE_UNBOUND", "successor wrapping proof must bind the envelope")
+    bound_bytes = decode_hex_bytes(bound, "GATEWAY_BOUND_ENVELOPE")
+    if presented_bytes != bound_bytes:
+        reject("GATEWAY_ENVELOPE_BINDING", "presented and proof-bound envelopes differ")
+    decode_envelope(spec, "outer-bn254-rate-koalabear-v1", bound)
+    forwarded = decode_hex_bytes(vector["selectorPayloadHex"], "GATEWAY_SELECTOR_PAYLOAD")
+    if len(forwarded) < 4:
+        reject("GATEWAY_SELECTOR_PAYLOAD", "legacy-shaped selector plus payload is truncated")
+    return "0x" + forwarded.hex()
+
+
+def validate_gateway_vector(spec: dict[str, Any], vector: dict[str, Any]) -> None:
+    expected_error = vector["expectedErrorCode"]
+    try:
+        forwarded = run_gateway(spec, vector)
+    except TranscriptValidationError as exc:
+        if expected_error != exc.code:
+            raise ValueError(f"{vector['id']}: expected {expected_error}, got {exc.code}") from exc
+    else:
+        if expected_error is not None:
+            raise ValueError(f"{vector['id']}: gateway input was unexpectedly accepted")
+        if forwarded != vector["expectedForwardedHex"]:
+            raise ValueError(f"{vector['id']}: gateway forwarded bytes mismatch")
+
+
 def validate_semantics(spec: dict[str, Any], vectors: dict[str, Any]) -> None:
     validate_spec_invariants(spec)
     validate_global_vector_ids(vectors)
@@ -580,6 +730,15 @@ def validate_semantics(spec: dict[str, Any], vectors: dict[str, Any]) -> None:
 
     for rejection in vectors["rejectionVectors"]:
         validate_rejection(spec, rejection)
+
+    for vector in vectors["outerChallengeExtractionVectors"]:
+        validate_outer_extraction(spec, vector)
+
+    for vector in vectors["proofDecodingVectors"]:
+        validate_decoding_vector(spec, vector)
+
+    for vector in vectors["gatewayVectors"]:
+        validate_gateway_vector(spec, vector)
 
     regression_ids: set[str] = set()
     for regression in vectors["independentStateTransitionRegressions"]:

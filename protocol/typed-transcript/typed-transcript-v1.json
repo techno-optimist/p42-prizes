@@ -14,9 +14,11 @@
       "rate": 8,
       "capacity": 8,
       "maxSqueezeBits": 30,
-      "supportsSqueezeExtension": true
+      "supportsSqueezeExtension": true,
+      "rateField": "koalabear",
+      "challengeField": "koalabear"
     },
-    "outer-bn254-v1": {
+    "outer-bn254-rate-koalabear-v1": {
       "profileId": 2,
       "fieldId": 2,
       "permutationId": 2,
@@ -24,9 +26,22 @@
       "width": 3,
       "rate": 2,
       "capacity": 1,
-      "maxSqueezeBits": 253,
-      "supportsSqueezeExtension": false
+      "maxSqueezeBits": 30,
+      "supportsSqueezeExtension": true,
+      "rateField": "bn254",
+      "challengeField": "koalabear"
     }
+  },
+  "outerChallengeExtraction": {
+    "source": "bn254-rate-word",
+    "scalarMethod": "bn254-mod-koalabear",
+    "koalaBearModulus": 2130706433,
+    "extensionDegree": 4,
+    "extensionBasis": "sp1-koalabear-extension4-pinned-by-successor-fork",
+    "bitsMethod": "low-bits",
+    "minChallengeBits": 1,
+    "maxChallengeBits": 30,
+    "nativeBn254Challenges": false
   },
   "versionEnvelope": {
     "wireLengthBytes": 16,
@@ -75,10 +90,28 @@
     "extension4KoalaBearDirect": 3,
     "extension4KoalaBearPacked8": 4,
     "koalaBearDigest8": 5,
-    "bn254Native": 6,
     "container": 7,
     "squeezeRequest": 8,
     "koalaBearDigest8Packed8": 9,
     "versionEnvelopeU16": 10
+  },
+  "proofModeRouting": {
+    "core": {"v0Decoder": "legacy-v0-core", "v1Decoder": "typed-v1-core", "v1Profile": "inner-koalabear-v1", "gateway": "none"},
+    "compressed": {"v0Decoder": "legacy-v0-compressed", "v1Decoder": "typed-v1-compressed", "v1Profile": "inner-koalabear-v1", "gateway": "none"},
+    "shrink": {"v0Decoder": "legacy-v0-shrink", "v1Decoder": "typed-v1-shrink", "v1Profile": "inner-koalabear-v1", "gateway": "none"},
+    "wrap": {"v0Decoder": "legacy-v0-wrap", "v1Decoder": "typed-v1-wrap", "v1Profile": "outer-bn254-rate-koalabear-v1", "gateway": "none"},
+    "groth16": {"v0Decoder": "legacy-v0-groth16", "v1Decoder": "p42-v1-gateway-groth16", "v1Profile": "outer-bn254-rate-koalabear-v1", "gateway": "validate-bind-strip-forward"},
+    "plonk": {"v0Decoder": "legacy-v0-plonk", "v1Decoder": "p42-v1-gateway-plonk", "v1Profile": "outer-bn254-rate-koalabear-v1", "gateway": "validate-bind-strip-forward"}
+  },
+  "gateway": {
+    "name": "p42-v1",
+    "outerEnvelopeBytes": 16,
+    "outerProfile": "outer-bn254-rate-koalabear-v1",
+    "wireShape": "envelope16-selector-payload",
+    "forwardedShape": "selector-payload",
+    "requiresSuccessorProofEnvelopeBinding": true,
+    "stripAfterValidationOnly": true,
+    "silentSdkStrippingAllowed": false,
+    "legacyVerifierPinning": "separate-mode-specific-pin"
   }
 }
