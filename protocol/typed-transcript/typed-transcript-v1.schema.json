@@ -104,8 +104,10 @@
     "proofWire": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["legacyShape", "v1Shape", "selectorBytes", "modeBytes", "payloadLengthBytes", "payloadLengthByteOrder", "modeTags", "structuralTestSelectors"],
+      "required": ["scope", "appliesToGateway", "legacyShape", "v1Shape", "selectorBytes", "modeBytes", "payloadLengthBytes", "payloadLengthByteOrder", "modeTags", "structuralTestSelectors"],
       "properties": {
+        "scope": {"const": "decoder-only-synthetic-grammar"},
+        "appliesToGateway": {"const": false},
         "legacyShape": {"const": "selector4-mode1-length2-payload"},
         "v1Shape": {"const": "envelope16-selector4-mode1-length2-payload"},
         "selectorBytes": {"const": 4},
@@ -119,13 +121,14 @@
     "gateway": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "outerEnvelopeBytes", "outerProfile", "wireShape", "forwardedShape", "trustedConfigSource", "preVerificationEnvelopeBindingCheck", "bindingSource", "stripAfterValidationOnly", "silentSdkStrippingAllowed", "legacyVerifierPinning", "structuralTestPins"],
+      "required": ["name", "outerEnvelopeBytes", "outerProfile", "wireShape", "forwardedShape", "payloadSemantics", "trustedConfigSource", "preVerificationEnvelopeBindingCheck", "bindingSource", "stripAfterValidationOnly", "silentSdkStrippingAllowed", "legacyVerifierPinning", "structuralTestPins"],
       "properties": {
         "name": {"const": "p42-v1"},
         "outerEnvelopeBytes": {"const": 16},
         "outerProfile": {"const": "outer-bn254-rate-koalabear-v1"},
-        "wireShape": {"const": "envelope16-selector-payload"},
-        "forwardedShape": {"const": "selector-payload"},
+        "wireShape": {"const": "envelope16-selector4-opaque-payload"},
+        "forwardedShape": {"const": "selector4-opaque-payload"},
+        "payloadSemantics": {"const": "opaque"},
         "trustedConfigSource": {"const": "authenticated-deployment-config-only"},
         "preVerificationEnvelopeBindingCheck": {"const": false},
         "bindingSource": {"const": "pinned-successor-circuit-vk-or-authenticated-public-input"},

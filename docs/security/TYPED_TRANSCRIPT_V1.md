@@ -478,9 +478,10 @@ NOT trigger a retry with another version or proof mode. Core, compressed,
 shrink, and wrap V1 formats carry their exact profile envelope and reject the
 corresponding V0 shape. Groth16 and Plonk use the gateway format below.
 
-### Structural proof wire
+### Decoder-only synthetic proof wire
 
-The shared decoder corpus uses this complete byte grammar:
+The shared decoder corpus uses this synthetic byte grammar solely to test
+strict V0/V1 decoder behavior:
 
 ```text
 LegacyV0 := selector[4] || mode_tag[1] || payload_length_be[2] || payload
@@ -509,6 +510,10 @@ wrong-version, wrong-mode, wrong-length, and forbidden-fallback cases. The
 `structuralTestSelectors` values are deterministic corpus fixtures, not
 deployment selector claims.
 
+This grammar is not gateway calldata and MUST NOT be applied to the gateway
+suffix. In particular, its synthetic mode tag and payload-length word do not
+exist at the gateway boundary and cannot cause a gateway rejection.
+
 This matrix does not claim that the listed V1 decoders, circuits, keys, or
 proofs exist. It fixes the route an implementation must take.
 
@@ -521,9 +526,11 @@ outer_envelope[16] || legacy_selector || legacy_payload
 ```
 
 The suffix is deliberately the byte-for-byte legacy-shaped SP1
-`selector || payload`; the design does not redefine the SP1 proof payload or
-the BN254 PCS. Groth16 and Plonk have distinct gateway entry points and distinct
-deployment pins.
+`selector[4] || payload`; `payload` is opaque and may contain any byte string.
+The gateway does not parse a mode, length, address, codehash, VK, circuit ID, or
+routing instruction from it. This design does not redefine the SP1 proof
+payload or the BN254 PCS. Groth16 and Plonk have distinct gateway entry points
+and distinct deployment pins.
 
 The Groth16 or Plonk entry point supplies the mode. Before calling the
 separately pinned, mode-specific SP1 verifier, the gateway MUST perform this
@@ -539,10 +546,12 @@ atomic boundary in order:
    includes mode, expected selector, verifier address, runtime codehash,
    wrapping VK identity, and circuit identity. The proof and envelope MUST NOT
    supply or override any of these routing values.
-4. Compare the first four suffix bytes with the configured selector. A mismatch
-   fails before stripping or calling any verifier.
-5. Remove exactly the first 16 bytes. Do not remove, normalize, or reconstruct
-   any suffix byte.
+4. Before constructing a stripped suffix, compare `wire[16:20]` directly with
+   the configured selector. A missing or mismatched selector fails before
+   stripping or calling any verifier.
+5. Only after that comparison, construct `wire[16:]` by removing exactly the
+   first 16 bytes. Do not parse, remove, normalize, or reconstruct any suffix
+   byte.
 6. Call the configured verifier address and require the configured codehash,
    selector, VK, and circuit identity. Forward the unchanged
    `selector || payload` suffix.
@@ -561,8 +570,12 @@ and direct forwarding of a V1 suffix around the gateway are prohibited.
 
 The schemas and gateway vectors validate ordering, exact envelope parameters,
 profile/parameter substitution, selector checks, suffix preservation, and
-mode-specific address, codehash, VK, and circuit pins. They reject cross-mode
-configurations, every individual pin substitution, and proof-selected routing.
+mode-specific address, codehash, VK, and circuit pins. For both Groth16 and
+Plonk they reject every configured-selector, wire-selector, address, codehash,
+VK, circuit, and cross-mode pin mismatch. Each mode also has a positive vector
+whose opaque payload contains bogus serialized selector-, address-, codehash-,
+VK-, circuit-, and mode-looking bytes; the trusted configured identity is still
+selected and the suffix is forwarded unchanged.
 The committed pins are conspicuous structural fixtures only; they are not
 deployable identities. The validator does not call a wrapping verifier or prove
 that transcript binding has been implemented. Exact successor fork, VK,
@@ -654,8 +667,9 @@ routing, and gateway vectors:
   both cross-version directions and malformed, trailing, downgrade/fallback,
   wrong-magic, wrong-version, wrong-mode, and wrong-length rejection; and
 - P42 V1 gateway cases for exact envelope validation, substitution rejection,
-  trusted selector and verifier identity pins, proof-selected-routing rejection,
-  mode rejection, and exact suffix forwarding.
+  opaque payload preservation, and the full configured-selector, wire-selector,
+  address, codehash, VK, circuit, and cross-mode mismatch matrix independently
+  for both Groth16 and Plonk.
 
 The initial vectors are independent of the vulnerable code. They intentionally
 stop before permutation output. `cryptographicOutputsIncluded` is fixed to
@@ -672,6 +686,12 @@ and rejects any duplicate across or within those categories as
 `DUPLICATE_VECTOR_ID`. Committed adversarial
 corpus mutations substitute a positive ID into a collision-negative vector and
 a rejection ID into a positive vector; both must fail.
+
+Decoder and gateway records have exclusive outcomes. Success requires a
+non-null `expectedOutcome` and a null `expectedErrorCode`; rejection requires a
+null outcome and a non-null error. JSON Schema enforces this union, the semantic
+validator checks it again, and committed adversarial mutations construct both
+forms of contradictory pair and require `CONTRADICTORY_VECTOR_OUTCOME`.
 
 The corpus also contains independent state-transition regressions for an open
 slice and an open container. Each supplies literal before and expected-after
@@ -723,7 +743,8 @@ range checks, profile-specific squeeze bounds, canonical frame construction,
 zero-padded block layout, capacity controls, initial/final/per-step structural
 snapshots, and structural separation of collision-negative transcripts. It
 also checks bounded BN254-rate-word extraction into KoalaBear values, the
-proof-mode decoder matrix, P42 V1 gateway ordering and suffix preservation,
+decoder-only synthetic proof matrix, opaque P42 V1 gateway ordering, per-mode
+pin coverage, outcome exclusivity, and suffix preservation,
 the global ID registry, duplicate-ID mutations, and independently asserted
 pre-mutation rejection snapshots for open slices and containers. It does not
 invoke Poseidon2, SP1, a recursion executor, Gnark, a gateway contract, or a

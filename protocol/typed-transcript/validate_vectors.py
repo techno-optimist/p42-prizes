@@ -504,6 +504,9 @@ def validate_spec_invariants(spec: dict[str, Any]) -> None:
     if not (
         gateway["outerEnvelopeBytes"] == 16
         and gateway["outerProfile"] == "outer-bn254-rate-koalabear-v1"
+        and gateway["wireShape"] == "envelope16-selector4-opaque-payload"
+        and gateway["forwardedShape"] == "selector4-opaque-payload"
+        and gateway["payloadSemantics"] == "opaque"
         and gateway["trustedConfigSource"] == "authenticated-deployment-config-only"
         and not gateway["preVerificationEnvelopeBindingCheck"]
         and gateway["bindingSource"]
@@ -514,7 +517,9 @@ def validate_spec_invariants(spec: dict[str, Any]) -> None:
         reject("SPEC_GATEWAY", "P42 V1 gateway invariants are not frozen")
     wire = spec["proofWire"]
     if (
-        wire["legacyShape"] != "selector4-mode1-length2-payload"
+        wire["scope"] != "decoder-only-synthetic-grammar"
+        or wire["appliesToGateway"]
+        or wire["legacyShape"] != "selector4-mode1-length2-payload"
         or wire["v1Shape"] != "envelope16-selector4-mode1-length2-payload"
         or wire["selectorBytes"] != 4
         or wire["modeBytes"] != 1
@@ -739,6 +744,7 @@ def decode_proof_wire(spec: dict[str, Any], vector: dict[str, Any]) -> dict[str,
 
 
 def validate_decoding_vector(spec: dict[str, Any], vector: dict[str, Any]) -> None:
+    validate_exclusive_outcome(vector)
     expected_error = vector["expectedErrorCode"]
     try:
         outcome = decode_proof_wire(spec, vector)
@@ -766,6 +772,16 @@ def validate_gateway_pin(expected: dict[str, Any], configured: dict[str, Any]) -
             reject(code, f"trusted deployment {key} does not match the selected mode pin")
 
 
+def validate_exclusive_outcome(vector: dict[str, Any]) -> None:
+    outcome = vector["expectedOutcome"]
+    error = vector["expectedErrorCode"]
+    if not ((outcome is not None and error is None) or (outcome is None and isinstance(error, str))):
+        reject(
+            "CONTRADICTORY_VECTOR_OUTCOME",
+            "vector must specify exactly one successful outcome or one error code",
+        )
+
+
 def run_gateway(spec: dict[str, Any], vector: dict[str, Any]) -> dict[str, Any]:
     mode = vector["trustedEntryPointMode"]
     if mode not in {"groth16", "plonk"}:
@@ -777,28 +793,25 @@ def run_gateway(spec: dict[str, Any], vector: dict[str, Any]) -> dict[str, Any]:
     decode_envelope(
         spec, spec["gateway"]["outerProfile"], "0x" + wire[:envelope_length].hex()
     )
-    if vector["routingSource"] != "trusted-deployment-config":
-        reject("GATEWAY_PROOF_SELECTED_ROUTING", "proof bytes cannot select the verifier")
     expected_pin = spec["gateway"]["structuralTestPins"][mode]
     configured = vector["trustedDeploymentConfig"]
     validate_gateway_pin(expected_pin, configured)
-    forwarded = wire[envelope_length:]
-    if len(forwarded) < spec["proofWire"]["selectorBytes"]:
+    selector_start = envelope_length
+    selector_end = selector_start + spec["proofWire"]["selectorBytes"]
+    if len(wire) < selector_end:
         reject("GATEWAY_SELECTOR_PAYLOAD", "legacy-shaped selector plus payload is truncated")
     configured_selector = bytes.fromhex(configured["selectorHex"][2:])
-    if forwarded[: len(configured_selector)] != configured_selector:
+    if wire[selector_start:selector_end] != configured_selector:
         reject("GATEWAY_SELECTOR_MISMATCH", "proof selector does not match trusted configuration")
-    decoded = decode_legacy_proof_bytes(
-        spec, mode, forwarded, configured["selectorHex"]
-    )
+    forwarded = wire[envelope_length:]
     return {
         "forwardedHex": "0x" + forwarded.hex(),
         "verifierIdentity": configured,
-        "verifierDecode": decoded,
     }
 
 
 def validate_gateway_vector(spec: dict[str, Any], vector: dict[str, Any]) -> None:
+    validate_exclusive_outcome(vector)
     expected_error = vector["expectedErrorCode"]
     try:
         outcome = run_gateway(spec, vector)
@@ -810,6 +823,28 @@ def validate_gateway_vector(spec: dict[str, Any], vector: dict[str, Any]) -> Non
             raise ValueError(f"{vector['id']}: gateway input was unexpectedly accepted")
         if outcome != vector["expectedOutcome"]:
             raise ValueError(f"{vector['id']}: gateway outcome mismatch")
+
+
+def validate_hostile_outcome_mutation(
+    vectors: dict[str, Any], mutation: dict[str, Any]
+) -> None:
+    target = copy.deepcopy(
+        vector_category(vectors, mutation["targetCategory"])[mutation["targetIndex"]]
+    )
+    source = vector_category(vectors, mutation["sourceCategory"])[mutation["sourceIndex"]]
+    if target["expectedOutcome"] is not None:
+        target["expectedErrorCode"] = source["expectedErrorCode"]
+    else:
+        target["expectedOutcome"] = copy.deepcopy(source["expectedOutcome"])
+    try:
+        validate_exclusive_outcome(target)
+    except TranscriptValidationError as exc:
+        if exc.code != mutation["expectedErrorCode"]:
+            raise ValueError(
+                f"{mutation['id']}: expected {mutation['expectedErrorCode']}, got {exc.code}"
+            ) from exc
+    else:
+        raise ValueError(f"{mutation['id']}: contradictory outcome mutation was accepted")
 
 
 def validate_semantics(spec: dict[str, Any], vectors: dict[str, Any]) -> None:
@@ -852,16 +887,30 @@ def validate_semantics(spec: dict[str, Any], vectors: dict[str, Any]) -> None:
         validate_decoding_vector(spec, vector)
 
     expected_gateway_cases = {
-        "valid-groth16", "valid-plonk", "envelope-missing", "profile-substitution",
-        "parameter-substitution", "wrong-proof-mode", "wrong-proof-selector",
-        "cross-mode-verifier", "proof-selected-routing", "wrong-payload-mode",
-        "wrong-configured-selector", "wrong-address", "wrong-codehash", "wrong-vk",
-        "wrong-circuit",
+        "valid", "opaque-routing-like-payload", "envelope-missing",
+        "profile-substitution", "parameter-substitution", "wrong-configured-selector",
+        "wrong-wire-selector", "wrong-address", "wrong-codehash", "wrong-vk",
+        "wrong-circuit", "cross-mode-config",
     }
-    if {vector["case"] for vector in vectors["gatewayVectors"]} != expected_gateway_cases:
-        reject("GATEWAY_VECTOR_COVERAGE", "gateway corpus does not cover every required case")
+    for mode in ("groth16", "plonk"):
+        mode_vectors = [
+            vector for vector in vectors["gatewayVectors"]
+            if vector["trustedEntryPointMode"] == mode
+        ]
+        if (
+            len(mode_vectors) != len(expected_gateway_cases)
+            or {vector["case"] for vector in mode_vectors} != expected_gateway_cases
+        ):
+            reject("GATEWAY_VECTOR_COVERAGE", f"gateway corpus is incomplete for {mode}")
     for vector in vectors["gatewayVectors"]:
         validate_gateway_vector(spec, vector)
+
+    hostile_outcome_ids: set[str] = set()
+    for mutation in vectors["hostileOutcomeMutations"]:
+        if mutation["id"] in hostile_outcome_ids:
+            raise ValueError("hostile outcome mutation IDs must be unique")
+        hostile_outcome_ids.add(mutation["id"])
+        validate_hostile_outcome_mutation(vectors, mutation)
 
     regression_ids: set[str] = set()
     for regression in vectors["independentStateTransitionRegressions"]:

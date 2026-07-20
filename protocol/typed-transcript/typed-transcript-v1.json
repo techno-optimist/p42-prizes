@@ -104,6 +104,8 @@
     "plonk": {"v0Decoder": "legacy-v0-plonk", "v1Decoder": "p42-v1-gateway-plonk", "v1Profile": "outer-bn254-rate-koalabear-v1", "gateway": "validate-select-check-strip-call"}
   },
   "proofWire": {
+    "scope": "decoder-only-synthetic-grammar",
+    "appliesToGateway": false,
     "legacyShape": "selector4-mode1-length2-payload",
     "v1Shape": "envelope16-selector4-mode1-length2-payload",
     "selectorBytes": 4,
@@ -124,8 +126,9 @@
     "name": "p42-v1",
     "outerEnvelopeBytes": 16,
     "outerProfile": "outer-bn254-rate-koalabear-v1",
-    "wireShape": "envelope16-selector-payload",
-    "forwardedShape": "selector-payload",
+    "wireShape": "envelope16-selector4-opaque-payload",
+    "forwardedShape": "selector4-opaque-payload",
+    "payloadSemantics": "opaque",
     "trustedConfigSource": "authenticated-deployment-config-only",
     "preVerificationEnvelopeBindingCheck": false,
     "bindingSource": "pinned-successor-circuit-vk-or-authenticated-public-input",

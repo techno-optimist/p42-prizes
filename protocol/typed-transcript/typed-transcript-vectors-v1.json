@@ -41,21 +41,30 @@
     "declared-child-count",
     "direct-trailing-zero",
     "flat-nested-boundary",
-    "gateway-cross-mode-verifier",
-    "gateway-envelope-missing",
+    "gateway-groth16-cross-mode-config",
+    "gateway-groth16-envelope-missing",
+    "gateway-groth16-opaque-routing-like-payload",
+    "gateway-groth16-parameter-substitution",
+    "gateway-groth16-profile-substitution",
     "gateway-groth16-valid",
-    "gateway-parameter-substitution",
+    "gateway-groth16-wrong-address",
+    "gateway-groth16-wrong-circuit",
+    "gateway-groth16-wrong-codehash",
+    "gateway-groth16-wrong-configured-selector",
+    "gateway-groth16-wrong-vk",
+    "gateway-groth16-wrong-wire-selector",
+    "gateway-plonk-cross-mode-config",
+    "gateway-plonk-envelope-missing",
+    "gateway-plonk-opaque-routing-like-payload",
+    "gateway-plonk-parameter-substitution",
+    "gateway-plonk-profile-substitution",
     "gateway-plonk-valid",
-    "gateway-profile-substitution",
-    "gateway-proof-selected-routing",
-    "gateway-wrong-address",
-    "gateway-wrong-circuit",
-    "gateway-wrong-codehash",
-    "gateway-wrong-configured-selector",
-    "gateway-wrong-payload-mode",
-    "gateway-wrong-proof-mode",
-    "gateway-wrong-selector",
-    "gateway-wrong-vk",
+    "gateway-plonk-wrong-address",
+    "gateway-plonk-wrong-circuit",
+    "gateway-plonk-wrong-codehash",
+    "gateway-plonk-wrong-configured-selector",
+    "gateway-plonk-wrong-vk",
+    "gateway-plonk-wrong-wire-selector",
     "groth16-v0-malformed",
     "groth16-v0-to-v1",
     "groth16-v0-trailing-byte",
@@ -4734,8 +4743,9 @@
   "gatewayVectors": [
     {
       "id": "gateway-groth16-valid",
-      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
-      "routingSource": "trusted-deployment-config",
+      "case": "valid",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000102020202030011223344deadbeef00",
       "trustedDeploymentConfig": {
         "mode": "groth16",
         "selectorHex": "0x11223344",
@@ -4745,7 +4755,7 @@
         "circuitId": "p42-typed-v1-groth16-structural-fixture"
       },
       "expectedOutcome": {
-        "forwardedHex": "0x11223344050003dead05",
+        "forwardedHex": "0x11223344deadbeef00",
         "verifierIdentity": {
           "mode": "groth16",
           "selectorHex": "0x11223344",
@@ -4753,70 +4763,41 @@
           "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "circuitId": "p42-typed-v1-groth16-structural-fixture"
-        },
-        "verifierDecode": {
-          "mode": "groth16",
-          "selectorHex": "0x11223344",
-          "payloadHex": "0xdead05"
         }
       },
-      "expectedErrorCode": null,
-      "case": "valid-groth16",
-      "trustedEntryPointMode": "groth16"
+      "expectedErrorCode": null
     },
     {
-      "id": "gateway-plonk-valid",
-      "wireHex": "0x50343254545631000001020202020300a1b2c3d4060003dead06",
-      "routingSource": "trusted-deployment-config",
+      "id": "gateway-groth16-opaque-routing-like-payload",
+      "case": "opaque-routing-like-payload",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x50343254545631000001020202020300112233447b2261646472657373223a22307831313131313131313131313131313131313131313131313131313131313131313131313130303032222c2263697263756974223a227034322d74797065642d76312d706c6f6e6b2d7374727563747572616c2d66697874757265222c22636f646568617368223a22307863636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c226d6f6465223a22706c6f6e6b222c2273656c6563746f72223a2230786131623263336434222c22766b223a22307864646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464227d",
       "trustedDeploymentConfig": {
-        "mode": "plonk",
-        "selectorHex": "0xa1b2c3d4",
-        "verifierAddress": "0x1111111111111111111111111111111111110002",
-        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
       },
       "expectedOutcome": {
-        "forwardedHex": "0xa1b2c3d4060003dead06",
+        "forwardedHex": "0x112233447b2261646472657373223a22307831313131313131313131313131313131313131313131313131313131313131313131313130303032222c2263697263756974223a227034322d74797065642d76312d706c6f6e6b2d7374727563747572616c2d66697874757265222c22636f646568617368223a22307863636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c226d6f6465223a22706c6f6e6b222c2273656c6563746f72223a2230786131623263336434222c22766b223a22307864646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464227d",
         "verifierIdentity": {
-          "mode": "plonk",
-          "selectorHex": "0xa1b2c3d4",
-          "verifierAddress": "0x1111111111111111111111111111111111110002",
-          "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-          "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-          "circuitId": "p42-typed-v1-plonk-structural-fixture"
-        },
-        "verifierDecode": {
-          "mode": "plonk",
-          "selectorHex": "0xa1b2c3d4",
-          "payloadHex": "0xdead06"
+          "mode": "groth16",
+          "selectorHex": "0x11223344",
+          "verifierAddress": "0x1111111111111111111111111111111111110001",
+          "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "circuitId": "p42-typed-v1-groth16-structural-fixture"
         }
       },
-      "expectedErrorCode": null,
-      "case": "valid-plonk",
-      "trustedEntryPointMode": "plonk"
+      "expectedErrorCode": null
     },
     {
-      "id": "gateway-envelope-missing",
-      "wireHex": "0x01",
-      "routingSource": "trusted-deployment-config",
-      "trustedDeploymentConfig": {
-        "mode": "groth16",
-        "selectorHex": "0x11223344",
-        "verifierAddress": "0x1111111111111111111111111111111111110001",
-        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "circuitId": "p42-typed-v1-groth16-structural-fixture"
-      },
-      "expectedOutcome": null,
-      "expectedErrorCode": "ENVELOPE_MISSING",
+      "id": "gateway-groth16-envelope-missing",
       "case": "envelope-missing",
-      "trustedEntryPointMode": "groth16"
-    },
-    {
-      "id": "gateway-profile-substitution",
-      "wireHex": "0x5034325454563100000101010108100011223344050003dead05",
-      "routingSource": "trusted-deployment-config",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x01",
       "trustedDeploymentConfig": {
         "mode": "groth16",
         "selectorHex": "0x11223344",
@@ -4826,31 +4807,29 @@
         "circuitId": "p42-typed-v1-groth16-structural-fixture"
       },
       "expectedOutcome": null,
-      "expectedErrorCode": "ENVELOPE_PROFILE",
+      "expectedErrorCode": "ENVELOPE_MISSING"
+    },
+    {
+      "id": "gateway-groth16-profile-substitution",
       "case": "profile-substitution",
-      "trustedEntryPointMode": "groth16"
-    },
-    {
-      "id": "gateway-parameter-substitution",
-      "wireHex": "0x50343254545631000001020202030300a1b2c3d4060003dead06",
-      "routingSource": "trusted-deployment-config",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000101010108100011223344deadbeef00",
       "trustedDeploymentConfig": {
-        "mode": "plonk",
-        "selectorHex": "0xa1b2c3d4",
-        "verifierAddress": "0x1111111111111111111111111111111111110002",
-        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
       },
       "expectedOutcome": null,
-      "expectedErrorCode": "ENVELOPE_PARAMETERS",
+      "expectedErrorCode": "ENVELOPE_PROFILE"
+    },
+    {
+      "id": "gateway-groth16-parameter-substitution",
       "case": "parameter-substitution",
-      "trustedEntryPointMode": "plonk"
-    },
-    {
-      "id": "gateway-wrong-proof-mode",
-      "wireHex": "0x5034325454563100000102020202030004000004040003dead04",
-      "routingSource": "trusted-deployment-config",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000102020203030011223344deadbeef00",
       "trustedDeploymentConfig": {
         "mode": "groth16",
         "selectorHex": "0x11223344",
@@ -4860,82 +4839,13 @@
         "circuitId": "p42-typed-v1-groth16-structural-fixture"
       },
       "expectedOutcome": null,
-      "expectedErrorCode": "GATEWAY_PROOF_MODE",
-      "case": "wrong-proof-mode",
-      "trustedEntryPointMode": "wrap"
+      "expectedErrorCode": "ENVELOPE_PARAMETERS"
     },
     {
-      "id": "gateway-wrong-selector",
-      "wireHex": "0x50343254545631000001020202020300ffffffff050003dead05",
-      "routingSource": "trusted-deployment-config",
-      "trustedDeploymentConfig": {
-        "mode": "groth16",
-        "selectorHex": "0x11223344",
-        "verifierAddress": "0x1111111111111111111111111111111111110001",
-        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "circuitId": "p42-typed-v1-groth16-structural-fixture"
-      },
-      "expectedOutcome": null,
-      "expectedErrorCode": "GATEWAY_SELECTOR_MISMATCH",
-      "case": "wrong-proof-selector",
-      "trustedEntryPointMode": "groth16"
-    },
-    {
-      "id": "gateway-cross-mode-verifier",
-      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
-      "routingSource": "trusted-deployment-config",
-      "trustedDeploymentConfig": {
-        "mode": "plonk",
-        "selectorHex": "0xa1b2c3d4",
-        "verifierAddress": "0x1111111111111111111111111111111111110002",
-        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-        "circuitId": "p42-typed-v1-plonk-structural-fixture"
-      },
-      "expectedOutcome": null,
-      "expectedErrorCode": "GATEWAY_VERIFIER_MODE",
-      "case": "cross-mode-verifier",
-      "trustedEntryPointMode": "groth16"
-    },
-    {
-      "id": "gateway-proof-selected-routing",
-      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
-      "routingSource": "proof-bytes",
-      "trustedDeploymentConfig": {
-        "mode": "groth16",
-        "selectorHex": "0x11223344",
-        "verifierAddress": "0x1111111111111111111111111111111111110001",
-        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "circuitId": "p42-typed-v1-groth16-structural-fixture"
-      },
-      "expectedOutcome": null,
-      "expectedErrorCode": "GATEWAY_PROOF_SELECTED_ROUTING",
-      "case": "proof-selected-routing",
-      "trustedEntryPointMode": "groth16"
-    },
-    {
-      "id": "gateway-wrong-payload-mode",
-      "wireHex": "0x5034325454563100000102020202030011223344060003dead05",
-      "routingSource": "trusted-deployment-config",
-      "trustedDeploymentConfig": {
-        "mode": "groth16",
-        "selectorHex": "0x11223344",
-        "verifierAddress": "0x1111111111111111111111111111111111110001",
-        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "circuitId": "p42-typed-v1-groth16-structural-fixture"
-      },
-      "expectedOutcome": null,
-      "expectedErrorCode": "WRONG_PROOF_MODE",
-      "case": "wrong-payload-mode",
-      "trustedEntryPointMode": "groth16"
-    },
-    {
-      "id": "gateway-wrong-configured-selector",
-      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
-      "routingSource": "trusted-deployment-config",
+      "id": "gateway-groth16-wrong-configured-selector",
+      "case": "wrong-configured-selector",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000102020202030011223344deadbeef00",
       "trustedDeploymentConfig": {
         "mode": "groth16",
         "selectorHex": "0xffffffff",
@@ -4945,14 +4855,13 @@
         "circuitId": "p42-typed-v1-groth16-structural-fixture"
       },
       "expectedOutcome": null,
-      "expectedErrorCode": "GATEWAY_CONFIG_SELECTOR",
-      "case": "wrong-configured-selector",
-      "trustedEntryPointMode": "groth16"
+      "expectedErrorCode": "GATEWAY_CONFIG_SELECTOR"
     },
     {
-      "id": "gateway-wrong-address",
-      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
-      "routingSource": "trusted-deployment-config",
+      "id": "gateway-groth16-wrong-address",
+      "case": "wrong-address",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000102020202030011223344deadbeef00",
       "trustedDeploymentConfig": {
         "mode": "groth16",
         "selectorHex": "0x11223344",
@@ -4962,14 +4871,13 @@
         "circuitId": "p42-typed-v1-groth16-structural-fixture"
       },
       "expectedOutcome": null,
-      "expectedErrorCode": "GATEWAY_VERIFIER_ADDRESS",
-      "case": "wrong-address",
-      "trustedEntryPointMode": "groth16"
+      "expectedErrorCode": "GATEWAY_VERIFIER_ADDRESS"
     },
     {
-      "id": "gateway-wrong-codehash",
-      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
-      "routingSource": "trusted-deployment-config",
+      "id": "gateway-groth16-wrong-codehash",
+      "case": "wrong-codehash",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000102020202030011223344deadbeef00",
       "trustedDeploymentConfig": {
         "mode": "groth16",
         "selectorHex": "0x11223344",
@@ -4979,14 +4887,13 @@
         "circuitId": "p42-typed-v1-groth16-structural-fixture"
       },
       "expectedOutcome": null,
-      "expectedErrorCode": "GATEWAY_VERIFIER_CODEHASH",
-      "case": "wrong-codehash",
-      "trustedEntryPointMode": "groth16"
+      "expectedErrorCode": "GATEWAY_VERIFIER_CODEHASH"
     },
     {
-      "id": "gateway-wrong-vk",
-      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
-      "routingSource": "trusted-deployment-config",
+      "id": "gateway-groth16-wrong-vk",
+      "case": "wrong-vk",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000102020202030011223344deadbeef00",
       "trustedDeploymentConfig": {
         "mode": "groth16",
         "selectorHex": "0x11223344",
@@ -4996,26 +4903,285 @@
         "circuitId": "p42-typed-v1-groth16-structural-fixture"
       },
       "expectedOutcome": null,
-      "expectedErrorCode": "GATEWAY_VERIFIER_VK",
-      "case": "wrong-vk",
-      "trustedEntryPointMode": "groth16"
+      "expectedErrorCode": "GATEWAY_VERIFIER_VK"
     },
     {
-      "id": "gateway-wrong-circuit",
-      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
-      "routingSource": "trusted-deployment-config",
+      "id": "gateway-groth16-wrong-circuit",
+      "case": "wrong-circuit",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000102020202030011223344deadbeef00",
       "trustedDeploymentConfig": {
         "mode": "groth16",
         "selectorHex": "0x11223344",
         "verifierAddress": "0x1111111111111111111111111111111111110001",
         "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "circuitId": "p42-typed-v1-wrong-circuit-structural-fixture"
+        "circuitId": "p42-typed-v1-groth16-wrong-circuit"
       },
       "expectedOutcome": null,
-      "expectedErrorCode": "GATEWAY_VERIFIER_CIRCUIT",
+      "expectedErrorCode": "GATEWAY_VERIFIER_CIRCUIT"
+    },
+    {
+      "id": "gateway-groth16-wrong-wire-selector",
+      "case": "wrong-wire-selector",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x50343254545631000001020202020300ffffffffdeadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_SELECTOR_MISMATCH"
+    },
+    {
+      "id": "gateway-groth16-cross-mode-config",
+      "case": "cross-mode-config",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000102020202030011223344deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_MODE"
+    },
+    {
+      "id": "gateway-plonk-valid",
+      "case": "valid",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": {
+        "forwardedHex": "0xa1b2c3d4deadbeef00",
+        "verifierIdentity": {
+          "mode": "plonk",
+          "selectorHex": "0xa1b2c3d4",
+          "verifierAddress": "0x1111111111111111111111111111111111110002",
+          "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "circuitId": "p42-typed-v1-plonk-structural-fixture"
+        }
+      },
+      "expectedErrorCode": null
+    },
+    {
+      "id": "gateway-plonk-opaque-routing-like-payload",
+      "case": "opaque-routing-like-payload",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d47b2261646472657373223a22307831313131313131313131313131313131313131313131313131313131313131313131313130303031222c2263697263756974223a227034322d74797065642d76312d67726f746831362d7374727563747572616c2d66697874757265222c22636f646568617368223a22307861616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c226d6f6465223a2267726f74683136222c2273656c6563746f72223a2230783131323233333434222c22766b223a22307862626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262227d",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": {
+        "forwardedHex": "0xa1b2c3d47b2261646472657373223a22307831313131313131313131313131313131313131313131313131313131313131313131313130303031222c2263697263756974223a227034322d74797065642d76312d67726f746831362d7374727563747572616c2d66697874757265222c22636f646568617368223a22307861616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c226d6f6465223a2267726f74683136222c2273656c6563746f72223a2230783131323233333434222c22766b223a22307862626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262227d",
+        "verifierIdentity": {
+          "mode": "plonk",
+          "selectorHex": "0xa1b2c3d4",
+          "verifierAddress": "0x1111111111111111111111111111111111110002",
+          "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "circuitId": "p42-typed-v1-plonk-structural-fixture"
+        }
+      },
+      "expectedErrorCode": null
+    },
+    {
+      "id": "gateway-plonk-envelope-missing",
+      "case": "envelope-missing",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x01",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MISSING"
+    },
+    {
+      "id": "gateway-plonk-profile-substitution",
+      "case": "profile-substitution",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001010101081000a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_PROFILE"
+    },
+    {
+      "id": "gateway-plonk-parameter-substitution",
+      "case": "parameter-substitution",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202030300a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_PARAMETERS"
+    },
+    {
+      "id": "gateway-plonk-wrong-configured-selector",
+      "case": "wrong-configured-selector",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xffffffff",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_CONFIG_SELECTOR"
+    },
+    {
+      "id": "gateway-plonk-wrong-address",
+      "case": "wrong-address",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x2222222222222222222222222222222222222222",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_ADDRESS"
+    },
+    {
+      "id": "gateway-plonk-wrong-codehash",
+      "case": "wrong-codehash",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_CODEHASH"
+    },
+    {
+      "id": "gateway-plonk-wrong-vk",
+      "case": "wrong-vk",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0x3333333333333333333333333333333333333333333333333333333333333333",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_VK"
+    },
+    {
+      "id": "gateway-plonk-wrong-circuit",
       "case": "wrong-circuit",
-      "trustedEntryPointMode": "groth16"
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-wrong-circuit"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_CIRCUIT"
+    },
+    {
+      "id": "gateway-plonk-wrong-wire-selector",
+      "case": "wrong-wire-selector",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300ffffffffdeadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_SELECTOR_MISMATCH"
+    },
+    {
+      "id": "gateway-plonk-cross-mode-config",
+      "case": "cross-mode-config",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_MODE"
+    }
+  ],
+  "hostileOutcomeMutations": [
+    {
+      "id": "contradict-decoder-success-with-error",
+      "targetCategory": "proof-decoding",
+      "targetIndex": 0,
+      "sourceCategory": "proof-decoding",
+      "sourceIndex": 2,
+      "expectedErrorCode": "CONTRADICTORY_VECTOR_OUTCOME"
+    },
+    {
+      "id": "contradict-gateway-rejection-with-outcome",
+      "targetCategory": "gateway",
+      "targetIndex": 2,
+      "sourceCategory": "gateway",
+      "sourceIndex": 0,
+      "expectedErrorCode": "CONTRADICTORY_VECTOR_OUTCOME"
     }
   ]
 }
