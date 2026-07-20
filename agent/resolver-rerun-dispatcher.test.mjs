@@ -13,6 +13,11 @@ const KEY = `0x${"42".repeat(32)}`;
 const SIGNER = new ethers.Wallet(KEY).address.toLowerCase();
 const SHA = (digit) => `sha256:${digit.repeat(64)}`;
 const HASH = (digit) => `0x${digit.repeat(64)}`;
+const TEST_NOW = Date.parse("2026-07-19T12:00:00Z");
+
+function dispatch(options) {
+  return dispatchResolverReruns({ now: TEST_NOW, ...options });
+}
 
 function requestFor(boardId = "84532:2:hadamard-mini", packetDigit = "1", nonceDigit = "4",
   expiresAt = "2026-07-20T00:00:00Z") {
@@ -58,7 +63,7 @@ test("dispatcher installs exact signer bytes and starts only its canonical mappe
   const value = fixture();
   const calls = [];
   try {
-    const reports = dispatchResolverReruns({ ...value, resultReader: unavailableResult,
+    const reports = dispatch({ ...value, resultReader: unavailableResult,
       manager: { status(unit) { calls.push(["status", unit]); return { LoadState: "loaded", ActiveState: "inactive" }; },
         start(unit) { calls.push(["start", unit]); }, resetFailed() { assert.fail("unexpected reset"); } } });
     assert.equal(reports[0].status, "dispatched");
@@ -76,9 +81,9 @@ test("dispatcher resumes a crash after systemctl start without starting twice", 
   const manager = { status() { return { LoadState: "loaded", ActiveState: active ? "active" : "inactive" }; },
     start() { starts += 1; active = true; }, resetFailed() {} };
   try {
-    assert.throws(() => dispatchResolverReruns({ ...value, manager, resultReader: unavailableResult,
+    assert.throws(() => dispatch({ ...value, manager, resultReader: unavailableResult,
       crash(point) { if (point === "after-systemctl-start") throw new Error("power loss"); } }), /power loss/);
-    const reports = dispatchResolverReruns({ ...value, manager, resultReader: unavailableResult });
+    const reports = dispatch({ ...value, manager, resultReader: unavailableResult });
     assert.equal(starts, 1);
     assert.equal(reports[0].status, "dispatched");
   } finally { rmSync(value.root, { recursive: true, force: true }); }
@@ -87,7 +92,7 @@ test("dispatcher resumes a crash after systemctl start without starting twice", 
 test("dispatcher rejects cross-board substitution and signer-spool symlinks", () => {
   const cross = fixture("84532:3:other");
   try {
-    assert.throws(() => dispatchResolverReruns({ ...cross, resultReader: unavailableResult, manager: {} }),
+    assert.throws(() => dispatch({ ...cross, resultReader: unavailableResult, manager: {} }),
       /board is not in the protected dispatch map/);
   } finally { rmSync(cross.root, { recursive: true, force: true }); }
   const linked = fixture();
@@ -96,7 +101,7 @@ test("dispatcher rejects cross-board substitution and signer-spool symlinks", ()
     const path = join(linked.sourceRoot, name);
     const target = join(linked.root, "target.json");
     writeFileSync(target, readFileSync(path), { mode: 0o600 }); rmSync(path); symlinkSync(target, path);
-    assert.throws(() => dispatchResolverReruns({ ...linked, resultReader: unavailableResult, manager: {} }),
+    assert.throws(() => dispatch({ ...linked, resultReader: unavailableResult, manager: {} }),
       /spool authority mismatch/);
   } finally { rmSync(linked.root, { recursive: true, force: true }); }
 });
@@ -142,17 +147,17 @@ for (const crashPoint of [null, "after-rotation-journal", "after-install"]) {
       throw Object.assign(new Error("missing"), { code: "ENOENT" });
     };
     try {
-      dispatchResolverReruns({ ...value, manager, resultReader });
+      dispatch({ ...value, manager, resultReader });
       active = false; firstCompleted = true;
       const second = requestFor("84532:2:hadamard-mini", "5", "6");
       const secondName = `${second.packet_hash.slice(7)}-${second.orchestrator_nonce.slice(2)}.json`;
       writeFileSync(join(value.sourceRoot, secondName), `${canonicalJson(second)}\n`, { mode: 0o600 });
       if (crashPoint) {
-        assert.throws(() => dispatchResolverReruns({ ...value, manager, resultReader,
+        assert.throws(() => dispatch({ ...value, manager, resultReader,
           crash(point, request) { if (point === crashPoint && request.request_hash === second.request_hash) throw new Error("rotation crash"); } }),
         /rotation crash/);
       }
-      const reports = dispatchResolverReruns({ ...value, manager, resultReader });
+      const reports = dispatch({ ...value, manager, resultReader });
       assert.equal(starts, 2);
       assert.ok(reports.some((report) => report.request_hash === second.request_hash && report.status === "dispatched"));
       assert.equal(readFileSync(join(value.requestRoot, "2", "request.json"), "utf8"), `${canonicalJson(second)}\n`);
@@ -172,17 +177,17 @@ test("expiry during an active rerun preserves the busy slot before a later reque
     throw Object.assign(new Error("missing"), { code: "ENOENT" });
   };
   try {
-    dispatchResolverReruns({ ...value, manager, resultReader, now: Date.parse("2026-07-19T12:00:00Z") });
+    dispatch({ ...value, manager, resultReader });
     const second = requestFor("84532:2:hadamard-mini", "5", "6", "2026-07-22T00:00:00Z");
     const secondName = `${second.packet_hash.slice(7)}-${second.orchestrator_nonce.slice(2)}.json`;
     writeFileSync(join(value.sourceRoot, secondName), `${canonicalJson(second)}\n`, { mode: 0o600 });
-    const whileActive = dispatchResolverReruns({ ...value, manager, resultReader, now: Date.parse("2026-07-21T00:00:00Z") });
+    const whileActive = dispatch({ ...value, manager, resultReader, now: Date.parse("2026-07-21T00:00:00Z") });
     assert.equal(whileActive.length, 1);
     assert.equal(whileActive[0].request_hash, value.request.request_hash);
     assert.equal(whileActive[0].status, "dispatched");
     assert.equal(readFileSync(join(value.requestRoot, "2", "request.json"), "utf8"), `${canonicalJson(value.request)}\n`);
     active = false; firstCompleted = true;
-    const resumed = dispatchResolverReruns({ ...value, manager, resultReader, now: Date.parse("2026-07-21T00:00:00Z") });
+    const resumed = dispatch({ ...value, manager, resultReader, now: Date.parse("2026-07-21T00:00:00Z") });
     assert.ok(resumed.some((report) => report.request_hash === second.request_hash && report.status === "dispatched"));
     assert.equal(starts, 2);
     assert.equal(readFileSync(join(value.requestRoot, "2", "request.json"), "utf8"), `${canonicalJson(second)}\n`);
