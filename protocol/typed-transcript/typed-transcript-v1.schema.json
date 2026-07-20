@@ -4,7 +4,7 @@
   "title": "P42 TypedTranscriptV1 design constants",
   "type": "object",
   "additionalProperties": false,
-  "required": ["artifactStatus", "remediatesIssue164", "protocolId", "version", "fieldProfiles", "outerChallengeExtraction", "versionEnvelope", "constants", "phases", "eventTags", "encodingTags", "proofModeRouting", "gateway"],
+  "required": ["artifactStatus", "remediatesIssue164", "protocolId", "version", "fieldProfiles", "outerChallengeExtraction", "versionEnvelope", "constants", "phases", "eventTags", "encodingTags", "proofModeRouting", "proofWire", "gateway"],
   "properties": {
     "$schema": {"type": "string"},
     "artifactStatus": {"const": "design-only-non-activating"},
@@ -39,6 +39,7 @@
     "eventTags": {"$ref": "#/$defs/uniqueIntegerMap"},
     "encodingTags": {"$ref": "#/$defs/uniqueIntegerMap"},
     "proofModeRouting": {"$ref": "#/$defs/proofModeRouting"},
+    "proofWire": {"$ref": "#/$defs/proofWire"},
     "gateway": {"$ref": "#/$defs/gateway"}
   },
   "$defs": {
@@ -84,7 +85,7 @@
         "v0Decoder": {"type": "string", "pattern": "^legacy-v0-"},
         "v1Decoder": {"type": "string", "minLength": 1},
         "v1Profile": {"enum": ["inner-koalabear-v1", "outer-bn254-rate-koalabear-v1"]},
-        "gateway": {"enum": ["none", "validate-bind-strip-forward"]}
+        "gateway": {"enum": ["none", "validate-select-check-strip-call"]}
       }
     },
     "proofModeRouting": {
@@ -100,20 +101,78 @@
         "plonk": {"$ref": "#/$defs/route"}
       }
     },
+    "proofWire": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["legacyShape", "v1Shape", "selectorBytes", "modeBytes", "payloadLengthBytes", "payloadLengthByteOrder", "modeTags", "structuralTestSelectors"],
+      "properties": {
+        "legacyShape": {"const": "selector4-mode1-length2-payload"},
+        "v1Shape": {"const": "envelope16-selector4-mode1-length2-payload"},
+        "selectorBytes": {"const": 4},
+        "modeBytes": {"const": 1},
+        "payloadLengthBytes": {"const": 2},
+        "payloadLengthByteOrder": {"const": "big-endian"},
+        "modeTags": {"$ref": "#/$defs/modeTags"},
+        "structuralTestSelectors": {"$ref": "#/$defs/testSelectors"}
+      }
+    },
     "gateway": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "outerEnvelopeBytes", "outerProfile", "wireShape", "forwardedShape", "requiresSuccessorProofEnvelopeBinding", "stripAfterValidationOnly", "silentSdkStrippingAllowed", "legacyVerifierPinning"],
+      "required": ["name", "outerEnvelopeBytes", "outerProfile", "wireShape", "forwardedShape", "trustedConfigSource", "preVerificationEnvelopeBindingCheck", "bindingSource", "stripAfterValidationOnly", "silentSdkStrippingAllowed", "legacyVerifierPinning", "structuralTestPins"],
       "properties": {
         "name": {"const": "p42-v1"},
         "outerEnvelopeBytes": {"const": 16},
         "outerProfile": {"const": "outer-bn254-rate-koalabear-v1"},
         "wireShape": {"const": "envelope16-selector-payload"},
         "forwardedShape": {"const": "selector-payload"},
-        "requiresSuccessorProofEnvelopeBinding": {"const": true},
+        "trustedConfigSource": {"const": "authenticated-deployment-config-only"},
+        "preVerificationEnvelopeBindingCheck": {"const": false},
+        "bindingSource": {"const": "pinned-successor-circuit-vk-or-authenticated-public-input"},
         "stripAfterValidationOnly": {"const": true},
         "silentSdkStrippingAllowed": {"const": false},
-        "legacyVerifierPinning": {"const": "separate-mode-specific-pin"}
+        "legacyVerifierPinning": {"const": "separate-mode-specific-pin"},
+        "structuralTestPins": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["groth16", "plonk"],
+          "properties": {
+            "groth16": {"$ref": "#/$defs/verifierPin"},
+            "plonk": {"$ref": "#/$defs/verifierPin"}
+          }
+        }
+      }
+    },
+    "modeTags": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["core", "compressed", "shrink", "wrap", "groth16", "plonk"],
+      "properties": {
+        "core": {"const": 1}, "compressed": {"const": 2}, "shrink": {"const": 3},
+        "wrap": {"const": 4}, "groth16": {"const": 5}, "plonk": {"const": 6}
+      }
+    },
+    "testSelectors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["core", "compressed", "shrink", "wrap", "groth16", "plonk"],
+      "properties": {
+        "core": {"const": "0x01000001"}, "compressed": {"const": "0x02000002"},
+        "shrink": {"const": "0x03000003"}, "wrap": {"const": "0x04000004"},
+        "groth16": {"const": "0x11223344"}, "plonk": {"const": "0xa1b2c3d4"}
+      }
+    },
+    "verifierPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "selectorHex", "verifierAddress", "verifierCodehash", "vkId", "circuitId"],
+      "properties": {
+        "mode": {"enum": ["groth16", "plonk"]},
+        "selectorHex": {"type": "string", "pattern": "^0x[0-9a-f]{8}$"},
+        "verifierAddress": {"type": "string", "pattern": "^0x[0-9a-f]{40}$"},
+        "verifierCodehash": {"type": "string", "pattern": "^0x[0-9a-f]{64}$"},
+        "vkId": {"type": "string", "pattern": "^0x[0-9a-f]{64}$"},
+        "circuitId": {"type": "string", "pattern": "^[a-z0-9-]+$"}
       }
     },
     "uniqueIntegerMap": {

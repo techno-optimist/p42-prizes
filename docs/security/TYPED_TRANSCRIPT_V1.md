@@ -470,15 +470,44 @@ normative.
 | compressed | `legacy-v0-compressed` | `typed-v1-compressed` | `inner-koalabear-v1` | none |
 | shrink | `legacy-v0-shrink` | `typed-v1-shrink` | `inner-koalabear-v1` | none |
 | wrap | `legacy-v0-wrap` | `typed-v1-wrap` | `outer-bn254-rate-koalabear-v1` | none |
-| Groth16 | `legacy-v0-groth16` | `p42-v1-gateway-groth16` | `outer-bn254-rate-koalabear-v1` | validate, bind, strip, forward |
-| Plonk | `legacy-v0-plonk` | `p42-v1-gateway-plonk` | `outer-bn254-rate-koalabear-v1` | validate, bind, strip, forward |
+| Groth16 | `legacy-v0-groth16` | `p42-v1-gateway-groth16` | `outer-bn254-rate-koalabear-v1` | validate, select, check, strip, call |
+| Plonk | `legacy-v0-plonk` | `p42-v1-gateway-plonk` | `outer-bn254-rate-koalabear-v1` | validate, select, check, strip, call |
 
-Each V0 and V1 decoder is a distinct type and entry point. A V0 input to a V1
-decoder returns `V0_TO_V1_DECODER`; a V1 input to a V0 decoder returns
-`V1_TO_V0_DECODER`. Parse failure MUST NOT trigger a retry with another version
-or proof mode. Core, compressed, shrink, and wrap V1 formats carry their exact
-profile envelope and reject the corresponding V0 shape. Groth16 and Plonk use
-the gateway format below.
+Each V0 and V1 decoder is a distinct type and entry point. Parse failure MUST
+NOT trigger a retry with another version or proof mode. Core, compressed,
+shrink, and wrap V1 formats carry their exact profile envelope and reject the
+corresponding V0 shape. Groth16 and Plonk use the gateway format below.
+
+### Structural proof wire
+
+The shared decoder corpus uses this complete byte grammar:
+
+```text
+LegacyV0 := selector[4] || mode_tag[1] || payload_length_be[2] || payload
+TypedV1  := envelope[16] || LegacyV0
+```
+
+`payload_length_be` is the exact payload byte length. A decoder MUST reject a
+short payload as `PROOF_WIRE_LENGTH` and any byte after the declared payload as
+`PROOF_TRAILING_BYTES`; trailing bytes are not an extension mechanism. Mode
+tags are `1` core, `2` compressed, `3` shrink, `4` wrap, `5` Groth16, and `6`
+Plonk. The selected decoder entry point supplies the expected mode and selector;
+neither is inferred from the proof.
+
+A V1 decoder first requires and validates the exact 16-byte envelope for the
+selected mode, then decodes the complete legacy-shaped suffix. A V0 decoder
+rejects a leading V1 magic. A canonical V0 wire presented to V1 returns
+`V0_TO_V1_DECODER`; a canonical V1 wire presented to V0 returns
+`V1_TO_V0_DECODER`. Wrong magic, version, profile parameters, selector, mode,
+length, malformed headers, and trailing bytes are terminal errors. There is no
+downgrade retry or fallback decoder.
+
+The committed corpus contains literal bytes and expected decoded objects for
+every mode under both decoder versions. It also contains, for every mode, both
+cross-version directions and malformed, trailing-byte, wrong-magic,
+wrong-version, wrong-mode, wrong-length, and forbidden-fallback cases. The
+`structuralTestSelectors` values are deterministic corpus fixtures, not
+deployment selector claims.
 
 This matrix does not claim that the listed V1 decoders, circuits, keys, or
 proofs exist. It fixes the route an implementation must take.
@@ -496,22 +525,33 @@ The suffix is deliberately the byte-for-byte legacy-shaped SP1
 the BN254 PCS. Groth16 and Plonk have distinct gateway entry points and distinct
 deployment pins.
 
-Before calling the separately pinned, mode-specific SP1 verifier, the gateway
-MUST perform these steps in order:
+The Groth16 or Plonk entry point supplies the mode. Before calling the
+separately pinned, mode-specific SP1 verifier, the gateway MUST perform this
+atomic boundary in order:
 
 1. Require exactly 16 leading envelope bytes. Missing, truncated, extended,
    noncanonical, or SDK-stripped envelopes fail closed.
 2. Require the exact outer bytes
    `0x50343254545631000001020202020300`, including version `1`, profile `2`,
    field `2`, permutation `2`, rate `2`, width `3`, and reserved byte `0`.
-3. Select the expected successor fork, wrapping VK, proof mode, selector, and
-   separately pinned SP1 verifier from deployment configuration. No value may
-   be selected only from attacker-controlled proof bytes.
-4. Verify through that pin that the successor wrapping proof's statement and
-   TypedTranscriptV1 initialization bind the same 16 envelope bytes. Merely
-   placing the envelope beside an otherwise legacy proof is insufficient.
-5. Only after steps 1-4 succeed, remove exactly the first 16 bytes and forward
-   the unchanged `selector || payload` suffix to the pinned SP1 verifier.
+3. Select the successor verifier exclusively from authenticated deployment
+   configuration keyed by the trusted entry-point mode. The selected identity
+   includes mode, expected selector, verifier address, runtime codehash,
+   wrapping VK identity, and circuit identity. The proof and envelope MUST NOT
+   supply or override any of these routing values.
+4. Compare the first four suffix bytes with the configured selector. A mismatch
+   fails before stripping or calling any verifier.
+5. Remove exactly the first 16 bytes. Do not remove, normalize, or reconstruct
+   any suffix byte.
+6. Call the configured verifier address and require the configured codehash,
+   selector, VK, and circuit identity. Forward the unchanged
+   `selector || payload` suffix.
+
+There is deliberately no separate pre-verification envelope-binding check.
+That would require trusting proof-supplied metadata or circularly deciding a
+proof property before verification. Binding comes from the successor circuit
+and VK selected in step 3, which MUST either hard-bind the exact V1 envelope or
+verify it as an authenticated public input during the verifier call in step 6.
 
 The forwarded suffix MUST be byte-identical to the received suffix. The
 gateway MUST NOT normalize, replace, or reinterpret the selector. Failure at
@@ -520,11 +560,14 @@ the V1 gateway explicitly; silent SDK stripping, automatic legacy fallback,
 and direct forwarding of a V1 suffix around the gateway are prohibited.
 
 The schemas and gateway vectors validate ordering, exact envelope parameters,
-profile/parameter substitution, missing or unbound envelopes, wrong-mode
-routing, and suffix preservation. They do not verify a wrapping proof or prove
+profile/parameter substitution, selector checks, suffix preservation, and
+mode-specific address, codehash, VK, and circuit pins. They reject cross-mode
+configurations, every individual pin substitution, and proof-selected routing.
+The committed pins are conspicuous structural fixtures only; they are not
+deployable identities. The validator does not call a wrapping verifier or prove
 that transcript binding has been implemented. Exact successor fork, VK,
-selector, contract address, chain, and codehash pins remain release artifacts
-outside this design and are mandatory before activation.
+selector, contract address, chain, and codehash pins remain authenticated
+release artifacts outside this design and are mandatory before activation.
 
 ## Required implementation sites
 
@@ -607,9 +650,12 @@ routing, and gateway vectors:
   digits, and undeclared high digits;
 - outer rate-word extraction cases for KoalaBear scalar modulus reduction,
   four-coefficient SP1 extension grouping, and `[1, 31)` bit challenges;
-- all V0/V1 proof-mode routes plus cross-version rejection; and
+- literal V0/V1 proof wires and decoded outcomes for every proof mode, including
+  both cross-version directions and malformed, trailing, downgrade/fallback,
+  wrong-magic, wrong-version, wrong-mode, and wrong-length rejection; and
 - P42 V1 gateway cases for exact envelope validation, substitution rejection,
-  proof-bound-envelope presence, mode rejection, and exact suffix forwarding.
+  trusted selector and verifier identity pins, proof-selected-routing rejection,
+  mode rejection, and exact suffix forwarding.
 
 The initial vectors are independent of the vulnerable code. They intentionally
 stop before permutation output. `cryptographicOutputsIncluded` is fixed to

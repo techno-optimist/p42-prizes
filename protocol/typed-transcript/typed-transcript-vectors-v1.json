@@ -5,26 +5,73 @@
   "protocolId": "p42.sp1.typed-transcript",
   "version": 1,
   "idRegistry": [
-    "compressed-v0-route",
-    "compressed-v1-route",
-    "core-v0-route",
-    "core-v0-to-v1-rejected",
-    "core-v1-route",
+    "compressed-v0-malformed",
+    "compressed-v0-to-v1",
+    "compressed-v0-trailing-byte",
+    "compressed-v0-valid",
+    "compressed-v0-wrong-length",
+    "compressed-v0-wrong-mode",
+    "compressed-v1-downgrade-fallback-forbidden",
+    "compressed-v1-malformed",
+    "compressed-v1-to-v0",
+    "compressed-v1-trailing-byte",
+    "compressed-v1-valid",
+    "compressed-v1-wrong-length",
+    "compressed-v1-wrong-magic",
+    "compressed-v1-wrong-mode",
+    "compressed-v1-wrong-version",
+    "compressed-v1-wrong-version-fallback-forbidden",
+    "core-v0-malformed",
+    "core-v0-to-v1",
+    "core-v0-trailing-byte",
+    "core-v0-valid",
+    "core-v0-wrong-length",
+    "core-v0-wrong-mode",
+    "core-v1-downgrade-fallback-forbidden",
+    "core-v1-malformed",
+    "core-v1-to-v0",
+    "core-v1-trailing-byte",
+    "core-v1-valid",
+    "core-v1-wrong-length",
+    "core-v1-wrong-magic",
+    "core-v1-wrong-mode",
+    "core-v1-wrong-version",
+    "core-v1-wrong-version-fallback-forbidden",
     "counter-gap",
     "declared-child-count",
     "direct-trailing-zero",
     "flat-nested-boundary",
-    "gateway-bound-envelope-substitution",
+    "gateway-cross-mode-verifier",
     "gateway-envelope-missing",
-    "gateway-envelope-unbound",
     "gateway-groth16-valid",
     "gateway-parameter-substitution",
     "gateway-plonk-valid",
     "gateway-profile-substitution",
+    "gateway-proof-selected-routing",
+    "gateway-wrong-address",
+    "gateway-wrong-circuit",
+    "gateway-wrong-codehash",
+    "gateway-wrong-configured-selector",
+    "gateway-wrong-payload-mode",
     "gateway-wrong-proof-mode",
-    "groth16-v0-route",
-    "groth16-v1-route",
-    "groth16-v1-to-v0-rejected",
+    "gateway-wrong-selector",
+    "gateway-wrong-vk",
+    "groth16-v0-malformed",
+    "groth16-v0-to-v1",
+    "groth16-v0-trailing-byte",
+    "groth16-v0-valid",
+    "groth16-v0-wrong-length",
+    "groth16-v0-wrong-mode",
+    "groth16-v1-downgrade-fallback-forbidden",
+    "groth16-v1-malformed",
+    "groth16-v1-to-v0",
+    "groth16-v1-trailing-byte",
+    "groth16-v1-valid",
+    "groth16-v1-wrong-length",
+    "groth16-v1-wrong-magic",
+    "groth16-v1-wrong-mode",
+    "groth16-v1-wrong-version",
+    "groth16-v1-wrong-version-fallback-forbidden",
     "inner-ordered-lifecycle",
     "inner-squeeze-bits-overflow",
     "inner-squeeze-bits-zero",
@@ -45,18 +92,60 @@
     "packed-trailing-zero",
     "packed-undeclared-high-digit",
     "parameter-substitution",
-    "plonk-v0-route",
-    "plonk-v1-route",
+    "plonk-v0-malformed",
+    "plonk-v0-to-v1",
+    "plonk-v0-trailing-byte",
+    "plonk-v0-valid",
+    "plonk-v0-wrong-length",
+    "plonk-v0-wrong-mode",
+    "plonk-v1-downgrade-fallback-forbidden",
+    "plonk-v1-malformed",
+    "plonk-v1-to-v0",
+    "plonk-v1-trailing-byte",
+    "plonk-v1-valid",
+    "plonk-v1-wrong-length",
+    "plonk-v1-wrong-magic",
+    "plonk-v1-wrong-mode",
+    "plonk-v1-wrong-version",
+    "plonk-v1-wrong-version-fallback-forbidden",
     "profile-substitution",
     "repeated-versus-batched-squeeze",
     "scalar-extension-type",
-    "shrink-v0-route",
-    "shrink-v1-route",
+    "shrink-v0-malformed",
+    "shrink-v0-to-v1",
+    "shrink-v0-trailing-byte",
+    "shrink-v0-valid",
+    "shrink-v0-wrong-length",
+    "shrink-v0-wrong-mode",
+    "shrink-v1-downgrade-fallback-forbidden",
+    "shrink-v1-malformed",
+    "shrink-v1-to-v0",
+    "shrink-v1-trailing-byte",
+    "shrink-v1-valid",
+    "shrink-v1-wrong-length",
+    "shrink-v1-wrong-magic",
+    "shrink-v1-wrong-mode",
+    "shrink-v1-wrong-version",
+    "shrink-v1-wrong-version-fallback-forbidden",
     "squeeze-inside-container",
     "squeeze-inside-slice",
     "unmatched-slice-end",
-    "wrap-v0-route",
-    "wrap-v1-route"
+    "wrap-v0-malformed",
+    "wrap-v0-to-v1",
+    "wrap-v0-trailing-byte",
+    "wrap-v0-valid",
+    "wrap-v0-wrong-length",
+    "wrap-v0-wrong-mode",
+    "wrap-v1-downgrade-fallback-forbidden",
+    "wrap-v1-malformed",
+    "wrap-v1-to-v0",
+    "wrap-v1-trailing-byte",
+    "wrap-v1-valid",
+    "wrap-v1-wrong-length",
+    "wrap-v1-wrong-magic",
+    "wrap-v1-wrong-mode",
+    "wrap-v1-wrong-version",
+    "wrap-v1-wrong-version-fallback-forbidden"
   ],
   "positiveTranscripts": [
     {
@@ -3610,190 +3699,1323 @@
   ],
   "proofDecodingVectors": [
     {
-      "id": "core-v0-route",
+      "id": "core-v0-valid",
       "proofMode": "core",
       "decoderVersion": "v0",
-      "inputVersion": "v0",
-      "expectedDecoder": "legacy-v0-core",
-      "expectedErrorCode": null
+      "wireHex": "0x01000001010003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "legacy-v0-core",
+        "version": "v0",
+        "mode": "core",
+        "selectorHex": "0x01000001",
+        "payloadHex": "0xdead01"
+      },
+      "expectedErrorCode": null,
+      "case": "v0-valid"
     },
     {
-      "id": "core-v1-route",
+      "id": "core-v1-valid",
       "proofMode": "core",
       "decoderVersion": "v1",
-      "inputVersion": "v1",
-      "expectedDecoder": "typed-v1-core",
-      "expectedErrorCode": null
+      "wireHex": "0x5034325454563100000101010108100001000001010003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "typed-v1-core",
+        "version": "v1",
+        "mode": "core",
+        "selectorHex": "0x01000001",
+        "payloadHex": "0xdead01"
+      },
+      "expectedErrorCode": null,
+      "case": "v1-valid"
     },
     {
-      "id": "compressed-v0-route",
+      "id": "core-v0-to-v1",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x01000001010003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v0-to-v1"
+    },
+    {
+      "id": "core-v1-to-v0",
+      "proofMode": "core",
+      "decoderVersion": "v0",
+      "wireHex": "0x5034325454563100000101010108100001000001010003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V1_TO_V0_DECODER",
+      "case": "v1-to-v0"
+    },
+    {
+      "id": "core-v0-malformed",
+      "proofMode": "core",
+      "decoderVersion": "v0",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-malformed"
+    },
+    {
+      "id": "core-v1-malformed",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-malformed"
+    },
+    {
+      "id": "core-v0-trailing-byte",
+      "proofMode": "core",
+      "decoderVersion": "v0",
+      "wireHex": "0x01000001010003dead01ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v0-trailing-byte"
+    },
+    {
+      "id": "core-v1-trailing-byte",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100001000001010003dead01ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v1-trailing-byte"
+    },
+    {
+      "id": "core-v1-wrong-magic",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x5134325454563100000101010108100001000001010003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MAGIC",
+      "case": "v1-wrong-magic"
+    },
+    {
+      "id": "core-v1-wrong-version",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000201010108100001000001010003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version"
+    },
+    {
+      "id": "core-v0-wrong-mode",
+      "proofMode": "core",
+      "decoderVersion": "v0",
+      "wireHex": "0x01000001020003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v0-wrong-mode"
+    },
+    {
+      "id": "core-v1-wrong-mode",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100001000001020003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v1-wrong-mode"
+    },
+    {
+      "id": "core-v0-wrong-length",
+      "proofMode": "core",
+      "decoderVersion": "v0",
+      "wireHex": "0x01000001010004dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-wrong-length"
+    },
+    {
+      "id": "core-v1-wrong-length",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100001000001010004dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-wrong-length"
+    },
+    {
+      "id": "core-v1-downgrade-fallback-forbidden",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x01000001010003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v1-downgrade-fallback-forbidden"
+    },
+    {
+      "id": "core-v1-wrong-version-fallback-forbidden",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000201010108100001000001010003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version-fallback-forbidden"
+    },
+    {
+      "id": "compressed-v0-valid",
       "proofMode": "compressed",
       "decoderVersion": "v0",
-      "inputVersion": "v0",
-      "expectedDecoder": "legacy-v0-compressed",
-      "expectedErrorCode": null
+      "wireHex": "0x02000002020003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "legacy-v0-compressed",
+        "version": "v0",
+        "mode": "compressed",
+        "selectorHex": "0x02000002",
+        "payloadHex": "0xdead02"
+      },
+      "expectedErrorCode": null,
+      "case": "v0-valid"
     },
     {
-      "id": "compressed-v1-route",
+      "id": "compressed-v1-valid",
       "proofMode": "compressed",
       "decoderVersion": "v1",
-      "inputVersion": "v1",
-      "expectedDecoder": "typed-v1-compressed",
-      "expectedErrorCode": null
+      "wireHex": "0x5034325454563100000101010108100002000002020003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "typed-v1-compressed",
+        "version": "v1",
+        "mode": "compressed",
+        "selectorHex": "0x02000002",
+        "payloadHex": "0xdead02"
+      },
+      "expectedErrorCode": null,
+      "case": "v1-valid"
     },
     {
-      "id": "shrink-v0-route",
+      "id": "compressed-v0-to-v1",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x02000002020003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v0-to-v1"
+    },
+    {
+      "id": "compressed-v1-to-v0",
+      "proofMode": "compressed",
+      "decoderVersion": "v0",
+      "wireHex": "0x5034325454563100000101010108100002000002020003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V1_TO_V0_DECODER",
+      "case": "v1-to-v0"
+    },
+    {
+      "id": "compressed-v0-malformed",
+      "proofMode": "compressed",
+      "decoderVersion": "v0",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-malformed"
+    },
+    {
+      "id": "compressed-v1-malformed",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-malformed"
+    },
+    {
+      "id": "compressed-v0-trailing-byte",
+      "proofMode": "compressed",
+      "decoderVersion": "v0",
+      "wireHex": "0x02000002020003dead02ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v0-trailing-byte"
+    },
+    {
+      "id": "compressed-v1-trailing-byte",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100002000002020003dead02ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v1-trailing-byte"
+    },
+    {
+      "id": "compressed-v1-wrong-magic",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x5134325454563100000101010108100002000002020003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MAGIC",
+      "case": "v1-wrong-magic"
+    },
+    {
+      "id": "compressed-v1-wrong-version",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000201010108100002000002020003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version"
+    },
+    {
+      "id": "compressed-v0-wrong-mode",
+      "proofMode": "compressed",
+      "decoderVersion": "v0",
+      "wireHex": "0x02000002030003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v0-wrong-mode"
+    },
+    {
+      "id": "compressed-v1-wrong-mode",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100002000002030003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v1-wrong-mode"
+    },
+    {
+      "id": "compressed-v0-wrong-length",
+      "proofMode": "compressed",
+      "decoderVersion": "v0",
+      "wireHex": "0x02000002020004dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-wrong-length"
+    },
+    {
+      "id": "compressed-v1-wrong-length",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100002000002020004dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-wrong-length"
+    },
+    {
+      "id": "compressed-v1-downgrade-fallback-forbidden",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x02000002020003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v1-downgrade-fallback-forbidden"
+    },
+    {
+      "id": "compressed-v1-wrong-version-fallback-forbidden",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000201010108100002000002020003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version-fallback-forbidden"
+    },
+    {
+      "id": "shrink-v0-valid",
       "proofMode": "shrink",
       "decoderVersion": "v0",
-      "inputVersion": "v0",
-      "expectedDecoder": "legacy-v0-shrink",
-      "expectedErrorCode": null
+      "wireHex": "0x03000003030003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "legacy-v0-shrink",
+        "version": "v0",
+        "mode": "shrink",
+        "selectorHex": "0x03000003",
+        "payloadHex": "0xdead03"
+      },
+      "expectedErrorCode": null,
+      "case": "v0-valid"
     },
     {
-      "id": "shrink-v1-route",
+      "id": "shrink-v1-valid",
       "proofMode": "shrink",
       "decoderVersion": "v1",
-      "inputVersion": "v1",
-      "expectedDecoder": "typed-v1-shrink",
-      "expectedErrorCode": null
+      "wireHex": "0x5034325454563100000101010108100003000003030003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "typed-v1-shrink",
+        "version": "v1",
+        "mode": "shrink",
+        "selectorHex": "0x03000003",
+        "payloadHex": "0xdead03"
+      },
+      "expectedErrorCode": null,
+      "case": "v1-valid"
     },
     {
-      "id": "wrap-v0-route",
+      "id": "shrink-v0-to-v1",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x03000003030003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v0-to-v1"
+    },
+    {
+      "id": "shrink-v1-to-v0",
+      "proofMode": "shrink",
+      "decoderVersion": "v0",
+      "wireHex": "0x5034325454563100000101010108100003000003030003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V1_TO_V0_DECODER",
+      "case": "v1-to-v0"
+    },
+    {
+      "id": "shrink-v0-malformed",
+      "proofMode": "shrink",
+      "decoderVersion": "v0",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-malformed"
+    },
+    {
+      "id": "shrink-v1-malformed",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-malformed"
+    },
+    {
+      "id": "shrink-v0-trailing-byte",
+      "proofMode": "shrink",
+      "decoderVersion": "v0",
+      "wireHex": "0x03000003030003dead03ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v0-trailing-byte"
+    },
+    {
+      "id": "shrink-v1-trailing-byte",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100003000003030003dead03ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v1-trailing-byte"
+    },
+    {
+      "id": "shrink-v1-wrong-magic",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x5134325454563100000101010108100003000003030003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MAGIC",
+      "case": "v1-wrong-magic"
+    },
+    {
+      "id": "shrink-v1-wrong-version",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000201010108100003000003030003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version"
+    },
+    {
+      "id": "shrink-v0-wrong-mode",
+      "proofMode": "shrink",
+      "decoderVersion": "v0",
+      "wireHex": "0x03000003040003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v0-wrong-mode"
+    },
+    {
+      "id": "shrink-v1-wrong-mode",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100003000003040003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v1-wrong-mode"
+    },
+    {
+      "id": "shrink-v0-wrong-length",
+      "proofMode": "shrink",
+      "decoderVersion": "v0",
+      "wireHex": "0x03000003030004dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-wrong-length"
+    },
+    {
+      "id": "shrink-v1-wrong-length",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100003000003030004dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-wrong-length"
+    },
+    {
+      "id": "shrink-v1-downgrade-fallback-forbidden",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x03000003030003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v1-downgrade-fallback-forbidden"
+    },
+    {
+      "id": "shrink-v1-wrong-version-fallback-forbidden",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000201010108100003000003030003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version-fallback-forbidden"
+    },
+    {
+      "id": "wrap-v0-valid",
       "proofMode": "wrap",
       "decoderVersion": "v0",
-      "inputVersion": "v0",
-      "expectedDecoder": "legacy-v0-wrap",
-      "expectedErrorCode": null
+      "wireHex": "0x04000004040003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "legacy-v0-wrap",
+        "version": "v0",
+        "mode": "wrap",
+        "selectorHex": "0x04000004",
+        "payloadHex": "0xdead04"
+      },
+      "expectedErrorCode": null,
+      "case": "v0-valid"
     },
     {
-      "id": "wrap-v1-route",
+      "id": "wrap-v1-valid",
       "proofMode": "wrap",
       "decoderVersion": "v1",
-      "inputVersion": "v1",
-      "expectedDecoder": "typed-v1-wrap",
-      "expectedErrorCode": null
+      "wireHex": "0x5034325454563100000102020202030004000004040003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "typed-v1-wrap",
+        "version": "v1",
+        "mode": "wrap",
+        "selectorHex": "0x04000004",
+        "payloadHex": "0xdead04"
+      },
+      "expectedErrorCode": null,
+      "case": "v1-valid"
     },
     {
-      "id": "groth16-v0-route",
+      "id": "wrap-v0-to-v1",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x04000004040003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v0-to-v1"
+    },
+    {
+      "id": "wrap-v1-to-v0",
+      "proofMode": "wrap",
+      "decoderVersion": "v0",
+      "wireHex": "0x5034325454563100000102020202030004000004040003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V1_TO_V0_DECODER",
+      "case": "v1-to-v0"
+    },
+    {
+      "id": "wrap-v0-malformed",
+      "proofMode": "wrap",
+      "decoderVersion": "v0",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-malformed"
+    },
+    {
+      "id": "wrap-v1-malformed",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-malformed"
+    },
+    {
+      "id": "wrap-v0-trailing-byte",
+      "proofMode": "wrap",
+      "decoderVersion": "v0",
+      "wireHex": "0x04000004040003dead04ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v0-trailing-byte"
+    },
+    {
+      "id": "wrap-v1-trailing-byte",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000102020202030004000004040003dead04ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v1-trailing-byte"
+    },
+    {
+      "id": "wrap-v1-wrong-magic",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x5134325454563100000102020202030004000004040003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MAGIC",
+      "case": "v1-wrong-magic"
+    },
+    {
+      "id": "wrap-v1-wrong-version",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000202020202030004000004040003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version"
+    },
+    {
+      "id": "wrap-v0-wrong-mode",
+      "proofMode": "wrap",
+      "decoderVersion": "v0",
+      "wireHex": "0x04000004050003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v0-wrong-mode"
+    },
+    {
+      "id": "wrap-v1-wrong-mode",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000102020202030004000004050003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v1-wrong-mode"
+    },
+    {
+      "id": "wrap-v0-wrong-length",
+      "proofMode": "wrap",
+      "decoderVersion": "v0",
+      "wireHex": "0x04000004040004dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-wrong-length"
+    },
+    {
+      "id": "wrap-v1-wrong-length",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000102020202030004000004040004dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-wrong-length"
+    },
+    {
+      "id": "wrap-v1-downgrade-fallback-forbidden",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x04000004040003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v1-downgrade-fallback-forbidden"
+    },
+    {
+      "id": "wrap-v1-wrong-version-fallback-forbidden",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000202020202030004000004040003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version-fallback-forbidden"
+    },
+    {
+      "id": "groth16-v0-valid",
       "proofMode": "groth16",
       "decoderVersion": "v0",
-      "inputVersion": "v0",
-      "expectedDecoder": "legacy-v0-groth16",
-      "expectedErrorCode": null
+      "wireHex": "0x11223344050003dead05",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "legacy-v0-groth16",
+        "version": "v0",
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "payloadHex": "0xdead05"
+      },
+      "expectedErrorCode": null,
+      "case": "v0-valid"
     },
     {
-      "id": "groth16-v1-route",
+      "id": "groth16-v1-valid",
       "proofMode": "groth16",
       "decoderVersion": "v1",
-      "inputVersion": "v1",
-      "expectedDecoder": "p42-v1-gateway-groth16",
-      "expectedErrorCode": null
+      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "p42-v1-gateway-groth16",
+        "version": "v1",
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "payloadHex": "0xdead05"
+      },
+      "expectedErrorCode": null,
+      "case": "v1-valid"
     },
     {
-      "id": "plonk-v0-route",
+      "id": "groth16-v0-to-v1",
+      "proofMode": "groth16",
+      "decoderVersion": "v1",
+      "wireHex": "0x11223344050003dead05",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v0-to-v1"
+    },
+    {
+      "id": "groth16-v1-to-v0",
+      "proofMode": "groth16",
+      "decoderVersion": "v0",
+      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V1_TO_V0_DECODER",
+      "case": "v1-to-v0"
+    },
+    {
+      "id": "groth16-v0-malformed",
+      "proofMode": "groth16",
+      "decoderVersion": "v0",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-malformed"
+    },
+    {
+      "id": "groth16-v1-malformed",
+      "proofMode": "groth16",
+      "decoderVersion": "v1",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-malformed"
+    },
+    {
+      "id": "groth16-v0-trailing-byte",
+      "proofMode": "groth16",
+      "decoderVersion": "v0",
+      "wireHex": "0x11223344050003dead05ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v0-trailing-byte"
+    },
+    {
+      "id": "groth16-v1-trailing-byte",
+      "proofMode": "groth16",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000102020202030011223344050003dead05ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v1-trailing-byte"
+    },
+    {
+      "id": "groth16-v1-wrong-magic",
+      "proofMode": "groth16",
+      "decoderVersion": "v1",
+      "wireHex": "0x5134325454563100000102020202030011223344050003dead05",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MAGIC",
+      "case": "v1-wrong-magic"
+    },
+    {
+      "id": "groth16-v1-wrong-version",
+      "proofMode": "groth16",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000202020202030011223344050003dead05",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version"
+    },
+    {
+      "id": "groth16-v0-wrong-mode",
+      "proofMode": "groth16",
+      "decoderVersion": "v0",
+      "wireHex": "0x11223344060003dead05",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v0-wrong-mode"
+    },
+    {
+      "id": "groth16-v1-wrong-mode",
+      "proofMode": "groth16",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000102020202030011223344060003dead05",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v1-wrong-mode"
+    },
+    {
+      "id": "groth16-v0-wrong-length",
+      "proofMode": "groth16",
+      "decoderVersion": "v0",
+      "wireHex": "0x11223344050004dead05",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-wrong-length"
+    },
+    {
+      "id": "groth16-v1-wrong-length",
+      "proofMode": "groth16",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000102020202030011223344050004dead05",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-wrong-length"
+    },
+    {
+      "id": "groth16-v1-downgrade-fallback-forbidden",
+      "proofMode": "groth16",
+      "decoderVersion": "v1",
+      "wireHex": "0x11223344050003dead05",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v1-downgrade-fallback-forbidden"
+    },
+    {
+      "id": "groth16-v1-wrong-version-fallback-forbidden",
+      "proofMode": "groth16",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000202020202030011223344050003dead05",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version-fallback-forbidden"
+    },
+    {
+      "id": "plonk-v0-valid",
       "proofMode": "plonk",
       "decoderVersion": "v0",
-      "inputVersion": "v0",
-      "expectedDecoder": "legacy-v0-plonk",
-      "expectedErrorCode": null
+      "wireHex": "0xa1b2c3d4060003dead06",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "legacy-v0-plonk",
+        "version": "v0",
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "payloadHex": "0xdead06"
+      },
+      "expectedErrorCode": null,
+      "case": "v0-valid"
     },
     {
-      "id": "plonk-v1-route",
+      "id": "plonk-v1-valid",
       "proofMode": "plonk",
       "decoderVersion": "v1",
-      "inputVersion": "v1",
-      "expectedDecoder": "p42-v1-gateway-plonk",
-      "expectedErrorCode": null
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4060003dead06",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "p42-v1-gateway-plonk",
+        "version": "v1",
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "payloadHex": "0xdead06"
+      },
+      "expectedErrorCode": null,
+      "case": "v1-valid"
     },
     {
-      "id": "core-v0-to-v1-rejected",
-      "proofMode": "core",
+      "id": "plonk-v0-to-v1",
+      "proofMode": "plonk",
       "decoderVersion": "v1",
-      "inputVersion": "v0",
-      "expectedDecoder": null,
-      "expectedErrorCode": "V0_TO_V1_DECODER"
+      "wireHex": "0xa1b2c3d4060003dead06",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v0-to-v1"
     },
     {
-      "id": "groth16-v1-to-v0-rejected",
-      "proofMode": "groth16",
+      "id": "plonk-v1-to-v0",
+      "proofMode": "plonk",
       "decoderVersion": "v0",
-      "inputVersion": "v1",
-      "expectedDecoder": null,
-      "expectedErrorCode": "V1_TO_V0_DECODER"
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4060003dead06",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V1_TO_V0_DECODER",
+      "case": "v1-to-v0"
+    },
+    {
+      "id": "plonk-v0-malformed",
+      "proofMode": "plonk",
+      "decoderVersion": "v0",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-malformed"
+    },
+    {
+      "id": "plonk-v1-malformed",
+      "proofMode": "plonk",
+      "decoderVersion": "v1",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-malformed"
+    },
+    {
+      "id": "plonk-v0-trailing-byte",
+      "proofMode": "plonk",
+      "decoderVersion": "v0",
+      "wireHex": "0xa1b2c3d4060003dead06ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v0-trailing-byte"
+    },
+    {
+      "id": "plonk-v1-trailing-byte",
+      "proofMode": "plonk",
+      "decoderVersion": "v1",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4060003dead06ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v1-trailing-byte"
+    },
+    {
+      "id": "plonk-v1-wrong-magic",
+      "proofMode": "plonk",
+      "decoderVersion": "v1",
+      "wireHex": "0x51343254545631000001020202020300a1b2c3d4060003dead06",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MAGIC",
+      "case": "v1-wrong-magic"
+    },
+    {
+      "id": "plonk-v1-wrong-version",
+      "proofMode": "plonk",
+      "decoderVersion": "v1",
+      "wireHex": "0x50343254545631000002020202020300a1b2c3d4060003dead06",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version"
+    },
+    {
+      "id": "plonk-v0-wrong-mode",
+      "proofMode": "plonk",
+      "decoderVersion": "v0",
+      "wireHex": "0xa1b2c3d4010003dead06",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v0-wrong-mode"
+    },
+    {
+      "id": "plonk-v1-wrong-mode",
+      "proofMode": "plonk",
+      "decoderVersion": "v1",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4010003dead06",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v1-wrong-mode"
+    },
+    {
+      "id": "plonk-v0-wrong-length",
+      "proofMode": "plonk",
+      "decoderVersion": "v0",
+      "wireHex": "0xa1b2c3d4060004dead06",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-wrong-length"
+    },
+    {
+      "id": "plonk-v1-wrong-length",
+      "proofMode": "plonk",
+      "decoderVersion": "v1",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4060004dead06",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-wrong-length"
+    },
+    {
+      "id": "plonk-v1-downgrade-fallback-forbidden",
+      "proofMode": "plonk",
+      "decoderVersion": "v1",
+      "wireHex": "0xa1b2c3d4060003dead06",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v1-downgrade-fallback-forbidden"
+    },
+    {
+      "id": "plonk-v1-wrong-version-fallback-forbidden",
+      "proofMode": "plonk",
+      "decoderVersion": "v1",
+      "wireHex": "0x50343254545631000002020202020300a1b2c3d4060003dead06",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version-fallback-forbidden"
     }
   ],
   "gatewayVectors": [
     {
       "id": "gateway-groth16-valid",
-      "proofMode": "groth16",
-      "presentedEnvelopeHex": "0x50343254545631000001020202020300",
-      "successorProofBoundEnvelopeHex": "0x50343254545631000001020202020300",
-      "selectorPayloadHex": "0x11223344aabb",
-      "expectedForwardedHex": "0x11223344aabb",
-      "expectedErrorCode": null
+      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
+      "routingSource": "trusted-deployment-config",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": {
+        "forwardedHex": "0x11223344050003dead05",
+        "verifierIdentity": {
+          "mode": "groth16",
+          "selectorHex": "0x11223344",
+          "verifierAddress": "0x1111111111111111111111111111111111110001",
+          "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "circuitId": "p42-typed-v1-groth16-structural-fixture"
+        },
+        "verifierDecode": {
+          "mode": "groth16",
+          "selectorHex": "0x11223344",
+          "payloadHex": "0xdead05"
+        }
+      },
+      "expectedErrorCode": null,
+      "case": "valid-groth16",
+      "trustedEntryPointMode": "groth16"
     },
     {
       "id": "gateway-plonk-valid",
-      "proofMode": "plonk",
-      "presentedEnvelopeHex": "0x50343254545631000001020202020300",
-      "successorProofBoundEnvelopeHex": "0x50343254545631000001020202020300",
-      "selectorPayloadHex": "0xa1b2c3d401",
-      "expectedForwardedHex": "0xa1b2c3d401",
-      "expectedErrorCode": null
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4060003dead06",
+      "routingSource": "trusted-deployment-config",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": {
+        "forwardedHex": "0xa1b2c3d4060003dead06",
+        "verifierIdentity": {
+          "mode": "plonk",
+          "selectorHex": "0xa1b2c3d4",
+          "verifierAddress": "0x1111111111111111111111111111111111110002",
+          "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "circuitId": "p42-typed-v1-plonk-structural-fixture"
+        },
+        "verifierDecode": {
+          "mode": "plonk",
+          "selectorHex": "0xa1b2c3d4",
+          "payloadHex": "0xdead06"
+        }
+      },
+      "expectedErrorCode": null,
+      "case": "valid-plonk",
+      "trustedEntryPointMode": "plonk"
     },
     {
       "id": "gateway-envelope-missing",
-      "proofMode": "groth16",
-      "presentedEnvelopeHex": null,
-      "successorProofBoundEnvelopeHex": "0x50343254545631000001020202020300",
-      "selectorPayloadHex": "0x11223344aabb",
-      "expectedForwardedHex": null,
-      "expectedErrorCode": "ENVELOPE_MISSING"
+      "wireHex": "0x01",
+      "routingSource": "trusted-deployment-config",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MISSING",
+      "case": "envelope-missing",
+      "trustedEntryPointMode": "groth16"
     },
     {
       "id": "gateway-profile-substitution",
-      "proofMode": "groth16",
-      "presentedEnvelopeHex": "0x50343254545631000001010101081000",
-      "successorProofBoundEnvelopeHex": "0x50343254545631000001010101081000",
-      "selectorPayloadHex": "0x11223344aabb",
-      "expectedForwardedHex": null,
-      "expectedErrorCode": "ENVELOPE_PROFILE"
+      "wireHex": "0x5034325454563100000101010108100011223344050003dead05",
+      "routingSource": "trusted-deployment-config",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_PROFILE",
+      "case": "profile-substitution",
+      "trustedEntryPointMode": "groth16"
     },
     {
       "id": "gateway-parameter-substitution",
-      "proofMode": "plonk",
-      "presentedEnvelopeHex": "0x50343254545631000001020202020400",
-      "successorProofBoundEnvelopeHex": "0x50343254545631000001020202020400",
-      "selectorPayloadHex": "0x11223344aabb",
-      "expectedForwardedHex": null,
-      "expectedErrorCode": "ENVELOPE_PARAMETERS"
-    },
-    {
-      "id": "gateway-envelope-unbound",
-      "proofMode": "groth16",
-      "presentedEnvelopeHex": "0x50343254545631000001020202020300",
-      "successorProofBoundEnvelopeHex": null,
-      "selectorPayloadHex": "0x11223344aabb",
-      "expectedForwardedHex": null,
-      "expectedErrorCode": "GATEWAY_ENVELOPE_UNBOUND"
-    },
-    {
-      "id": "gateway-bound-envelope-substitution",
-      "proofMode": "groth16",
-      "presentedEnvelopeHex": "0x50343254545631000001020202020300",
-      "successorProofBoundEnvelopeHex": "0x50343254545631000001010101081000",
-      "selectorPayloadHex": "0x11223344aabb",
-      "expectedForwardedHex": null,
-      "expectedErrorCode": "GATEWAY_ENVELOPE_BINDING"
+      "wireHex": "0x50343254545631000001020202030300a1b2c3d4060003dead06",
+      "routingSource": "trusted-deployment-config",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_PARAMETERS",
+      "case": "parameter-substitution",
+      "trustedEntryPointMode": "plonk"
     },
     {
       "id": "gateway-wrong-proof-mode",
-      "proofMode": "wrap",
-      "presentedEnvelopeHex": "0x50343254545631000001020202020300",
-      "successorProofBoundEnvelopeHex": "0x50343254545631000001020202020300",
-      "selectorPayloadHex": "0x11223344aabb",
-      "expectedForwardedHex": null,
-      "expectedErrorCode": "GATEWAY_PROOF_MODE"
+      "wireHex": "0x5034325454563100000102020202030004000004040003dead04",
+      "routingSource": "trusted-deployment-config",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_PROOF_MODE",
+      "case": "wrong-proof-mode",
+      "trustedEntryPointMode": "wrap"
+    },
+    {
+      "id": "gateway-wrong-selector",
+      "wireHex": "0x50343254545631000001020202020300ffffffff050003dead05",
+      "routingSource": "trusted-deployment-config",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_SELECTOR_MISMATCH",
+      "case": "wrong-proof-selector",
+      "trustedEntryPointMode": "groth16"
+    },
+    {
+      "id": "gateway-cross-mode-verifier",
+      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
+      "routingSource": "trusted-deployment-config",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_MODE",
+      "case": "cross-mode-verifier",
+      "trustedEntryPointMode": "groth16"
+    },
+    {
+      "id": "gateway-proof-selected-routing",
+      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
+      "routingSource": "proof-bytes",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_PROOF_SELECTED_ROUTING",
+      "case": "proof-selected-routing",
+      "trustedEntryPointMode": "groth16"
+    },
+    {
+      "id": "gateway-wrong-payload-mode",
+      "wireHex": "0x5034325454563100000102020202030011223344060003dead05",
+      "routingSource": "trusted-deployment-config",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "wrong-payload-mode",
+      "trustedEntryPointMode": "groth16"
+    },
+    {
+      "id": "gateway-wrong-configured-selector",
+      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
+      "routingSource": "trusted-deployment-config",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0xffffffff",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_CONFIG_SELECTOR",
+      "case": "wrong-configured-selector",
+      "trustedEntryPointMode": "groth16"
+    },
+    {
+      "id": "gateway-wrong-address",
+      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
+      "routingSource": "trusted-deployment-config",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x2222222222222222222222222222222222222222",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_ADDRESS",
+      "case": "wrong-address",
+      "trustedEntryPointMode": "groth16"
+    },
+    {
+      "id": "gateway-wrong-codehash",
+      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
+      "routingSource": "trusted-deployment-config",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_CODEHASH",
+      "case": "wrong-codehash",
+      "trustedEntryPointMode": "groth16"
+    },
+    {
+      "id": "gateway-wrong-vk",
+      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
+      "routingSource": "trusted-deployment-config",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0x3333333333333333333333333333333333333333333333333333333333333333",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_VK",
+      "case": "wrong-vk",
+      "trustedEntryPointMode": "groth16"
+    },
+    {
+      "id": "gateway-wrong-circuit",
+      "wireHex": "0x5034325454563100000102020202030011223344050003dead05",
+      "routingSource": "trusted-deployment-config",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-wrong-circuit-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_CIRCUIT",
+      "case": "wrong-circuit",
+      "trustedEntryPointMode": "groth16"
     }
   ]
 }

@@ -495,7 +495,7 @@ def validate_spec_invariants(spec: dict[str, Any]) -> None:
             "inner-koalabear-v1" if mode in {"core", "compressed", "shrink"}
             else "outer-bn254-rate-koalabear-v1"
         )
-        expected_gateway = "validate-bind-strip-forward" if mode in {"groth16", "plonk"} else "none"
+        expected_gateway = "validate-select-check-strip-call" if mode in {"groth16", "plonk"} else "none"
         if route["v1Profile"] != expected_profile or route["gateway"] != expected_gateway:
             reject("SPEC_PROOF_ROUTE", f"invalid V1 route for {mode}")
         if route["v0Decoder"] == route["v1Decoder"]:
@@ -504,11 +504,31 @@ def validate_spec_invariants(spec: dict[str, Any]) -> None:
     if not (
         gateway["outerEnvelopeBytes"] == 16
         and gateway["outerProfile"] == "outer-bn254-rate-koalabear-v1"
-        and gateway["requiresSuccessorProofEnvelopeBinding"]
+        and gateway["trustedConfigSource"] == "authenticated-deployment-config-only"
+        and not gateway["preVerificationEnvelopeBindingCheck"]
+        and gateway["bindingSource"]
+        == "pinned-successor-circuit-vk-or-authenticated-public-input"
         and gateway["stripAfterValidationOnly"]
         and not gateway["silentSdkStrippingAllowed"]
     ):
         reject("SPEC_GATEWAY", "P42 V1 gateway invariants are not frozen")
+    wire = spec["proofWire"]
+    if (
+        wire["legacyShape"] != "selector4-mode1-length2-payload"
+        or wire["v1Shape"] != "envelope16-selector4-mode1-length2-payload"
+        or wire["selectorBytes"] != 4
+        or wire["modeBytes"] != 1
+        or wire["payloadLengthBytes"] != 2
+        or wire["payloadLengthByteOrder"] != "big-endian"
+        or wire["modeTags"] != {
+            "core": 1, "compressed": 2, "shrink": 3,
+            "wrap": 4, "groth16": 5, "plonk": 6,
+        }
+    ):
+        reject("SPEC_PROOF_WIRE", "proof wire parameters are not frozen V1")
+    for mode, pin in gateway["structuralTestPins"].items():
+        if pin["mode"] != mode or pin["selectorHex"] != wire["structuralTestSelectors"][mode]:
+            reject("SPEC_GATEWAY_PIN", f"structural gateway pin mismatch for {mode}")
 
 
 def validate_rejection(
@@ -650,66 +670,146 @@ def decode_hex_bytes(value: str, code: str) -> bytes:
     return decoded
 
 
-def route_proof_decoder(spec: dict[str, Any], vector: dict[str, Any]) -> str:
-    route = spec["proofModeRouting"][vector["proofMode"]]
+def profile_for_mode(spec: dict[str, Any], mode: str) -> str:
+    return spec["proofModeRouting"][mode]["v1Profile"]
+
+
+def decode_legacy_proof_bytes(
+    spec: dict[str, Any], mode: str, wire: bytes, expected_selector_hex: str | None = None
+) -> dict[str, Any]:
+    layout = spec["proofWire"]
+    header_length = layout["selectorBytes"] + layout["modeBytes"] + layout["payloadLengthBytes"]
+    if len(wire) < header_length:
+        reject("PROOF_WIRE_LENGTH", "legacy-shaped proof header is truncated")
+    selector = wire[: layout["selectorBytes"]]
+    expected_selector = bytes.fromhex(
+        (expected_selector_hex or layout["structuralTestSelectors"][mode])[2:]
+    )
+    if selector != expected_selector:
+        reject("SELECTOR_MISMATCH", "proof selector does not match the trusted mode configuration")
+    mode_offset = layout["selectorBytes"]
+    if wire[mode_offset] != layout["modeTags"][mode]:
+        reject("WRONG_PROOF_MODE", "proof mode tag does not match the selected decoder")
+    length_offset = mode_offset + layout["modeBytes"]
+    declared_length = int.from_bytes(
+        wire[length_offset : length_offset + layout["payloadLengthBytes"]], "big"
+    )
+    payload_offset = length_offset + layout["payloadLengthBytes"]
+    actual_length = len(wire) - payload_offset
+    if actual_length < declared_length:
+        reject("PROOF_WIRE_LENGTH", "proof payload is shorter than its declared length")
+    if actual_length > declared_length:
+        reject("PROOF_TRAILING_BYTES", "proof contains bytes after the declared payload")
+    return {
+        "mode": mode,
+        "selectorHex": "0x" + selector.hex(),
+        "payloadHex": "0x" + wire[payload_offset:].hex(),
+    }
+
+
+def decode_proof_wire(spec: dict[str, Any], vector: dict[str, Any]) -> dict[str, Any]:
+    mode = vector["proofMode"]
     decoder_version = vector["decoderVersion"]
-    input_version = vector["inputVersion"]
-    if decoder_version != input_version:
-        reject(
-            "V0_TO_V1_DECODER" if decoder_version == "v1" else "V1_TO_V0_DECODER",
-            "proof versions cannot be auto-detected, converted, or passed across decoders",
-        )
-    return route[f"{decoder_version}Decoder"]
+    wire = decode_hex_bytes(vector["wireHex"], "PROOF_WIRE_CANONICAL")
+    magic = bytes.fromhex(spec["versionEnvelope"]["wireMagicHex"][2:])
+    route = spec["proofModeRouting"][mode]
+    if decoder_version == "v0":
+        if len(wire) >= len(magic) and wire[: len(magic)] == magic:
+            reject("V1_TO_V0_DECODER", "V1 envelope cannot be passed to a V0 decoder")
+        decoded = decode_legacy_proof_bytes(spec, mode, wire)
+    else:
+        if not vector["fallbackAllowed"]:
+            try:
+                decode_legacy_proof_bytes(spec, mode, wire)
+            except TranscriptValidationError:
+                pass
+            else:
+                reject("V0_TO_V1_DECODER", "legacy proof cannot be passed to a V1 decoder")
+        envelope_length = spec["versionEnvelope"]["wireLengthBytes"]
+        if len(wire) < envelope_length:
+            reject("PROOF_WIRE_LENGTH", "V1 proof is shorter than its envelope")
+        envelope_hex = "0x" + wire[:envelope_length].hex()
+        decode_envelope(spec, profile_for_mode(spec, mode), envelope_hex)
+        decoded = decode_legacy_proof_bytes(spec, mode, wire[envelope_length:])
+    return {
+        "decoder": route[f"{decoder_version}Decoder"],
+        "version": decoder_version,
+        **decoded,
+    }
 
 
 def validate_decoding_vector(spec: dict[str, Any], vector: dict[str, Any]) -> None:
     expected_error = vector["expectedErrorCode"]
     try:
-        decoder = route_proof_decoder(spec, vector)
+        outcome = decode_proof_wire(spec, vector)
     except TranscriptValidationError as exc:
         if expected_error != exc.code:
             raise ValueError(f"{vector['id']}: expected {expected_error}, got {exc.code}") from exc
     else:
         if expected_error is not None:
-            raise ValueError(f"{vector['id']}: cross-version decode was unexpectedly accepted")
-        if decoder != vector["expectedDecoder"]:
-            raise ValueError(f"{vector['id']}: decoder route mismatch")
+            raise ValueError(f"{vector['id']}: malformed or cross-version wire was accepted")
+        if outcome != vector["expectedOutcome"]:
+            raise ValueError(f"{vector['id']}: decoded proof outcome mismatch")
 
 
-def run_gateway(spec: dict[str, Any], vector: dict[str, Any]) -> str:
-    if vector["proofMode"] not in {"groth16", "plonk"}:
-        reject("GATEWAY_PROOF_MODE", "P42 V1 gateway accepts only Groth16 or Plonk")
-    presented = vector["presentedEnvelopeHex"]
-    if presented is None:
-        reject("ENVELOPE_MISSING", "P42 V1 gateway requires the outer envelope")
-    presented_bytes = decode_envelope(
-        spec, "outer-bn254-rate-koalabear-v1", presented
+def validate_gateway_pin(expected: dict[str, Any], configured: dict[str, Any]) -> None:
+    checks = (
+        ("mode", "GATEWAY_VERIFIER_MODE"),
+        ("selectorHex", "GATEWAY_CONFIG_SELECTOR"),
+        ("verifierAddress", "GATEWAY_VERIFIER_ADDRESS"),
+        ("verifierCodehash", "GATEWAY_VERIFIER_CODEHASH"),
+        ("vkId", "GATEWAY_VERIFIER_VK"),
+        ("circuitId", "GATEWAY_VERIFIER_CIRCUIT"),
     )
-    bound = vector["successorProofBoundEnvelopeHex"]
-    if bound is None:
-        reject("GATEWAY_ENVELOPE_UNBOUND", "successor wrapping proof must bind the envelope")
-    bound_bytes = decode_hex_bytes(bound, "GATEWAY_BOUND_ENVELOPE")
-    if presented_bytes != bound_bytes:
-        reject("GATEWAY_ENVELOPE_BINDING", "presented and proof-bound envelopes differ")
-    decode_envelope(spec, "outer-bn254-rate-koalabear-v1", bound)
-    forwarded = decode_hex_bytes(vector["selectorPayloadHex"], "GATEWAY_SELECTOR_PAYLOAD")
-    if len(forwarded) < 4:
+    for key, code in checks:
+        if configured[key] != expected[key]:
+            reject(code, f"trusted deployment {key} does not match the selected mode pin")
+
+
+def run_gateway(spec: dict[str, Any], vector: dict[str, Any]) -> dict[str, Any]:
+    mode = vector["trustedEntryPointMode"]
+    if mode not in {"groth16", "plonk"}:
+        reject("GATEWAY_PROOF_MODE", "P42 V1 gateway accepts only Groth16 or Plonk")
+    wire = decode_hex_bytes(vector["wireHex"], "GATEWAY_WIRE_CANONICAL")
+    envelope_length = spec["gateway"]["outerEnvelopeBytes"]
+    if len(wire) < envelope_length:
+        reject("ENVELOPE_MISSING", "P42 V1 gateway requires the outer envelope")
+    decode_envelope(
+        spec, spec["gateway"]["outerProfile"], "0x" + wire[:envelope_length].hex()
+    )
+    if vector["routingSource"] != "trusted-deployment-config":
+        reject("GATEWAY_PROOF_SELECTED_ROUTING", "proof bytes cannot select the verifier")
+    expected_pin = spec["gateway"]["structuralTestPins"][mode]
+    configured = vector["trustedDeploymentConfig"]
+    validate_gateway_pin(expected_pin, configured)
+    forwarded = wire[envelope_length:]
+    if len(forwarded) < spec["proofWire"]["selectorBytes"]:
         reject("GATEWAY_SELECTOR_PAYLOAD", "legacy-shaped selector plus payload is truncated")
-    return "0x" + forwarded.hex()
+    configured_selector = bytes.fromhex(configured["selectorHex"][2:])
+    if forwarded[: len(configured_selector)] != configured_selector:
+        reject("GATEWAY_SELECTOR_MISMATCH", "proof selector does not match trusted configuration")
+    decoded = decode_legacy_proof_bytes(
+        spec, mode, forwarded, configured["selectorHex"]
+    )
+    return {
+        "forwardedHex": "0x" + forwarded.hex(),
+        "verifierIdentity": configured,
+        "verifierDecode": decoded,
+    }
 
 
 def validate_gateway_vector(spec: dict[str, Any], vector: dict[str, Any]) -> None:
     expected_error = vector["expectedErrorCode"]
     try:
-        forwarded = run_gateway(spec, vector)
+        outcome = run_gateway(spec, vector)
     except TranscriptValidationError as exc:
         if expected_error != exc.code:
             raise ValueError(f"{vector['id']}: expected {expected_error}, got {exc.code}") from exc
     else:
         if expected_error is not None:
             raise ValueError(f"{vector['id']}: gateway input was unexpectedly accepted")
-        if forwarded != vector["expectedForwardedHex"]:
-            raise ValueError(f"{vector['id']}: gateway forwarded bytes mismatch")
+        if outcome != vector["expectedOutcome"]:
+            raise ValueError(f"{vector['id']}: gateway outcome mismatch")
 
 
 def validate_semantics(spec: dict[str, Any], vectors: dict[str, Any]) -> None:
@@ -734,9 +834,32 @@ def validate_semantics(spec: dict[str, Any], vectors: dict[str, Any]) -> None:
     for vector in vectors["outerChallengeExtractionVectors"]:
         validate_outer_extraction(spec, vector)
 
+    decoder_cases = {
+        "v0-valid", "v1-valid", "v0-to-v1", "v1-to-v0", "v0-malformed",
+        "v1-malformed", "v0-trailing-byte", "v1-trailing-byte", "v1-wrong-magic",
+        "v1-wrong-version", "v0-wrong-mode", "v1-wrong-mode", "v0-wrong-length",
+        "v1-wrong-length", "v1-downgrade-fallback-forbidden",
+        "v1-wrong-version-fallback-forbidden",
+    }
+    for mode in spec["proofModeRouting"]:
+        actual = {
+            vector["case"] for vector in vectors["proofDecodingVectors"]
+            if vector["proofMode"] == mode
+        }
+        if actual != decoder_cases:
+            reject("DECODER_VECTOR_COVERAGE", f"decoder corpus is incomplete for {mode}")
     for vector in vectors["proofDecodingVectors"]:
         validate_decoding_vector(spec, vector)
 
+    expected_gateway_cases = {
+        "valid-groth16", "valid-plonk", "envelope-missing", "profile-substitution",
+        "parameter-substitution", "wrong-proof-mode", "wrong-proof-selector",
+        "cross-mode-verifier", "proof-selected-routing", "wrong-payload-mode",
+        "wrong-configured-selector", "wrong-address", "wrong-codehash", "wrong-vk",
+        "wrong-circuit",
+    }
+    if {vector["case"] for vector in vectors["gatewayVectors"]} != expected_gateway_cases:
+        reject("GATEWAY_VECTOR_COVERAGE", "gateway corpus does not cover every required case")
     for vector in vectors["gatewayVectors"]:
         validate_gateway_vector(spec, vector)
 

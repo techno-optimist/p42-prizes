@@ -100,8 +100,25 @@
     "compressed": {"v0Decoder": "legacy-v0-compressed", "v1Decoder": "typed-v1-compressed", "v1Profile": "inner-koalabear-v1", "gateway": "none"},
     "shrink": {"v0Decoder": "legacy-v0-shrink", "v1Decoder": "typed-v1-shrink", "v1Profile": "inner-koalabear-v1", "gateway": "none"},
     "wrap": {"v0Decoder": "legacy-v0-wrap", "v1Decoder": "typed-v1-wrap", "v1Profile": "outer-bn254-rate-koalabear-v1", "gateway": "none"},
-    "groth16": {"v0Decoder": "legacy-v0-groth16", "v1Decoder": "p42-v1-gateway-groth16", "v1Profile": "outer-bn254-rate-koalabear-v1", "gateway": "validate-bind-strip-forward"},
-    "plonk": {"v0Decoder": "legacy-v0-plonk", "v1Decoder": "p42-v1-gateway-plonk", "v1Profile": "outer-bn254-rate-koalabear-v1", "gateway": "validate-bind-strip-forward"}
+    "groth16": {"v0Decoder": "legacy-v0-groth16", "v1Decoder": "p42-v1-gateway-groth16", "v1Profile": "outer-bn254-rate-koalabear-v1", "gateway": "validate-select-check-strip-call"},
+    "plonk": {"v0Decoder": "legacy-v0-plonk", "v1Decoder": "p42-v1-gateway-plonk", "v1Profile": "outer-bn254-rate-koalabear-v1", "gateway": "validate-select-check-strip-call"}
+  },
+  "proofWire": {
+    "legacyShape": "selector4-mode1-length2-payload",
+    "v1Shape": "envelope16-selector4-mode1-length2-payload",
+    "selectorBytes": 4,
+    "modeBytes": 1,
+    "payloadLengthBytes": 2,
+    "payloadLengthByteOrder": "big-endian",
+    "modeTags": {"core": 1, "compressed": 2, "shrink": 3, "wrap": 4, "groth16": 5, "plonk": 6},
+    "structuralTestSelectors": {
+      "core": "0x01000001",
+      "compressed": "0x02000002",
+      "shrink": "0x03000003",
+      "wrap": "0x04000004",
+      "groth16": "0x11223344",
+      "plonk": "0xa1b2c3d4"
+    }
   },
   "gateway": {
     "name": "p42-v1",
@@ -109,9 +126,29 @@
     "outerProfile": "outer-bn254-rate-koalabear-v1",
     "wireShape": "envelope16-selector-payload",
     "forwardedShape": "selector-payload",
-    "requiresSuccessorProofEnvelopeBinding": true,
+    "trustedConfigSource": "authenticated-deployment-config-only",
+    "preVerificationEnvelopeBindingCheck": false,
+    "bindingSource": "pinned-successor-circuit-vk-or-authenticated-public-input",
     "stripAfterValidationOnly": true,
     "silentSdkStrippingAllowed": false,
-    "legacyVerifierPinning": "separate-mode-specific-pin"
+    "legacyVerifierPinning": "separate-mode-specific-pin",
+    "structuralTestPins": {
+      "groth16": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "plonk": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      }
+    }
   }
 }
