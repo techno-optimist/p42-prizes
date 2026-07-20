@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
+import zipfile
 
 import jsonschema
 import pytest
@@ -44,10 +46,43 @@ def _fixture(root: Path) -> tuple[dict, dict]:
         "admission_matrix_hash": "sha256:" + "b" * 64, "runner_host": "dgx-hermes", "runner_host_key": host["public_key"],
     }
     jobs = [{"job_id": f"j{i}", "status": "queued", "created_at_utc": f"2026-07-08T22:0{i}:00Z"} for i in range(1, 4)]
-    after = [dict(j, status="failed" if j["job_id"] == "j2" else "succeeded") for j in jobs]
+    after = [
+        dict(
+            j,
+            status="failed" if j["job_id"] == "j2" else "succeeded",
+            started_at_utc=f"2026-07-08T22:{10 + index * 2}:00Z",
+            finished_at_utc=f"2026-07-08T22:{11 + index * 2}:00Z",
+        )
+        for index, j in enumerate(jobs)
+    ]
     transcripts = []
-    for jid, valid in (("j1", True), ("j2", False), ("j3", True)):
-        transcript = {"binding": binding, "schema_version": "p42-runner-transcript/v1", "job_id": jid, "problem": binding["problem_id"], "verifier": {"valid": valid}}
+    for index, (jid, valid) in enumerate((("j1", True), ("j2", False), ("j3", True))):
+        transcript = {
+            "schema_version": "p42-runner-transcript/v1",
+            "job_id": jid,
+            "generated_at_utc": f"2026-07-08T22:{11 + index * 2}:00Z",
+            "started_at_utc": f"2026-07-08T22:{10 + index * 2}:00Z",
+            "problem": f"problems/{binding['problem_id']}",
+            "board_identity": {
+                "problem_slug": binding["problem_id"],
+                "problem_path": f"problems/{binding['problem_id']}",
+                "verifier_command": "python3 verifier.py",
+                "verifier_image": binding["verifier_image"],
+                "verifier_source_sha256": "sha256:" + "d" * 64,
+                "resource_identity": "sha256:" + "e" * 64,
+                "memory_mb": 4096,
+                "wall_seconds": 300,
+            },
+            "solution": f"solutions/{jid}.json",
+            "da": None,
+            "resource_limits": {
+                "required_memory_mb": 4096,
+                "memory_safety_factor": 2,
+                "child_address_space_limit_mb": 8192,
+                "address_space_limit_supported": True,
+            },
+            "verifier": {"ok": True, "valid": valid, "elapsed_ms": 1000},
+        }
         transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode())
         transcripts.append(transcript)
     events = []
@@ -179,11 +214,80 @@ def test_rejects_2099_operator_signature(tmp_path: Path) -> None:
 @pytest.mark.parametrize("mutate,match", [
     (lambda value: value.update(events=[]), "nonempty complete"),
     (lambda value: value["events"].pop(), "exactly cover"),
-    (lambda value: value["events"].insert(1, {"kind": "started", "job_id": "j2", "at_utc": "2026-07-08T22:10:30Z"}), "exactly one active"),
+    (lambda value: value["events"].insert(1, {"kind": "started", "job_id": "j2", "at_utc": "2026-07-08T22:10:30Z"}), "start event"),
 ])
 def test_rejects_incomplete_or_claimed_loop_metrics(tmp_path: Path, mutate, match: str) -> None:
     report, support = _fixture(tmp_path)
     _rewrite(tmp_path, report, "loop_summary", mutate)
+    with pytest.raises(RunnerBurstError, match=match):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
+
+
+def test_rejects_partially_drained_queue(tmp_path: Path) -> None:
+    report, support = _fixture(tmp_path)
+    _rewrite(tmp_path, report, "queue_after", lambda value: value["jobs"][2].update(status="queued"))
+    with pytest.raises(RunnerBurstError, match="every submitted job reached a terminal"):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
+
+
+@pytest.mark.parametrize("mutate,match", [
+    (lambda transcript: transcript["verifier"].update(valid="false"), "canonical runner transcript"),
+    (lambda transcript: transcript.pop("board_identity"), "canonical runner transcript"),
+    (lambda transcript: transcript["board_identity"].update(problem_slug="another-board"), "bind the drill problem"),
+    (lambda transcript: transcript.update(problem="problems/another-board"), "problem path differs"),
+    (lambda transcript: transcript["board_identity"].update(verifier_image="registry.example/p42/other@sha256:" + "f" * 64), "bind the drill verifier image"),
+])
+def test_rejects_noncanonical_or_cross_bound_transcript(tmp_path: Path, mutate, match: str) -> None:
+    report, support = _fixture(tmp_path)
+    changed_hash: dict[str, str] = {}
+    def change(value: dict) -> None:
+        transcript = value["transcripts"][0]
+        mutate(transcript)
+        unhashed = {key: child for key, child in transcript.items() if key != "transcript_hash"}
+        transcript["transcript_hash"] = sha256_bytes(canonical_json(unhashed).encode())
+        changed_hash["value"] = transcript["transcript_hash"]
+    _rewrite(tmp_path, report, "transcript_archive", change)
+    _rewrite(
+        tmp_path,
+        report,
+        "loop_summary",
+        lambda value: value["events"][1].update(transcript_hash=changed_hash["value"]),
+    )
+    with pytest.raises(RunnerBurstError, match=match):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
+
+
+def test_rejects_queue_status_that_disagrees_with_verdict(tmp_path: Path) -> None:
+    report, support = _fixture(tmp_path)
+    _rewrite(tmp_path, report, "queue_after", lambda value: value["jobs"][0].update(status="failed"))
+    with pytest.raises(RunnerBurstError, match="verifier verdict does not match"):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
+
+
+def test_rejects_ok_false_valid_true_as_success(tmp_path: Path) -> None:
+    report, support = _fixture(tmp_path)
+    changed_hash: dict[str, str] = {}
+    def change(value: dict) -> None:
+        transcript = value["transcripts"][0]
+        transcript["verifier"]["ok"] = False
+        unhashed = {key: child for key, child in transcript.items() if key != "transcript_hash"}
+        transcript["transcript_hash"] = sha256_bytes(canonical_json(unhashed).encode())
+        changed_hash["value"] = transcript["transcript_hash"]
+    _rewrite(tmp_path, report, "transcript_archive", change)
+    _rewrite(tmp_path, report, "loop_summary", lambda value: value["events"][1].update(transcript_hash=changed_hash["value"]))
+    with pytest.raises(RunnerBurstError, match="verifier verdict does not match"):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
+
+
+@pytest.mark.parametrize("field,value,match", [
+    ("started_at_utc", "2026-07-08T22:09:59Z", "start event"),
+    ("finished_at_utc", "2026-07-08T22:11:01Z", "completion event"),
+])
+def test_rejects_loop_times_detached_from_queue_lifecycle(
+    tmp_path: Path, field: str, value: str, match: str,
+) -> None:
+    report, support = _fixture(tmp_path)
+    _rewrite(tmp_path, report, "queue_after", lambda artifact: artifact["jobs"][0].update({field: value}))
     with pytest.raises(RunnerBurstError, match=match):
         normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
 
@@ -228,3 +332,30 @@ def test_cli_requires_artifact_root(tmp_path: Path) -> None:
     env = dict(os.environ, PYTHONPATH=str(ROOT / "src"))
     result = subprocess.run(["python3", "-m", "p42_prizes.cli", "runner-burst-validate", "--report", str(path)], cwd=ROOT, env=env, text=True, capture_output=True)
     assert result.returncode == 2 and "--artifact-root" in result.stderr
+
+
+def test_runner_health_runbook_supplies_required_trusted_root() -> None:
+    runbook = (ROOT / "docs/VERIFIER_RUNNER.md").read_text(encoding="utf-8")
+    command = next(
+        block for block in runbook.split("```")
+        if block.startswith("bash\n") and "p42-prizes runner-health" in block
+    )
+    assert "--trusted-root" in command
+
+
+def test_wheel_contains_canonical_runner_transcript_schema(tmp_path: Path) -> None:
+    packaged = ROOT / "src/p42_prizes/schema_resources/runner-transcript.schema.json"
+    canonical = ROOT / "schemas/runner-transcript.schema.json"
+    assert packaged.read_bytes() == canonical.read_bytes()
+    wheel_dir = tmp_path / "wheel"
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation",
+            "--wheel-dir", str(wheel_dir), str(ROOT),
+        ],
+        cwd=ROOT, text=True, capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    wheel = next(wheel_dir.glob("p42_prizes-*.whl"))
+    with zipfile.ZipFile(wheel) as archive:
+        assert "p42_prizes/schema_resources/runner-transcript.schema.json" in archive.namelist()

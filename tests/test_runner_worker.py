@@ -421,6 +421,7 @@ def test_colliding_job_ids_write_distinct_transcripts(tmp_path: Path) -> None:
             "problem": str(problem),
             "solution": str(solution),
             "required_memory_mb": 64,
+            "started_at_utc": "2026-07-19T12:34:56Z",
         }
         transcript = _run_job(
             job,
@@ -430,6 +431,7 @@ def test_colliding_job_ids_write_distinct_transcripts(tmp_path: Path) -> None:
         )
         # The human-readable id survives inside the transcript itself.
         assert transcript["job_id"] == job_id
+        assert transcript["started_at_utc"] == job["started_at_utc"]
         paths.append(transcript["transcript_path"])
 
     assert len(set(paths)) == 2, "colliding job_ids overwrote each other's transcript"

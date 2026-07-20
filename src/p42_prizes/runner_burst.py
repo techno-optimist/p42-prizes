@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from functools import lru_cache
 import hashlib
+import json
+from importlib.resources import files
 import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
 from typing import Any, Mapping
+
+import jsonschema
 
 from p42_prizes.legal import _reject_unknown_top_level, _validate_signature, build_attestation_context
 from p42_prizes.secure_json import StrictJSONError, loads_strict_json
@@ -207,11 +212,23 @@ def _derive(a: Mapping[str, Mapping[str, Any]], binding: Mapping[str, Any]) -> d
     if set(before_ids) != set(after_ids):
         raise RunnerBurstError("queue_before and queue_after job sets differ")
     terminal = {j.get("job_id") for j in after if j.get("status") in {"succeeded", "failed"}}
+    submitted_ids = {j.get("job_id") for j in submitted}
+    if submitted_ids != set(before_ids) or terminal != submitted_ids:
+        raise RunnerBurstError("burst evidence must prove every submitted job reached a terminal queue_after state")
     window_start, window_end = _utc(binding["started_at_utc"], "started_at_utc"), _utc(binding["completed_at_utc"], "completed_at_utc")
+    lifecycle: dict[str, tuple[datetime, datetime]] = {}
     for job in before + after:
         created_at = _utc(job.get("created_at_utc"), "job created_at_utc")
         if not window_start <= created_at <= window_end:
             raise RunnerBurstError("every job created_at_utc must be within the drill window")
+    for job in after:
+        jid = job.get("job_id")
+        started = _utc(job.get("started_at_utc"), f"queue_after job {jid}.started_at_utc")
+        finished = _utc(job.get("finished_at_utc"), f"queue_after job {jid}.finished_at_utc")
+        created = _utc(job.get("created_at_utc"), f"queue_after job {jid}.created_at_utc")
+        if not window_start <= created <= started <= finished <= window_end:
+            raise RunnerBurstError(f"queue_after job {jid} lifecycle is outside or reversed within the drill window")
+        lifecycle[jid] = (started, finished)
     order = [j.get("job_id") for j in sorted(submitted, key=lambda j: (_utc(j.get("created_at_utc"), "job created_at_utc"), j.get("job_id")))]
     events = a["loop_summary"].get("events")
     if not isinstance(events, list) or not events:
@@ -229,11 +246,15 @@ def _derive(a: Mapping[str, Mapping[str, Any]], binding: Mapping[str, Any]) -> d
             raise RunnerBurstError("loop events are not timestamp ordered")
         last_time = when
         jid = event.get("job_id")
+        if jid not in lifecycle:
+            raise RunnerBurstError("loop event references a job outside queue_after")
         if event.get("kind") == "started":
             if jid in active or jid in started_order:
                 raise RunnerBurstError("duplicate job start event")
             active.add(jid)
             started_order.append(jid)
+            if when != lifecycle[jid][0]:
+                raise RunnerBurstError(f"start event {jid} differs from queue_after.started_at_utc")
             max_active = max(max_active, len(active))
             if len(active) > 1:
                 raise RunnerBurstError("timestamped events must prove exactly one active runner")
@@ -242,6 +263,8 @@ def _derive(a: Mapping[str, Mapping[str, Any]], binding: Mapping[str, Any]) -> d
                 raise RunnerBurstError("completion event lacks one matching start")
             active.remove(jid)
             completed_ids.append(jid)
+            if when != lifecycle[jid][1]:
+                raise RunnerBurstError(f"completion event {jid} differs from queue_after.finished_at_utc")
         else:
             raise RunnerBurstError("unsupported loop event kind")
     if active or set(completed_ids) != terminal or set(started_order) != terminal:
@@ -256,6 +279,12 @@ def _derive(a: Mapping[str, Mapping[str, Any]], binding: Mapping[str, Any]) -> d
     transcripts: dict[str, Mapping[str, Any]] = {}
     for i, item in enumerate(archive):
         t = _mapping(item, f"transcript_archive.transcripts[{i}]")
+        try:
+            _runner_transcript_validator().validate(t)
+        except jsonschema.ValidationError as exc:
+            raise RunnerBurstError(
+                f"transcript_archive.transcripts[{i}] is not a canonical runner transcript: {exc.message}"
+            ) from exc
         jid = t.get("job_id")
         if not isinstance(jid, str) or jid in transcripts:
             raise RunnerBurstError("duplicate transcript job_id")
@@ -267,10 +296,34 @@ def _derive(a: Mapping[str, Mapping[str, Any]], binding: Mapping[str, Any]) -> d
     if set(transcripts) != terminal:
         raise RunnerBurstError("transcripts must exactly match every terminal queue_after job")
     completed_by_id = {e["job_id"]: e for e in events if e["kind"] == "completed"}
+    after_status = {j.get("job_id"): j.get("status") for j in after}
     for jid, transcript in transcripts.items():
         if completed_by_id[jid]["transcript_hash"] != transcript["transcript_hash"]:
             raise RunnerBurstError(f"completed event {jid} lacks matching transcript")
-    invalid = {jid for jid, t in transcripts.items() if not bool(_mapping(t.get("verifier"), f"transcript {jid}.verifier").get("valid"))}
+        board_identity = _mapping(transcript.get("board_identity"), f"transcript {jid}.board_identity")
+        if board_identity.get("problem_slug") != binding["problem_id"]:
+            raise RunnerBurstError(f"transcript {jid} does not bind the drill problem")
+        if transcript.get("problem") != board_identity.get("problem_path"):
+            raise RunnerBurstError(f"transcript {jid} problem path differs from its board identity")
+        if board_identity.get("verifier_image") != binding["verifier_image"]:
+            raise RunnerBurstError(f"transcript {jid} does not bind the drill verifier image")
+        started = _utc(transcript.get("started_at_utc"), f"transcript {jid}.started_at_utc")
+        generated = _utc(transcript.get("generated_at_utc"), f"transcript {jid}.generated_at_utc")
+        completed = _utc(completed_by_id[jid]["at_utc"], f"completed event {jid}.at_utc")
+        if started != lifecycle[jid][0] or completed != lifecycle[jid][1] or not started <= generated <= completed:
+            raise RunnerBurstError(f"transcript {jid} timestamps do not fit its completed drill interval")
+        verifier = _mapping(transcript.get("verifier"), f"transcript {jid}.verifier")
+        candidate = verifier.get("challenge_candidate")
+        succeeded = verifier.get("ok") is True and verifier.get("valid") is True and (
+            not isinstance(candidate, Mapping) or candidate.get("action") == "none"
+        )
+        expected_status = "succeeded" if succeeded else "failed"
+        if after_status[jid] != expected_status:
+            raise RunnerBurstError(f"transcript {jid} verifier verdict does not match queue_after status")
+    invalid = {
+        jid for jid, t in transcripts.items()
+        if _mapping(t.get("verifier"), f"transcript {jid}.verifier").get("valid") is False
+    }
     alerts = a["alert_bundle"].get("alerts")
     if not isinstance(alerts, list):
         raise RunnerBurstError("alert_bundle.alerts must be an array")
@@ -291,8 +344,21 @@ def _derive(a: Mapping[str, Mapping[str, Any]], binding: Mapping[str, Any]) -> d
             raise RunnerBurstError("guard evidence must prove wait, no queue mutation, and no verifier start")
     if not REQUIRED_GUARDS.issubset(reasons):
         raise RunnerBurstError("guard evidence is missing required outcomes")
-    after_status = {j.get("job_id"): j.get("status") for j in after}
     return {"submitted_jobs": len(submitted), "completed_jobs": len(terminal), "failed_jobs": sum(after_status.get(j) == "failed" for j in terminal), "max_active_running": max_active, "max_observed_queue_depth": len(submitted), "fifo_order_preserved": True, "transcript_count": len(transcripts), "invalid_transcript_count": len(invalid), "alerts_linked": True, "guards_proved": sorted(REQUIRED_GUARDS), "secret_scan_passed": True, "authority_attestation_verified": True, "host_observer_attestation_verified": True, "live_authority_resolution_required": True, "external_live_blocker": True}
+
+
+@lru_cache(maxsize=1)
+def _runner_transcript_validator() -> jsonschema.Draft202012Validator:
+    try:
+        schema = json.loads(
+            files("p42_prizes").joinpath(
+                "schema_resources/runner-transcript.schema.json"
+            ).read_text(encoding="utf-8")
+        )
+        jsonschema.Draft202012Validator.check_schema(schema)
+        return jsonschema.Draft202012Validator(schema)
+    except (OSError, ValueError, jsonschema.SchemaError) as exc:
+        raise RunnerBurstError(f"runner transcript schema is unavailable or invalid: {exc}") from exc
 
 
 def _identity_fingerprint(identity: Mapping[str, Any]) -> tuple[str, str, str]:

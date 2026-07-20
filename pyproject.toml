@@ -21,6 +21,9 @@ dev = [
 p42-prizes = "p42_prizes.cli:main"
 p42-sp1-runtime-attestation = "p42_prizes.sp1_runtime_attestation:main"
 
+[tool.setuptools.package-data]
+p42_prizes = ["schema_resources/*.json"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests", "problems"]
