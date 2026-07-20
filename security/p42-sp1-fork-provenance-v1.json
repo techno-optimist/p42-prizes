@@ -1,0 +1,246 @@
+{
+  "schemaVersion": "p42-sp1-fork-provenance/v1",
+  "issue": {
+    "repository": "https://github.com/techno-optimist/p42-prizes",
+    "number": 164,
+    "url": "https://github.com/techno-optimist/p42-prizes/issues/164"
+  },
+  "activationEligible": false,
+  "upstream": {
+    "repository": "https://github.com/succinctlabs/sp1",
+    "tag": {
+      "name": "v6.3.1",
+      "ref": "refs/tags/v6.3.1",
+      "kind": "lightweight",
+      "targetCommit": "8252c2905ce32964df68248117015c61ebb854db",
+      "signature": {
+        "status": "absent",
+        "verified": false,
+        "provider": "GitHub Git Database API",
+        "verifiedAt": null,
+        "evidenceUrl": "https://api.github.com/repos/succinctlabs/sp1/git/ref/tags/v6.3.1",
+        "reason": "The ref points directly to a commit, so no annotated tag object or tag signature exists."
+      }
+    },
+    "commit": {
+      "sha": "8252c2905ce32964df68248117015c61ebb854db",
+      "parent": "0ec8c4abbc206ed14754ff46525c6b85fe048fbc",
+      "signature": {
+        "status": "verified",
+        "verified": true,
+        "provider": "GitHub Git Database API",
+        "verifiedAt": "2026-06-25T10:41:20Z",
+        "evidenceUrl": "https://api.github.com/repos/succinctlabs/sp1/git/commits/8252c2905ce32964df68248117015c61ebb854db",
+        "reason": "GitHub reports the target commit signature as valid; this is commit evidence, not a tag signature."
+      }
+    }
+  },
+  "fork": {
+    "expectedRepository": "https://github.com/techno-optimist/p42-sp1",
+    "expectedTag": "p42-sp1-v6.3.1-ttv1-v1",
+    "expectedTagRef": "refs/tags/p42-sp1-v6.3.1-ttv1-v1",
+    "immutabilityPolicy": "signed-annotated-tag-no-retargeting",
+    "forkCommit": null,
+    "annotatedTagObject": null,
+    "tagTargetCommit": null,
+    "tagSignature": {
+      "status": "missing",
+      "verified": false,
+      "provider": null,
+      "verifiedAt": null,
+      "evidenceUrl": null,
+      "reason": "The maintained fork and its signed annotated release tag have not been created."
+    }
+  },
+  "imports": [
+    {
+      "name": "p3-challenger",
+      "version": "0.4.3-succinct",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "sha256:b6a908924d43e4cfb93fb41c8346cac211b70314385a9037e9241f5b7f3eaf77",
+      "archiveSha256": "sha256:b6a908924d43e4cfb93fb41c8346cac211b70314385a9037e9241f5b7f3eaf77",
+      "ancestry": {
+        "repository": "https://github.com/Plonky3/Plonky3",
+        "vcsCommit": "5309d4d0975d260f414ea98cf47456299971927a",
+        "vcsParents": [
+          "93c536036599d746b906a358e9879004b31f0fea"
+        ],
+        "pathInVcs": "challenger",
+        "cargoVcsDirty": true,
+        "importedByCommit": "8252c2905ce32964df68248117015c61ebb854db",
+        "lockfilePath": "Cargo.lock"
+      }
+    },
+    {
+      "name": "p3-symmetric",
+      "version": "0.4.3-succinct",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "sha256:9047ce85c086a9b3f118e10078f10636f7bfeed5da871a04da0b61400af8793a",
+      "archiveSha256": "sha256:9047ce85c086a9b3f118e10078f10636f7bfeed5da871a04da0b61400af8793a",
+      "ancestry": {
+        "repository": "https://github.com/Plonky3/Plonky3",
+        "vcsCommit": "228c181a9657255224aaad621c0cdb88d442bd92",
+        "vcsParents": [
+          "32cac6a01c7504a8bf028a28f27a680b305128b9"
+        ],
+        "pathInVcs": "symmetric",
+        "cargoVcsDirty": false,
+        "importedByCommit": "8252c2905ce32964df68248117015c61ebb854db",
+        "lockfilePath": "Cargo.lock"
+      }
+    },
+    {
+      "name": "lru",
+      "version": "0.12.5",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "sha256:234cf4f4a04dc1f57e24b96cc0cd600cf2af460d4161ac5ecdd0af8e1f3b2a38",
+      "archiveSha256": "sha256:234cf4f4a04dc1f57e24b96cc0cd600cf2af460d4161ac5ecdd0af8e1f3b2a38",
+      "ancestry": {
+        "repository": "https://github.com/jeromefroe/lru-rs.git",
+        "vcsCommit": "2d18d2d333cee29057a23f065533d3f2b8dc0ae0",
+        "vcsParents": [
+          "1ba5130174d5e183bf9a7fb1e6598b43e6027947",
+          "b42486918be8d3f45291007aea2d750c5877cd66"
+        ],
+        "pathInVcs": "",
+        "cargoVcsDirty": false,
+        "importedByCommit": "8252c2905ce32964df68248117015c61ebb854db",
+        "lockfilePath": "Cargo.lock"
+      }
+    }
+  ],
+  "typedTranscript": {
+    "draft": {
+      "sourceCommit": "57d7240f29b2d1cdbe72c8ee4fba6e38cda3b632",
+      "vectorDigest": "sha256:3dab794af40f745fa95e77a0c52a58393d0734e73e2317f82f4d59d40a6a3935",
+      "classification": "superseded",
+      "promotable": false,
+      "sourceUrl": "https://github.com/techno-optimist/p42-prizes/pull/190"
+    },
+    "requiredSuccessor": {
+      "sourceCommit": null,
+      "vectorDigest": null,
+      "classification": "missing",
+      "independentReviewDigest": null
+    }
+  },
+  "toolchain": {
+    "status": "placeholder",
+    "cargoProveExecutableSha256": null,
+    "guestToolchainTreeSha256": null,
+    "rustToolchain": null,
+    "cudaToolkit": null
+  },
+  "wrappingKeys": {
+    "status": "placeholder",
+    "recursionVkRootSha256": null,
+    "groth16VkSha256": null,
+    "plonkVkSha256": null
+  },
+  "requiredLanes": [
+    {
+      "id": "ubuntu-22.04-x86_64-cpu",
+      "os": "ubuntu",
+      "osVersion": "22.04",
+      "architecture": "x86_64",
+      "accelerator": "cpu",
+      "status": "required-not-run",
+      "evidenceDigest": null
+    },
+    {
+      "id": "ubuntu-24.04-x86_64-cpu",
+      "os": "ubuntu",
+      "osVersion": "24.04",
+      "architecture": "x86_64",
+      "accelerator": "cpu",
+      "status": "required-not-run",
+      "evidenceDigest": null
+    },
+    {
+      "id": "ubuntu-24.04-arm64-cpu",
+      "os": "ubuntu",
+      "osVersion": "24.04",
+      "architecture": "arm64",
+      "accelerator": "cpu",
+      "status": "required-not-run",
+      "evidenceDigest": null
+    },
+    {
+      "id": "ubuntu-22.04-x86_64-cuda",
+      "os": "ubuntu",
+      "osVersion": "22.04",
+      "architecture": "x86_64",
+      "accelerator": "cuda",
+      "status": "required-not-run",
+      "evidenceDigest": null
+    },
+    {
+      "id": "ubuntu-24.04-arm64-cuda",
+      "os": "ubuntu",
+      "osVersion": "24.04",
+      "architecture": "arm64",
+      "accelerator": "cuda",
+      "status": "required-not-run",
+      "evidenceDigest": null
+    }
+  ],
+  "advisoryDatabase": {
+    "repository": "https://github.com/github/advisory-database",
+    "commit": "314fa838bac2f27d35f27f10b244afb1cbaa6eff",
+    "tree": "ac9ad0dbca843525755ebc29dc0d54d9ad3318fd",
+    "committedAt": "2026-07-20T22:31:46Z"
+  },
+  "advisories": [
+    {
+      "id": "GHSA-vj64-rjf3-w3v7",
+      "package": "p3-challenger",
+      "severity": "high",
+      "status": "open",
+      "dispositionEvidenceDigest": null
+    },
+    {
+      "id": "GHSA-3g92-f9ch-qjcm",
+      "package": "p3-symmetric",
+      "severity": "low",
+      "status": "open",
+      "dispositionEvidenceDigest": null
+    },
+    {
+      "id": "GHSA-rhfx-m35p-ff5j",
+      "package": "lru",
+      "severity": "low",
+      "status": "open",
+      "dispositionEvidenceDigest": null
+    }
+  ],
+  "cryptographicReview": {
+    "status": "missing",
+    "reviewer": null,
+    "reportDigest": null
+  },
+  "supplyChain": {
+    "licenses": {
+      "status": "missing",
+      "inventoryDigest": null,
+      "textsIncluded": false,
+      "noticesIncluded": false
+    },
+    "sbom": {
+      "status": "missing",
+      "format": "CycloneDX-1.6-JSON",
+      "documentDigest": null
+    }
+  },
+  "activationBlockers": [
+    "ADVISORIES_OPEN",
+    "BOOTSTRAP_ONLY_VULNERABLE_BASE",
+    "CRYPTOGRAPHIC_REVIEW_ABSENT",
+    "FORK_RELEASE_UNSEALED",
+    "LICENSE_EVIDENCE_INCOMPLETE",
+    "REQUIRED_LANES_INCOMPLETE",
+    "SBOM_MISSING",
+    "TOOLCHAIN_UNPINNED",
+    "TRANSCRIPT_SUCCESSOR_MISSING",
+    "WRAPPING_KEYS_MISSING"
+  ]
+}
