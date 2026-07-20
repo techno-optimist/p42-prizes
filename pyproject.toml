@@ -15,7 +15,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0,<10",
+  "setuptools>=75.0,<81",
 ]
+
+[build-system]
+requires = ["setuptools>=75.0,<81"]
+build-backend = "setuptools.build_meta"
 
 [project.scripts]
 p42-prizes = "p42_prizes.cli:main"
