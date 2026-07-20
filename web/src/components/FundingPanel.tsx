@@ -4,16 +4,12 @@ import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { sitePath } from "@/lib/site-paths";
 import type {
   FundingArtifactReference,
-  FundingReleaseArtifactsV1,
   FundingTargetEnvelopeV3,
-  FundingTargetEnvelopeV4,
   FundingTargetV4,
 } from "@/lib/types";
 
 const MAX_TIMEOUT_MS = 2_147_000_000;
 const PHASE0_RESPONSE_SCHEMA = "p42-prizes/funding-target/v3";
-const ACTIVE_RESPONSE_SCHEMA = "p42-prizes/funding-target/v4";
-const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
 const ZERO_SHA256 = `sha256:${"0".repeat(64)}`;
 
@@ -25,7 +21,7 @@ interface BoundFundingTarget {
   target: ClientFundingTarget;
 }
 
-type FundingTargetResponse = (FundingTargetEnvelopeV3 | FundingTargetEnvelopeV4) & {
+type FundingTargetResponse = Omit<FundingTargetEnvelopeV3, "target"> & {
   authorizationExpiresAt: string;
   finalizedObservedAt: string;
   fundingDeadline: string;
@@ -36,6 +32,7 @@ type FundingTargetResponse = (FundingTargetEnvelopeV3 | FundingTargetEnvelopeV4)
   checkpointBlock: number;
   checkpointDigest: string;
   activationFinalizedBlock: number;
+  target: ClientFundingTarget | null;
 };
 
 function parsedTimestamp(value: string | null): number | null {
@@ -57,28 +54,13 @@ function validBlock(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
-function validPublicArtifactUri(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === "https:" && parsed.username === "" && parsed.password === ""
-      && parsed.hash === "" && parsed.hostname.includes(".") && parsed.href === value;
-  } catch {
-    return false;
-  }
-}
-
-function parseReleaseArtifacts(value: unknown): FundingReleaseArtifactsV1 | null {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-  const artifacts = value as Record<string, unknown>;
-  if (!exactKeys(artifacts, ["eligibility", "privacy", "risk", "terms"])) return null;
-  for (const artifact of Object.values(artifacts)) {
-    if (artifact === null || typeof artifact !== "object" || Array.isArray(artifact)) return null;
-    const reference = artifact as Record<string, unknown>;
-    if (!exactKeys(reference, ["sha256", "uri"])
-      || !validPublicArtifactUri(reference.uri) || !validDigest(reference.sha256)) return null;
-  }
-  return artifacts as unknown as FundingReleaseArtifactsV1;
+export function sameCheckpointObservation(
+  response: { checkpointBlock: number; checkpointDigest: string; finalizedObservedAt: string },
+  expected: { checkpointBlock: number; checkpointDigest: string; finalizedObservedAt: string },
+): boolean {
+  return response.checkpointBlock === expected.checkpointBlock
+    && response.checkpointDigest === expected.checkpointDigest
+    && response.finalizedObservedAt === expected.finalizedObservedAt;
 }
 
 function abbreviatedDigest(value: string): string {
@@ -132,37 +114,7 @@ function parseFundingTargetResponse(value: unknown, slug: string): FundingTarget
     || !validBlock(response.checkpointBlock) || !validBlock(response.activationFinalizedBlock)
     || !validDigest(response.checkpointDigest)
     || response.activationFinalizedBlock > response.checkpointBlock) return null;
-  if (response.target === null) {
-    if (response.schema !== PHASE0_RESPONSE_SCHEMA) return null;
-    return {
-      authorizationExpiresAt: response.authorizationExpiresAt,
-      finalizedObservedAt: response.finalizedObservedAt,
-      fundingDeadline: response.fundingDeadline,
-      remainingCapWei: response.remainingCapWei,
-      serverObservedAt: response.serverObservedAt,
-      fundingAuthorizationDigest: response.fundingAuthorizationDigest,
-      activationCompletionDigest: response.activationCompletionDigest,
-      checkpointBlock: response.checkpointBlock,
-      checkpointDigest: response.checkpointDigest,
-      activationFinalizedBlock: response.activationFinalizedBlock,
-      schema: PHASE0_RESPONSE_SCHEMA,
-      slug,
-      target: null,
-    };
-  }
-  if (response.schema !== ACTIVE_RESPONSE_SCHEMA) return null;
-  if (typeof response.target !== "object" || Array.isArray(response.target)) return null;
-  const target = response.target as Record<string, unknown>;
-  if (!exactKeys(target, ["address", "asset", "chain", "chainId", "explorerUrl", "releaseArtifacts", "walletUri"])
-    || typeof target.address !== "string" || !ADDRESS.test(target.address) || /^0x0{40}$/i.test(target.address)
-    || target.asset !== "ETH" || typeof target.explorerUrl !== "string" || typeof target.walletUri !== "string") return null;
-  const chainMatches = (target.chain === "Base Sepolia" && target.chainId === 84532)
-    || (target.chain === "Base" && target.chainId === 8453);
-  if (!chainMatches || target.walletUri !== `ethereum:${target.address}@${target.chainId}`) return null;
-  const explorerBase = target.chain === "Base" ? "https://basescan.org" : "https://sepolia.basescan.org";
-  if (target.explorerUrl !== `${explorerBase}/address/${target.address}`) return null;
-  const releaseArtifacts = parseReleaseArtifacts(target.releaseArtifacts);
-  if (!releaseArtifacts) return null;
+  if (response.schema !== PHASE0_RESPONSE_SCHEMA || response.target !== null) return null;
   return {
     authorizationExpiresAt: response.authorizationExpiresAt,
     finalizedObservedAt: response.finalizedObservedAt,
@@ -174,9 +126,9 @@ function parseFundingTargetResponse(value: unknown, slug: string): FundingTarget
     checkpointBlock: response.checkpointBlock,
     checkpointDigest: response.checkpointDigest,
     activationFinalizedBlock: response.activationFinalizedBlock,
-    schema: ACTIVE_RESPONSE_SCHEMA,
+    schema: PHASE0_RESPONSE_SCHEMA,
     slug,
-    target: { ...target, releaseArtifacts } as unknown as ClientFundingTarget,
+    target: null,
   };
 }
 
@@ -369,10 +321,13 @@ export function FundingPanel({
             || parsed.fundingDeadline !== fundingDeadline
             || parsed.fundingAuthorizationDigest !== fundingAuthorizationDigest
             || parsed.activationCompletionDigest !== activationCompletionDigest
-            || parsed.checkpointBlock !== checkpointBlock
-            || parsed.checkpointDigest !== checkpointDigest
+            || !sameCheckpointObservation(parsed, {
+              checkpointBlock: checkpointBlock!,
+              checkpointDigest: checkpointDigest!,
+              finalizedObservedAt: finalizedObservedAt!,
+            })
             || parsed.activationFinalizedBlock !== activationFinalizedBlock
-            || parsedTimestamp(parsed.finalizedObservedAt)! < finalizedTimestamp) {
+          ) {
             latestObservedRef.current = responseObserved;
             invalidatedBindingRef.current = bindingKey;
             expireFunding(false);
@@ -558,10 +513,13 @@ export function FundingPanel({
         || parsed.fundingDeadline !== fundingDeadline
         || parsed.fundingAuthorizationDigest !== fundingAuthorizationDigest
         || parsed.activationCompletionDigest !== activationCompletionDigest
-        || parsed.checkpointBlock !== checkpointBlock
-        || parsed.checkpointDigest !== checkpointDigest
+        || !sameCheckpointObservation(parsed, {
+          checkpointBlock: checkpointBlock!,
+          checkpointDigest: checkpointDigest!,
+          finalizedObservedAt: finalizedObservedAt!,
+        })
         || parsed.activationFinalizedBlock !== activationFinalizedBlock
-        || responseFinalized < finalizedTimestamp! || responseFinalized > responseObserved
+        || responseFinalized > responseObserved
         || parsed.target.address !== clickedTarget.target.address
         || parsed.target.walletUri !== clickedTarget.target.walletUri
         || parsed.target.chainId !== clickedTarget.target.chainId

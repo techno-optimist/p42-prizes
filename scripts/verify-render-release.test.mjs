@@ -28,10 +28,6 @@ const contentTypes = {
 function validProblems() {
   return EXPECTED_BOARD_MANIFEST.boards.map((board) => ({
     ...structuredClone(board),
-    donationWallet: {
-      ...structuredClone(EXPECTED_BOARD_MANIFEST.phase0.donationWallet),
-      note: "Non-material human-readable funding note.",
-    },
     chainProvenance: {
       ...structuredClone(EXPECTED_BOARD_MANIFEST.phase0.chainProvenance),
       note: "Non-material human-readable provenance note.",
@@ -71,6 +67,16 @@ function fundingTargetResults() {
     return [
       result(`funding-target-${slug}`, "render", "render json", payload),
       result(`funding-target-${slug}`, "public", "public json", structuredClone(payload)),
+    ];
+  });
+}
+
+function problemDetailResults() {
+  return EXPECTED_BOARD_MANIFEST.boards.flatMap((board) => {
+    const payload = validProblems().find((problem) => problem.slug === board.slug);
+    return [
+      result(`problem-detail-${board.slug}`, "render", "render detail", payload),
+      result(`problem-detail-${board.slug}`, "public", "public detail", structuredClone(payload)),
     ];
   });
 }
@@ -246,27 +252,32 @@ test("rollback verification requires the exact pinned commit on branch history",
 
 test("probeUrls retains the standalone and proxied prize paths", () => {
   const urls = probeUrls("https://render.example/", "https://public.example/");
-  assert.deepEqual(urls.slice(0, 12), [
+  assert.deepEqual(urls.slice(0, 15), [
     "https://render.example/prizes",
     "https://public.example/prizes",
     "https://render.example/prizes/intro",
     "https://public.example/prizes/intro",
     "https://render.example/prizes/build-week",
     "https://public.example/prizes/build-week",
+    "https://render.example/prizes/agents",
+    "https://public.example/prizes/agents",
     "https://render.example/prizes/api/problems",
     "https://public.example/prizes/api/problems",
     "https://render.example/prizes/api/capabilities",
     "https://public.example/prizes/api/capabilities",
     "https://public.example/prizes/standings",
+    "https://render.example/prizes/skill.md",
     "https://public.example/prizes/skill.md",
   ]);
-  const fundingUrls = urls.slice(12);
-  assert.equal(fundingUrls.length, 20);
+  const boundaryUrls = urls.slice(15);
+  assert.equal(boundaryUrls.length, 40);
   for (const { slug } of EXPECTED_BOARD_MANIFEST.boards) {
-    assert.ok(fundingUrls.includes(
+    assert.ok(boundaryUrls.includes(`https://render.example/prizes/api/problems/${slug}`));
+    assert.ok(boundaryUrls.includes(`https://public.example/prizes/api/problems/${slug}`));
+    assert.ok(boundaryUrls.includes(
       `https://render.example/prizes/api/problems/${slug}/funding-target`,
     ));
-    assert.ok(fundingUrls.includes(
+    assert.ok(boundaryUrls.includes(
       `https://public.example/prizes/api/problems/${slug}/funding-target`,
     ));
   }
@@ -304,8 +315,18 @@ test("page probes require stable identity markers", () => {
 
   const standings = "<html><b>P42 Prizes</b><h1>The pilot cohort.</h1><p>Modeled</p></html>";
   assert.equal(validateProbeBody("standings", standings, contentTypes.html), standings);
+  const agents = "<html>P42 Prizes · Machine interface Preflight, verify, commit, reveal, defend. no funding or destination-discovery flow is available</html>";
+  assert.equal(validateProbeBody("agents", agents, contentTypes.html), agents);
+  assert.throws(
+    () => validateProbeBody("agents", `${agents} future funding remains wallet-first`, contentTypes.html),
+    /actionable or bypass-oriented funding instructions/,
+  );
   const skill = "---\nname: p42-prizes\n---\n# P42 Prizes\n## Mutation Capability Gate\n";
   assert.equal(validateProbeBody("skill", skill, contentTypes.text), skill);
+  assert.throws(
+    () => validateProbeBody("skill", `${skill}Continue only for funding-target/v4.`, contentTypes.text),
+    /actionable or bypass-oriented funding instructions/,
+  );
 });
 
 test("API probes reject malformed JSON and wrong response shapes", () => {
@@ -340,8 +361,17 @@ test("problems probe rejects forged board identity and material state", () => {
       problems[0].chainProvenance.settlementState = "mainnet-indexed";
     }, /exact Phase 0 funding\/provenance state/],
     ["donation address", (problems) => {
-      problems[0].donationWallet.address = "0xdead";
-    }, /exact Phase 0 funding\/provenance state/],
+      problems[0].poolAddress = "0x1111111111111111111111111111111111111111";
+    }, /forbidden actionable key/],
+    ["pool transaction", (problems) => {
+      problems[0].pool = { events: [{ transactionHash: "0x" + "1".repeat(64) }] };
+    }, /forbidden actionable key/],
+    ["registry identifier", (problems) => {
+      problems[0].chainProvenance.registryAddress = "0x1111111111111111111111111111111111111111";
+    }, /forbidden actionable key/],
+    ["chain identifier", (problems) => {
+      problems[0].chainProvenance.chainId = 84532;
+    }, /exact minimal public allowlist/],
     ["reconciled chain", (problems) => {
       problems[0].chainProvenance.reconciliationOk = true;
     }, /exact Phase 0 funding\/provenance state/],
@@ -354,6 +384,22 @@ test("problems probe rejects forged board identity and material state", () => {
       () => validateProbeBody("problems", JSON.stringify(problems), contentTypes.json),
       expectedError,
       description,
+    );
+  }
+});
+
+test("problem detail probes recursively reject derivation identifiers", () => {
+  const detail = validProblem();
+  const routeId = `problem-detail-${detail.slug}`;
+  assert.deepEqual(validateProbeBody(routeId, JSON.stringify(detail), contentTypes.json), detail);
+  for (const mutation of [
+    { poolAddress: "0x1111111111111111111111111111111111111111" },
+    { pool: { event: { transactionHash: "0x" + "1".repeat(64) } } },
+    { chainProvenance: { ...detail.chainProvenance, problemRegistryId: "1" } },
+  ]) {
+    assert.throws(
+      () => validateProbeBody(routeId, JSON.stringify({ ...detail, ...mutation }), contentTypes.json),
+      /(?:forbidden actionable key|exact minimal public allowlist)/,
     );
   }
 });
@@ -421,10 +467,15 @@ test("paired direct and proxy probes reject body and semantic divergence", () =>
     result("intro", "public", "same intro"),
     result("build-week", "render", "same Build Week lab"),
     result("build-week", "public", "same Build Week lab"),
+    result("agents", "render", "same agents page"),
+    result("agents", "public", "same agents page"),
     result("problems", "render", "render json", sameProblems),
     result("problems", "public", "public json", structuredClone(sameProblems)),
     result("capabilities", "render", "render json", sameCapabilities),
     result("capabilities", "public", "public json", structuredClone(sameCapabilities)),
+    result("skill", "render", "same skill"),
+    result("skill", "public", "same skill"),
+    ...problemDetailResults(),
     ...fundingTargetResults(),
   ];
   assert.doesNotThrow(() => assertProbeEquivalence(matching));

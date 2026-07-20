@@ -281,8 +281,16 @@ export interface FundingTargetEnvelopeV3 {
   target: null;
 }
 
-export interface FundingTargetEnvelopeV4 extends Omit<FundingTargetEnvelopeV3, "schema" | "target"> {
+export interface FundingAuthorizationBindingV2 {
+  schema: "p42-production-launch-authorization/v2";
+  authorizationDigest: `sha256:${string}`;
+  authorizationBytesDigest: `sha256:${string}`;
+  legalArtifactsDigest: `sha256:${string}`;
+}
+
+export interface FundingTargetEnvelopeV4 extends Omit<FundingTargetEnvelopeV3, "schema" | "target" | "fundingAuthorizationDigest"> {
   schema: "p42-prizes/funding-target/v4";
+  authorizationBinding: FundingAuthorizationBindingV2;
   target: FundingTargetV4;
 }
 

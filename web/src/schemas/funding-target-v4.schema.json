@@ -5,20 +5,20 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema", "slug", "authorizationExpiresAt", "finalizedObservedAt",
+    "schema", "authorizationBinding", "slug", "authorizationExpiresAt", "finalizedObservedAt",
     "fundingDeadline", "remainingCapWei", "serverObservedAt",
-    "fundingAuthorizationDigest", "activationCompletionDigest",
+    "activationCompletionDigest",
     "checkpointBlock", "checkpointDigest", "activationFinalizedBlock", "target"
   ],
   "properties": {
     "schema": { "const": "p42-prizes/funding-target/v4" },
+    "authorizationBinding": { "$ref": "#/$defs/authorizationBinding" },
     "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
     "authorizationExpiresAt": { "type": "string", "format": "date-time" },
     "finalizedObservedAt": { "type": "string", "format": "date-time" },
     "fundingDeadline": { "type": "string", "format": "date-time" },
     "remainingCapWei": { "$ref": "#/$defs/uintString" },
     "serverObservedAt": { "type": "string", "format": "date-time" },
-    "fundingAuthorizationDigest": { "$ref": "#/$defs/digest" },
     "activationCompletionDigest": { "$ref": "#/$defs/digest" },
     "checkpointBlock": { "type": "integer", "minimum": 0 },
     "checkpointDigest": { "$ref": "#/$defs/digest" },
@@ -50,6 +50,20 @@
       "properties": {
         "uri": { "$ref": "#/$defs/httpsUri" },
         "sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "authorizationBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "authorizationDigest", "authorizationBytesDigest", "legalArtifactsDigest"],
+      "properties": {
+        "schema": { "const": "p42-production-launch-authorization/v2" },
+        "authorizationDigest": { "$ref": "#/$defs/digest" },
+        "authorizationBytesDigest": { "$ref": "#/$defs/digest" },
+        "legalArtifactsDigest": {
+          "$ref": "#/$defs/digest",
+          "description": "Canonical digest of the exact releaseArtifacts object included in the signed authorization v2 body."
+        }
       }
     },
     "releaseArtifacts": {

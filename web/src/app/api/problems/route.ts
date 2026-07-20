@@ -1,15 +1,11 @@
 import { json } from "@/lib/api";
 import { loadPortalReadModel } from "@/lib/indexer-read-model";
+import { publicChainProvenance, publicPoolSummary } from "@/lib/public-problem";
 
 export async function GET() {
   const model = await loadPortalReadModel();
   return json(
     model.problems.map((problem) => {
-      const chainProvenance = {
-        ...problem.chainProvenance,
-        donationWalletAddress: null,
-        poolAddress: null,
-      };
       return {
         id: problem.id,
         slug: problem.slug,
@@ -22,12 +18,8 @@ export async function GET() {
         minImprovement: problem.minImprovement,
         bountyEth: problem.bountyEth,
         source: problem.source,
-        pool: problem.pool && {
-          ...problem.pool,
-          winningsDonations: problem.pool.winningsDonations.map((entry) => ({ ...entry, destinationPool: null })),
-        },
-        donationWallet: { ...problem.donationWallet, address: null, explorerUrl: null },
-        chainProvenance,
+        pool: publicPoolSummary(problem.pool),
+        chainProvenance: publicChainProvenance(problem.chainProvenance),
         challengeWindowHours: problem.challengeWindowHours,
         verifierVersion: problem.verifierVersion,
       };

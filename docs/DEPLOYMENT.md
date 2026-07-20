@@ -131,10 +131,13 @@ use `p42-prizes/funding-target/v4` and be bounded by a signed launch-
 authorization version that includes the exact legal artifact references, the
 fresh independently attested checkpoint, and the reconciled activation. Launch
 authorization v1 has no legal-artifact field, so environment configuration
-cannot enable v4. The v4 client parser requires explicit acknowledgement before
-showing the full address or BaseScan action, then requires a second trusted
-click before following the wallet URI. A browser-visible target is not evidence
-that a browser made a live `eth_call`.
+cannot enable v4, and the activated-provenance loader explicitly rejects v1
+even when its historical activation and reconciliation artifacts otherwise
+agree. The reserved v4 schema names launch authorization v2 and a signed legal-
+artifact-set digest, but no v2 validator or client parser exists. An active
+implementation also requires a signed server-verified acknowledgement request;
+the server must not release an address, wallet URI, explorer URL, or equivalent
+network material before that acknowledgement succeeds.
 
 The repository's safe dual-RPC implementation remains the indexer/activation
 pipeline described above. Adding an unrelated single-provider or ad hoc

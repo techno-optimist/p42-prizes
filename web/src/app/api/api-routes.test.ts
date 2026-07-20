@@ -520,8 +520,10 @@ describe("mutable API routes", () => {
     expect(list).toHaveLength(10);
     for (const entry of list) {
       expect(entry).not.toHaveProperty("donationTarget");
-      expect(entry.donationWallet.address).toBeNull();
-      expect(entry.donationWallet.explorerUrl).toBeNull();
+      expect(entry).not.toHaveProperty("donationWallet");
+      expect(Object.keys(entry.chainProvenance).sort()).toEqual([
+        "fundingTargetDeployed", "note", "reconciliationOk", "settlementState", "source",
+      ]);
     }
 
     const detailResponse = await problemGet(
@@ -530,10 +532,8 @@ describe("mutable API routes", () => {
     );
     const detail = await detailResponse.json();
     expect(detailResponse.status).toBe(200);
-    expect(detail).toMatchObject({
-      poolAddress: null,
-      donationWallet: { address: null, explorerUrl: null },
-    });
+    expect(detail).not.toHaveProperty("poolAddress");
+    expect(detail).not.toHaveProperty("donationWallet");
     expect(detail).not.toHaveProperty("donationTarget");
   });
 

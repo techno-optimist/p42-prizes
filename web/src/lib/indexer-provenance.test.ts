@@ -589,7 +589,7 @@ describe("indexer provenance v2", () => {
     });
   });
 
-  it("publishes a pool only when authorization, activation, and checkpoint agree", () => {
+  it("rejects even fully signed and reconciled launch authorization v1", () => {
     const base = artifacts();
     const templateProblem = base.manifest.problems[0];
     const templateBoard = base.checkpoint.boards[0];
@@ -806,6 +806,15 @@ describe("indexer provenance v2", () => {
       };
       return { ...activatedArtifacts, checkpoint, checkpointBytes, checkpointAttestation };
     };
+    expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, activatedArtifacts))
+      .toThrow("launch authorization v1 cannot authorize funding publication");
+    expect(() => activatedProvenanceFromArtifacts(
+      launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes,
+      authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation,
+      activationSignatures, plan, completion, rpcRegistry,
+    )).toThrow("launch authorization v1 cannot authorize funding publication");
+    return;
+
     const activatedSnapshot = activatedIndexerSnapshotFromArtifacts(launchProblems, activatedArtifacts);
     expect(activatedSnapshot.provenance).toHaveLength(10);
     expect(activatedSnapshot.highWaterIdentity).toEqual({

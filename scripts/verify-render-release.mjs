@@ -40,31 +40,18 @@ const ALLOWED_BOARD_VALUES = Object.freeze({
   direction: Object.freeze(["minimize", "maximize"]),
 });
 const PHASE0_INVARIANTS = Object.freeze({
-  donationWallet: Object.freeze({
-    chain: "Base Sepolia",
-    asset: "ETH",
-    address: null,
-    status: "not-deployed",
-    explorerUrl: null,
-  }),
   chainProvenance: Object.freeze({
     settlementState: "local-only",
-    chain: "Base Sepolia",
-    chainId: 84532,
-    donationWalletAddress: null,
-    poolAddress: null,
-    poolRuntimeCodeHash: null,
-    deploymentTransactionHash: null,
-    registryAddress: null,
-    problemRegistryId: null,
-    verifierImageHash: "sha256:local-dev",
-    admissionMatrixHash: null,
-    deploymentCommit: null,
-    indexedThroughBlock: null,
     reconciliationOk: false,
     source: "static-portal-data",
+    fundingTargetDeployed: false,
   }),
 });
+const ACTIONABLE_KEY = /(?:address|transactionhash|registry|destinationpool|donationtarget|donationwallet|walleturi|explorerurl)/i;
+const ACTIONABLE_TEXT = /(?:ethereum:|basescan\.|\/address\/0x[0-9a-f]{40}|0x[0-9a-f]{40})/i;
+const PUBLIC_PROVENANCE_KEYS = Object.freeze([
+  "fundingTargetDeployed", "note", "reconciliationOk", "settlementState", "source",
+]);
 const BOARD_FIELDS = Object.freeze([
   "id",
   "slug",
@@ -114,6 +101,17 @@ export const PROBE_ROUTES = Object.freeze([
     ]),
   }),
   Object.freeze({
+    id: "agents",
+    path: "/prizes/agents",
+    kind: "html",
+    origins: Object.freeze(["render", "public"]),
+    markers: Object.freeze([
+      "P42 Prizes · Machine interface",
+      "Preflight, verify, commit, reveal, defend.",
+      "no funding or destination-discovery flow is available",
+    ]),
+  }),
+  Object.freeze({
     id: "problems",
     path: "/prizes/api/problems",
     kind: "problems-json",
@@ -140,7 +138,7 @@ export const PROBE_ROUTES = Object.freeze([
     id: "skill",
     path: "/prizes/skill.md",
     kind: "text",
-    origins: Object.freeze(["public"]),
+    origins: Object.freeze(["render", "public"]),
     markers: Object.freeze([
       "name: p42-prizes",
       "# P42 Prizes",
@@ -266,8 +264,18 @@ function fundingTargetRoutes() {
   }));
 }
 
+function problemDetailRoutes() {
+  return EXPECTED_BOARD_MANIFEST.boards.map((board) => Object.freeze({
+    id: `problem-detail-${board.slug}`,
+    path: `/prizes/api/problems/${encodeURIComponent(board.slug)}`,
+    kind: "problem-detail-json",
+    slug: board.slug,
+    origins: Object.freeze(["render", "public"]),
+  }));
+}
+
 export function releaseGuardRoutes() {
-  return [...PROBE_ROUTES, ...fundingTargetRoutes()];
+  return [...PROBE_ROUTES, ...problemDetailRoutes(), ...fundingTargetRoutes()];
 }
 
 function configuredProbes(renderOrigin, publicOrigin) {
@@ -369,35 +377,42 @@ function boardProjection(problem) {
 
 function phase0Projection(problem) {
   return {
-    donationWallet: {
-      chain: problem.donationWallet?.chain,
-      asset: problem.donationWallet?.asset,
-      address: problem.donationWallet?.address,
-      status: problem.donationWallet?.status,
-      explorerUrl: problem.donationWallet?.explorerUrl,
-    },
     chainProvenance: {
       settlementState: problem.chainProvenance?.settlementState,
-      chain: problem.chainProvenance?.chain,
-      chainId: problem.chainProvenance?.chainId,
-      donationWalletAddress: problem.chainProvenance?.donationWalletAddress,
-      poolAddress: problem.chainProvenance?.poolAddress,
-      poolRuntimeCodeHash: problem.chainProvenance?.poolRuntimeCodeHash,
-      deploymentTransactionHash: problem.chainProvenance?.deploymentTransactionHash,
-      registryAddress: problem.chainProvenance?.registryAddress,
-      problemRegistryId: problem.chainProvenance?.problemRegistryId,
-      verifierImageHash: problem.chainProvenance?.verifierImageHash,
-      admissionMatrixHash: problem.chainProvenance?.admissionMatrixHash,
-      deploymentCommit: problem.chainProvenance?.deploymentCommit,
-      indexedThroughBlock: problem.chainProvenance?.indexedThroughBlock,
       reconciliationOk: problem.chainProvenance?.reconciliationOk,
       source: problem.chainProvenance?.source,
+      fundingTargetDeployed: problem.chainProvenance?.fundingTargetDeployed,
     },
   };
 }
 
+function requireMinimalPublicProvenance(problem, route, path) {
+  requireObject(problem.chainProvenance, route, `${path}.chainProvenance`);
+  if (!isDeepStrictEqual(Object.keys(problem.chainProvenance).sort(), [...PUBLIC_PROVENANCE_KEYS].sort())) {
+    describe(route, `${path}.chainProvenance is not the exact minimal public allowlist.`);
+  }
+}
+
+function rejectActionableMaterial(value, route, path = "payload") {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => rejectActionableMaterial(entry, route, `${path}[${index}]`));
+    return;
+  }
+  if (value !== null && typeof value === "object") {
+    for (const [key, entry] of Object.entries(value)) {
+      if (ACTIONABLE_KEY.test(key)) describe(route, `contains forbidden actionable key ${path}.${key}.`);
+      rejectActionableMaterial(entry, route, `${path}.${key}`);
+    }
+    return;
+  }
+  if (typeof value === "string" && ACTIONABLE_TEXT.test(value)) {
+    describe(route, `contains forbidden actionable value at ${path}.`);
+  }
+}
+
 function validateProblems(payload, route) {
   const manifest = EXPECTED_BOARD_MANIFEST;
+  rejectActionableMaterial(payload, route);
   if (!Array.isArray(payload) || payload.length !== manifest.boards.length) {
     describe(route, `must return exactly ${manifest.boards.length} expected boards.`);
   }
@@ -406,6 +421,7 @@ function validateProblems(payload, route) {
   const slugs = new Set();
   for (const [index, problem] of payload.entries()) {
     requireObject(problem, route, `problem ${index}`);
+    requireMinimalPublicProvenance(problem, route, `problem ${index}`);
     if (!Number.isInteger(problem.id) || problem.id <= 0) {
       describe(route, `must return a positive integer id for problem ${index}.`);
     }
@@ -458,6 +474,19 @@ function validateProblems(payload, route) {
   }
 }
 
+function validateProblemDetail(payload, route) {
+  requireObject(payload, route, "problem detail");
+  requireMinimalPublicProvenance(payload, route, "problem detail");
+  rejectActionableMaterial(payload, route);
+  const expected = EXPECTED_BOARD_MANIFEST.boards.find((board) => board.slug === route.slug);
+  if (!expected || !isDeepStrictEqual(boardProjection(payload), expected)) {
+    describe(route, `does not match committed board detail projection for ${route.slug}.`);
+  }
+  if (!isDeepStrictEqual(phase0Projection(payload), EXPECTED_BOARD_MANIFEST.phase0)) {
+    describe(route, `violates the exact Phase 0 detail provenance for ${route.slug}.`);
+  }
+}
+
 function parseJson(body, route) {
   try {
     return JSON.parse(body);
@@ -482,6 +511,8 @@ export function validateProbeBody(routeId, body, contentType) {
     const payload = parseJson(body, route);
     if (route.kind === "problems-json") {
       validateProblems(payload, route);
+    } else if (route.kind === "problem-detail-json") {
+      validateProblemDetail(payload, route);
     } else if (route.kind === "funding-target-json") {
       validateFundingTarget(payload, route);
     } else if (!isDeepStrictEqual(payload, EXPECTED_CAPABILITIES)) {
@@ -501,6 +532,10 @@ export function validateProbeBody(routeId, body, contentType) {
     if (!body.includes(marker)) {
       describe(route, `is missing stable identity marker ${JSON.stringify(marker)}.`);
     }
+  }
+  if ((route.id === "skill" || route.id === "agents")
+    && /(?:funding-target\/v4|donationTarget|walletUri|basescan|ethereum:|continue only|wallet-first)/i.test(body)) {
+    describe(route, "contains actionable or bypass-oriented funding instructions.");
   }
   return body;
 }

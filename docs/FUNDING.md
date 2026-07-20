@@ -1,8 +1,9 @@
 # Funding Problem Pools
 
-Every listed problem exposes a `donationWallet` state in `GET /api/problems`
-and `GET /api/problems/{slug}`. A transferable target is published only after
-the problem has a reconciled, bytecode-backed pool on the declared chain.
+General problem list/detail APIs expose only an allowlisted, non-actionable
+provenance summary. They omit donation wallets, contract and registry
+identifiers, deployment and event transaction hashes, destination pools,
+explorer actions, and transfer URIs.
 
 ## Phase 0
 
@@ -19,16 +20,16 @@ the problem has a reconciled, bytecode-backed pool on the declared chain.
   the funding endpoint remains fail-closed until a new authorization version
   signs those artifact references and the activation/reconciliation validators
   bind the same authorization bytes and digest.
-- When a target is available, the portal displays all four links and exact
-  digests. The wallet action and address-copy control remain disabled until the
-  funder explicitly acknowledges those release artifacts and the target's
-  authorization, activation, and checkpoint bindings.
+- No current GET or client parser can return or accept an actionable target.
+  A future protocol must make acknowledgement a signed server-verified request
+  before the server releases any address, wallet URI, explorer URL, or agent-
+  consumable network response. Client-only acknowledgement is insufficient.
 - Phase 0 and every unavailable response retain the exact
   `p42-prizes/funding-target/v3` envelope with `target: null`. Expanded active
-  targets use the distinct `p42-prizes/funding-target/v4` schema. General
-  problem list/detail APIs never publish an address, wallet URI, explorer
-  action, or donation target; funding instructions come only from this gated
-  endpoint.
+  targets reserve the distinct `p42-prizes/funding-target/v4` schema, which
+  requires `p42-production-launch-authorization/v2` and a nonzero signed legal-
+  artifact-set digest. No v2 validator or acknowledgement protocol exists, so
+  v4 is deliberately dormant.
 
 ## Coinbase Onramp
 
