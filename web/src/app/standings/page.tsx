@@ -204,8 +204,8 @@ export default function StandingsPage() {
           </tbody>
         </table>
         <p className="fact-note" style={{ marginTop: 12 }}>
-          Pools are local simulation figures for a future Base Sepolia deployment. On the one runnable board (Hadamard Mini) the pool is 0.00, so its
-          modeled winnings are zero even though CHRONOS holds the real, reproducible record there.
+          Pools are local simulation figures for a future Base Sepolia deployment. Hadamard Mini is a separate local fixture outside the exact-ten
+          launch cohort; its pool is 0.00, so its modeled winnings are zero even though CHRONOS holds the reproducible fixture record there.
         </p>
         <p className="fact-note" style={{ marginTop: 8 }}>
           A redirect is not a refill of its settled source pool. It is one atomic claim settlement into a distinct, same-registry destination that
