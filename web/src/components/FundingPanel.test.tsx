@@ -72,7 +72,7 @@ function responseBody({
   releaseArtifacts?: unknown;
 } = {}) {
   return {
-    schema: "p42-prizes/funding-target/v3",
+    schema: target ? "p42-prizes/funding-target/v4" : "p42-prizes/funding-target/v3",
     slug,
     authorizationExpiresAt: new Date(AUTHORIZATION_EXPIRY_MS).toISOString(),
     finalizedObservedAt: new Date(FINALIZED_MS).toISOString(),
@@ -122,7 +122,9 @@ async function renderAndReveal() {
 }
 
 function expectTargetVisible(address = ADDRESS) {
-  expect(screen.getByText(address)).toBeTruthy();
+  expect(screen.getByText("address hidden until acknowledgement")).toBeTruthy();
+  expect(screen.queryByText(address)).toBeNull();
+  expect(screen.queryByRole("link", { name: "basescan" })).toBeNull();
   expect((screen.getByRole("button", { name: "Fund Test pool with ETH" }) as HTMLButtonElement).disabled).toBe(true);
 }
 
@@ -288,6 +290,20 @@ describe("FundingPanel deadline reconciliation", () => {
       expect(screen.getByText(artifact.sha256)).toBeTruthy();
     }
     expect((screen.getByRole("button", { name: "Copy sponsor pool address" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText(ADDRESS)).toBeNull();
+    expect(screen.queryByRole("link", { name: "basescan" })).toBeNull();
+    acknowledgePolicy();
+    expect(screen.getByText(ADDRESS)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "basescan" }).getAttribute("href"))
+      .toBe(`https://sepolia.basescan.org/address/${ADDRESS}`);
+  });
+
+  it("rejects an active target carried in the Phase 0 v3 envelope", async () => {
+    vi.mocked(fetch).mockResolvedValue(okResponse({ ...responseBody(), schema: "p42-prizes/funding-target/v3" }));
+    render(<FundingPanel {...props()} />);
+    await flushResponse();
+    expectTargetClearedFromDom();
+    expect(screen.getByText("funding unavailable")).toBeTruthy();
   });
 
   it.each([

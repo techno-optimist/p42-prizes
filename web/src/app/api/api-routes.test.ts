@@ -513,13 +513,13 @@ describe("mutable API routes", () => {
     });
   });
 
-  it("publishes only reconciled donation targets from problem APIs", async () => {
+  it("never publishes donation targets from general problem APIs", async () => {
     const listResponse = await problemsGet();
     const list = await listResponse.json();
     expect(listResponse.status).toBe(200);
     expect(list).toHaveLength(10);
     for (const entry of list) {
-      expect(entry.donationTarget).toBeNull();
+      expect(entry).not.toHaveProperty("donationTarget");
       expect(entry.donationWallet.address).toBeNull();
       expect(entry.donationWallet.explorerUrl).toBeNull();
     }
@@ -531,10 +531,10 @@ describe("mutable API routes", () => {
     const detail = await detailResponse.json();
     expect(detailResponse.status).toBe(200);
     expect(detail).toMatchObject({
-      donationTarget: null,
       poolAddress: null,
       donationWallet: { address: null, explorerUrl: null },
     });
+    expect(detail).not.toHaveProperty("donationTarget");
   });
 
   it("runs the canonical verifier for the developer shortcut", async () => {

@@ -243,7 +243,7 @@ export interface PortalReadModel {
   provenance: PortalReadModelProvenance;
 }
 
-export interface FundingTargetV3 {
+export interface FundingTargetV4 {
   address: string;
   asset: "ETH";
   chain: "Base Sepolia" | "Base";
@@ -278,7 +278,12 @@ export interface FundingTargetEnvelopeV3 {
   checkpointBlock: number | null;
   checkpointDigest: string | null;
   activationFinalizedBlock: number | null;
-  target: FundingTargetV3 | null;
+  target: null;
+}
+
+export interface FundingTargetEnvelopeV4 extends Omit<FundingTargetEnvelopeV3, "schema" | "target"> {
+  schema: "p42-prizes/funding-target/v4";
+  target: FundingTargetV4;
 }
 
 export interface ActivityItem {

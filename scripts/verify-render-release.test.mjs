@@ -32,7 +32,6 @@ function validProblems() {
       ...structuredClone(EXPECTED_BOARD_MANIFEST.phase0.donationWallet),
       note: "Non-material human-readable funding note.",
     },
-    donationTarget: null,
     chainProvenance: {
       ...structuredClone(EXPECTED_BOARD_MANIFEST.phase0.chainProvenance),
       note: "Non-material human-readable provenance note.",

@@ -6,16 +6,18 @@ import type {
   FundingArtifactReference,
   FundingReleaseArtifactsV1,
   FundingTargetEnvelopeV3,
-  FundingTargetV3,
+  FundingTargetEnvelopeV4,
+  FundingTargetV4,
 } from "@/lib/types";
 
 const MAX_TIMEOUT_MS = 2_147_000_000;
-const RESPONSE_SCHEMA = "p42-prizes/funding-target/v3";
+const PHASE0_RESPONSE_SCHEMA = "p42-prizes/funding-target/v3";
+const ACTIVE_RESPONSE_SCHEMA = "p42-prizes/funding-target/v4";
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
 const ZERO_SHA256 = `sha256:${"0".repeat(64)}`;
 
-type ClientFundingTarget = FundingTargetV3;
+type ClientFundingTarget = FundingTargetV4;
 
 interface BoundFundingTarget {
   bindingKey: string;
@@ -23,7 +25,7 @@ interface BoundFundingTarget {
   target: ClientFundingTarget;
 }
 
-type FundingTargetResponse = FundingTargetEnvelopeV3 & {
+type FundingTargetResponse = (FundingTargetEnvelopeV3 | FundingTargetEnvelopeV4) & {
   authorizationExpiresAt: string;
   finalizedObservedAt: string;
   fundingDeadline: string;
@@ -119,7 +121,7 @@ function parseFundingTargetResponse(value: unknown, slug: string): FundingTarget
     "checkpointBlock", "checkpointDigest", "finalizedObservedAt", "fundingAuthorizationDigest", "fundingDeadline",
     "remainingCapWei", "schema", "serverObservedAt", "slug", "target",
   ])
-    || response.schema !== RESPONSE_SCHEMA || response.slug !== slug
+    || response.slug !== slug
     || typeof response.authorizationExpiresAt !== "string" || parsedTimestamp(response.authorizationExpiresAt) === null
     || typeof response.finalizedObservedAt !== "string" || parsedTimestamp(response.finalizedObservedAt) === null
     || typeof response.fundingDeadline !== "string" || parsedTimestamp(response.fundingDeadline) === null
@@ -131,6 +133,7 @@ function parseFundingTargetResponse(value: unknown, slug: string): FundingTarget
     || !validDigest(response.checkpointDigest)
     || response.activationFinalizedBlock > response.checkpointBlock) return null;
   if (response.target === null) {
+    if (response.schema !== PHASE0_RESPONSE_SCHEMA) return null;
     return {
       authorizationExpiresAt: response.authorizationExpiresAt,
       finalizedObservedAt: response.finalizedObservedAt,
@@ -142,11 +145,12 @@ function parseFundingTargetResponse(value: unknown, slug: string): FundingTarget
       checkpointBlock: response.checkpointBlock,
       checkpointDigest: response.checkpointDigest,
       activationFinalizedBlock: response.activationFinalizedBlock,
-      schema: RESPONSE_SCHEMA,
+      schema: PHASE0_RESPONSE_SCHEMA,
       slug,
       target: null,
     };
   }
+  if (response.schema !== ACTIVE_RESPONSE_SCHEMA) return null;
   if (typeof response.target !== "object" || Array.isArray(response.target)) return null;
   const target = response.target as Record<string, unknown>;
   if (!exactKeys(target, ["address", "asset", "chain", "chainId", "explorerUrl", "releaseArtifacts", "walletUri"])
@@ -170,7 +174,7 @@ function parseFundingTargetResponse(value: unknown, slug: string): FundingTarget
     checkpointBlock: response.checkpointBlock,
     checkpointDigest: response.checkpointDigest,
     activationFinalizedBlock: response.activationFinalizedBlock,
-    schema: RESPONSE_SCHEMA,
+    schema: ACTIVE_RESPONSE_SCHEMA,
     slug,
     target: { ...target, releaseArtifacts } as unknown as ClientFundingTarget,
   };
@@ -618,7 +622,7 @@ export function FundingPanel({
       {target ? (
         <>
           <div className="address-line">
-            <code>{target.address}</code>
+            <code>{acknowledged ? target.address : "address hidden until acknowledgement"}</code>
             {acknowledged ? (
               <a className="copy-button" href={target.walletUri} onClick={openWallet} aria-label={`Fund ${label ?? "sponsor pool"} with ${target.asset}`}>
                 {walletLaunchIdentity === targetIdentity ? "open wallet" : `fund ${target.asset}`}
@@ -637,7 +641,9 @@ export function FundingPanel({
             >
               {copied ? "copied" : "copy"}
             </button>
-            <a className="ref" href={target.explorerUrl} target="_blank" rel="noreferrer">basescan</a>
+            {acknowledged && (
+              <a className="ref" href={target.explorerUrl} target="_blank" rel="noreferrer">basescan</a>
+            )}
           </div>
           <div className="funding-release-artifacts" aria-label="Release-bound funding documents">
             <p>Release-bound funding documents</p>

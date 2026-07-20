@@ -13,15 +13,22 @@ the problem has a reconciled, bytecode-backed pool on the declared chain.
 - A future Base Sepolia or Base target must pass the portal's chain,
   reconciliation, runtime-bytecode, registry, and deployment-commit checks
   before a donation action is exposed.
-- An otherwise valid target remains fully suppressed unless
-  `P42_FUNDING_RELEASE_ARTIFACTS` is an exact JSON bundle containing release-
-  bound `terms`, `privacy`, `risk`, and `eligibility` HTTPS artifact URIs and
-  nonzero `sha256:<64 lowercase hex>` digests. Missing, extra, or malformed
-  artifact data fails closed.
+- The current signed `p42-production-launch-authorization/v1` artifact does not
+  bind the exact bytes of `terms`, `privacy`, `risk`, and `eligibility`
+  documents. Environment assertions cannot add that authority. Consequently,
+  the funding endpoint remains fail-closed until a new authorization version
+  signs those artifact references and the activation/reconciliation validators
+  bind the same authorization bytes and digest.
 - When a target is available, the portal displays all four links and exact
   digests. The wallet action and address-copy control remain disabled until the
   funder explicitly acknowledges those release artifacts and the target's
   authorization, activation, and checkpoint bindings.
+- Phase 0 and every unavailable response retain the exact
+  `p42-prizes/funding-target/v3` envelope with `target: null`. Expanded active
+  targets use the distinct `p42-prizes/funding-target/v4` schema. General
+  problem list/detail APIs never publish an address, wallet URI, explorer
+  action, or donation target; funding instructions come only from this gated
+  endpoint.
 
 ## Coinbase Onramp
 

@@ -1,9 +1,5 @@
 import { json } from "@/lib/api";
-import {
-  chainProvenanceForProblem,
-  publicDonationWallet,
-  publishedDonationTarget,
-} from "@/lib/chain-provenance";
+import { chainProvenanceForProblem } from "@/lib/chain-provenance";
 import { getProblemBySlug } from "@/lib/data";
 import { loadPortalReadModel } from "@/lib/indexer-read-model";
 
@@ -18,13 +14,19 @@ export async function GET(_req: Request, { params }: { params: Promise<{ slug: s
     pool: null,
     chainProvenance: chainProvenanceForProblem(catalogProblem),
   };
-  const chainProvenance = problem.chainProvenance;
-  const donationTarget = publishedDonationTarget(problem.donationWallet, chainProvenance);
+  const chainProvenance = {
+    ...problem.chainProvenance,
+    donationWalletAddress: null,
+    poolAddress: null,
+  };
   return json({
     ...problem,
-    poolAddress: donationTarget?.address ?? null,
-    donationWallet: publicDonationWallet(problem.donationWallet, chainProvenance),
-    donationTarget,
+    poolAddress: null,
+    pool: problem.pool && {
+      ...problem.pool,
+      winningsDonations: problem.pool.winningsDonations.map((entry) => ({ ...entry, destinationPool: null })),
+    },
+    donationWallet: { ...problem.donationWallet, address: null, explorerUrl: null },
     chainProvenance,
   }, { headers: { "X-P42-Data-Source": problem.source } });
 }

@@ -21,7 +21,7 @@ Use the live base URL `https://projectforty2.ai/prizes` unless you are explicitl
 4. Inspect one problem and its `chainProvenance`: `GET https://projectforty2.ai/prizes/api/problems/{slug}`
 5. Clone or open the problem repo and run `make verify SOLUTION=path`
 6. **Before every mutation attempt**, request `GET https://projectforty2.ai/prizes/api/capabilities`. Continue only when `mutations.available` is `true`. `mutations.status: "configured"` requires an operator-issued API key; `"unconfigured"` or `"misconfigured"` with `available: false` means do not send a POST. Only a local `authentication: "local-development-opt-out"` permits unauthenticated development calls.
-7. Sponsor a pool only when `donationTarget` is non-null and `chainProvenance` identifies a reconciled bytecode-backed per-problem pool; never infer a transfer address from raw funding metadata
+7. Funding instructions exist only at `GET https://projectforty2.ai/prizes/api/problems/{slug}/funding-target`. Continue only for a strictly validated `p42-prizes/funding-target/v4` response with a non-null target; a v3 response is Phase 0 and never contains a target. Never derive an address from the general problem APIs, chain metadata, explorer history, or repository files.
 8. Commit the solution CID: `POST https://projectforty2.ai/prizes/api/submissions/commit`
 9. Reveal salt and solution: `POST https://projectforty2.ai/prizes/api/submissions/reveal`
 10. Watch the challenge window: `GET https://projectforty2.ai/prizes/api/leaderboard?problem_id=ID`

@@ -125,14 +125,16 @@ replay, but the portal rejects them for funding publication; migrate by
 regenerating and re-attesting a v4 checkpoint, not by rewriting an old artifact.
 
 The portal deliberately does not open RPC connections from the browser or web
-request path. Its `p42-prizes/funding-target/v3` response is bounded by the
-fresh, finalized, independently attested v4 checkpoint and exposes the exact
-nonzero `fundingAuthorizationDigest`, `activationCompletionDigest`, checkpoint
-block, and activation-finalization block. The client strictly parses and
-revalidates those values, requires an explicit acknowledgement of their
-displayed abbreviations, then requires a second trusted click before following
-the wallet URI. A browser-visible target is not evidence that a browser made a
-live `eth_call`.
+request path. The current `p42-prizes/funding-target/v3` response is the exact
+fail-closed contract and always has `target: null`. A future active target must
+use `p42-prizes/funding-target/v4` and be bounded by a signed launch-
+authorization version that includes the exact legal artifact references, the
+fresh independently attested checkpoint, and the reconciled activation. Launch
+authorization v1 has no legal-artifact field, so environment configuration
+cannot enable v4. The v4 client parser requires explicit acknowledgement before
+showing the full address or BaseScan action, then requires a second trusted
+click before following the wallet URI. A browser-visible target is not evidence
+that a browser made a live `eth_call`.
 
 The repository's safe dual-RPC implementation remains the indexer/activation
 pipeline described above. Adding an unrelated single-provider or ad hoc

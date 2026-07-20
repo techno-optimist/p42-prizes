@@ -47,7 +47,6 @@ const PHASE0_INVARIANTS = Object.freeze({
     status: "not-deployed",
     explorerUrl: null,
   }),
-  donationTarget: null,
   chainProvenance: Object.freeze({
     settlementState: "local-only",
     chain: "Base Sepolia",
@@ -377,7 +376,6 @@ function phase0Projection(problem) {
       status: problem.donationWallet?.status,
       explorerUrl: problem.donationWallet?.explorerUrl,
     },
-    donationTarget: problem.donationTarget,
     chainProvenance: {
       settlementState: problem.chainProvenance?.settlementState,
       chain: problem.chainProvenance?.chain,

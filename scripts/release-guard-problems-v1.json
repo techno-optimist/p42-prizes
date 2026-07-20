@@ -1,6 +1,6 @@
 {
   "schema_version": "p42-prizes-release-guard-problems-v1",
-  "projection_sha256": "sha256:ec42d67bc8d67d3732fc363b371b6c2e4acffa256c107df887ad3501cb6a0137",
+  "projection_sha256": "sha256:b7e5d6233f56a8feb09d3eeb079913c1386ba8606625acd77514e00c83702171",
   "phase0": {
     "donationWallet": {
       "chain": "Base Sepolia",
@@ -9,7 +9,6 @@
       "status": "not-deployed",
       "explorerUrl": null
     },
-    "donationTarget": null,
     "chainProvenance": {
       "settlementState": "local-only",
       "chain": "Base Sepolia",
