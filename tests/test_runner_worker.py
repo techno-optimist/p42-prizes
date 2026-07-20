@@ -23,8 +23,10 @@ from p42_prizes.runner_worker import (
     _run_isolated_verifier,
     _run_job,
     _run_verifier_for_transcript,
+    _validate_board_identity,
     run_next_job_once,
 )
+from p42_prizes.problem import load_manifest
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
@@ -68,6 +70,43 @@ def _write_problem(
     solution = problem / "solution.json"
     solution.write_text("{}", encoding="utf-8")
     return problem, solution
+
+
+def test_worker_revalidates_full_executor_board_identity_before_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    digest = "sha256:" + "a" * 64
+    repository = "ghcr.io/example/p42/worker-fixture"
+    problem, _ = _write_problem(
+        tmp_path, verifier_name="verify.py", verifier_body="print('{}')\n", wall_seconds=10,
+        image=digest, image_repository=repository,
+    )
+    manifest = load_manifest(problem)
+    source_hash = "sha256:" + "c" * 64
+    monkeypatch.setattr("p42_prizes.runner_worker.compute_source_hash", lambda _problem: source_hash)
+    resource = {"memory_mb": 128, "wall_seconds": 10}
+    identity = {
+        "problem_slug": "worker-fixture", "problem_path": str(problem.resolve()),
+        "verifier_command": "python3 verifier/verify.py --solution {solution}",
+        "verifier_image": f"{repository}@{digest}",
+        "verifier_source_sha256": source_hash,
+        "resource_identity": sha256_bytes(canonical_json(resource).encode()),
+        "memory_mb": 128, "wall_seconds": 10,
+    }
+    job = {"problem": str(problem), "required_memory_mb": 128, "board_identity": identity}
+    assert _validate_board_identity(job, manifest) == identity
+    for field, value, message in (
+        ("problem_slug", "other", "slug/path"),
+        ("verifier_command", "substitute", "command"),
+        ("verifier_image", f"{repository}@sha256:" + "b" * 64, "image"),
+        ("verifier_source_sha256", "sha256:" + "b" * 64, "source"),
+        ("resource_identity", "sha256:" + "b" * 64, "resource"),
+        ("memory_mb", 129, "resource"),
+    ):
+        with pytest.raises(RunnerWorkerError, match=message):
+            _validate_board_identity(
+                {**job, "board_identity": {**identity, field: value}}, manifest,
+            )
 
 
 def test_verifier_subprocess_does_not_inherit_host_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -357,6 +396,7 @@ def test_worker_refuses_to_lease_before_rootless_docker_authority_is_ready(
             memory=MemorySnapshot(total_mb=16384, available_mb=16384, swap_used_mb=0),
             policy=RunnerPolicy(sandbox="docker"),
             docker_host="unix:///run/p42-docker-fixture/docker.sock",
+            allow_test_identity_derivation=True,
         )
     assert json.loads(queue.read_text(encoding="utf-8"))["jobs"][0]["status"] == "queued"
 
@@ -382,7 +422,12 @@ def test_colliding_job_ids_write_distinct_transcripts(tmp_path: Path) -> None:
             "solution": str(solution),
             "required_memory_mb": 64,
         }
-        transcript = _run_job(job, transcript_dir, policy=RunnerPolicy())
+        transcript = _run_job(
+            job,
+            transcript_dir,
+            policy=RunnerPolicy(),
+            allow_test_identity_derivation=True,
+        )
         # The human-readable id survives inside the transcript itself.
         assert transcript["job_id"] == job_id
         paths.append(transcript["transcript_path"])
@@ -441,6 +486,7 @@ def test_worker_reaps_expired_lease_and_runs_the_job(tmp_path: Path) -> None:
         queue_path,
         tmp_path / "transcripts",
         memory=MemorySnapshot(total_mb=131072, available_mb=64000, swap_used_mb=0),
+        allow_test_identity_derivation=True,
     )
 
     assert result["schema_version"] == "p42-runner-transcript/v1", result
@@ -448,6 +494,36 @@ def test_worker_reaps_expired_lease_and_runs_the_job(tmp_path: Path) -> None:
     assert updated["status"] == "succeeded"
     assert updated["attempts"] == 1
     assert "lease_expires_at_utc" not in updated
+
+
+def test_exact_worker_ignores_older_operator_fifo_and_runs_only_bound_rerun(tmp_path: Path) -> None:
+    verifier_body = "import json\nprint(json.dumps({'valid': True}, sort_keys=True, separators=(',', ':')))\n"
+    problem, solution = _write_problem(
+        tmp_path, verifier_name="ok.py", verifier_body=verifier_body, wall_seconds=10,
+    )
+    queue_path = tmp_path / "queue.json"
+    operator = {
+        "job_id": "operator-first", "status": "queued", "required_memory_mb": 64,
+        "source_event_hash": "sha256:" + "1" * 64, "problem": str(problem), "solution": str(solution),
+    }
+    rerun = {
+        "job_id": "resolver-rerun:" + "2" * 64 + ":" + "3" * 64,
+        "status": "queued", "required_memory_mb": 64,
+        "source_event_hash": "sha256:" + "4" * 64, "problem": str(problem), "solution": str(solution),
+    }
+    enqueue_runner_job(queue_path, operator)
+    enqueue_runner_job(queue_path, rerun)
+
+    result = run_next_job_once(
+        queue_path, tmp_path / "transcripts",
+        memory=MemorySnapshot(total_mb=131072, available_mb=64000, swap_used_mb=0),
+        allow_test_identity_derivation=True, exact_job_id=rerun["job_id"],
+        exact_source_event_hash=rerun["source_event_hash"],
+    )
+
+    assert result["job_id"] == rerun["job_id"]
+    states = {job["job_id"]: job["status"] for job in read_runner_queue(queue_path)["jobs"]}
+    assert states == {operator["job_id"]: "queued", rerun["job_id"]: "succeeded"}
 
 
 def test_worker_refuses_lease_shorter_than_enforced_runtime(tmp_path: Path) -> None:
@@ -482,6 +558,7 @@ def test_worker_refuses_lease_shorter_than_enforced_runtime(tmp_path: Path) -> N
             tmp_path / "transcripts",
             memory=MemorySnapshot(total_mb=131072, available_mb=64000, swap_used_mb=0),
             lease_seconds=60,
+            allow_test_identity_derivation=True,
         )
     queued = json.loads(queue_path.read_text(encoding="utf-8"))["jobs"][0]
     assert queued["status"] == "queued"
@@ -535,6 +612,7 @@ def test_worker_pins_one_manifest_snapshot_for_lease_and_execution(
         tmp_path / "transcripts",
         memory=MemorySnapshot(total_mb=131072, available_mb=64000, swap_used_mb=0),
         lease_seconds=60,
+        allow_test_identity_derivation=True,
     )
 
     assert result["schema_version"] == "p42-runner-transcript/v1"
@@ -578,6 +656,7 @@ def test_transcript_storage_failure_clears_the_live_lease(
         queue_path,
         tmp_path / "transcripts",
         memory=MemorySnapshot(total_mb=131072, available_mb=64000, swap_used_mb=0),
+        allow_test_identity_derivation=True,
     )
 
     assert result["reason"] == "transcript_storage_retry_queued"
@@ -639,6 +718,7 @@ def test_host_capacity_head_is_quarantined_before_later_job_runs(
         tmp_path / "transcripts",
         memory=memory,
         policy=policy,
+        allow_test_identity_derivation=True,
     )
     assert completed["schema_version"] == "p42-runner-transcript/v1"
     assert completed["job_id"] == fitting["job_id"]
@@ -702,6 +782,40 @@ def test_manifest_load_failure_gets_source_bound_local_disposition(tmp_path: Pat
     assert terminal["terminal_disposition"]["reason_code"] == "job_run_error"
     assert terminal["terminal_disposition"]["fence_hash"] == job["source_event_hash"]
     assert "transcript_path" not in terminal
+
+
+def test_production_worker_terminalizes_legacy_job_without_board_identity(tmp_path: Path) -> None:
+    problem, solution = _write_problem(
+        tmp_path, verifier_name="ok.py", verifier_body="print('{}')\n", wall_seconds=10,
+    )
+    queue_path = tmp_path / "queue.json"
+    job = {
+        "job_id": "legacy-without-board-identity",
+        "status": "queued",
+        "required_memory_mb": 64,
+        "source_event_hash": "sha256:" + "4" * 64,
+        "problem": str(problem),
+        "solution": str(solution),
+    }
+    enqueue_runner_job(queue_path, job)
+
+    result = run_next_job_once(
+        queue_path,
+        tmp_path / "transcripts",
+        memory=MemorySnapshot(total_mb=1024, available_mb=1024, swap_used_mb=0),
+        policy=RunnerPolicy(reserve_memory_mb=128, memory_safety_factor=1.0),
+        require_board_identity=True,
+    )
+
+    assert result["reason"].startswith(
+        "job_run_error: production job lacks the executor-forced closed board identity"
+    )
+    terminal = read_runner_queue(queue_path)["jobs"][0]
+    assert terminal["status"] == "failed"
+    assert terminal["terminal_disposition"]["reason_code"] == "job_run_error"
+    assert terminal["terminal_disposition"]["fence_hash"] == job["source_event_hash"]
+    assert "transcript_path" not in terminal
+    assert not (tmp_path / "transcripts").exists()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="process-group kill is POSIX-only")

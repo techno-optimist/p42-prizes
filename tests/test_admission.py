@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import base64
 import io
 import json
 import os
@@ -34,6 +35,85 @@ from p42_prizes.bounded_process import OutputLimitExceeded
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _portable_oci_graph(*, slug: str, version: str, source_commit: str, source_hash: str):
+    platform_records = []
+    raw_platforms = []
+    index_manifests = []
+    for index, platform in enumerate(("linux/amd64", "linux/arm64")):
+        os_name, architecture = platform.split("/")
+        labels = {
+            admission.OCI_REVISION_LABEL: source_commit,
+            admission.SOURCE_HASH_LABEL: source_hash,
+            admission.SOURCE_HASH_ALGORITHM_LABEL: admission.SOURCE_HASH_ALGORITHM,
+            admission.PROBLEM_ID_LABEL: slug,
+            admission.VERIFIER_VERSION_LABEL: version,
+        }
+        config_raw = canonical_json({
+            "architecture": architecture,
+            "os": os_name,
+            "config": {
+                "Labels": labels, "User": "65534:65534",
+                "WorkingDir": f"/repo/problems/{slug}",
+                "Entrypoint": None, "Cmd": [],
+            },
+        })
+        config_digest = sha256_bytes(config_raw.encode())
+        layer = {
+            "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+            "digest": "sha256:" + str(index + 7) * 64,
+            "size": 500 + index,
+        }
+        manifest_raw = canonical_json({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": config_digest,
+                "size": len(config_raw.encode()),
+            },
+            "layers": [layer],
+        })
+        manifest_digest = sha256_bytes(manifest_raw.encode())
+        platform_records.append({
+            "platform": platform,
+            "manifest_digest": manifest_digest,
+            "manifest_size": len(manifest_raw.encode()),
+            "config_digest": config_digest,
+            "config_size": len(config_raw.encode()),
+            "layer_count": 1,
+            "layer_descriptors": [layer],
+            "labels": labels,
+            "runtime": {
+                "user": "65534:65534", "workdir": f"/repo/problems/{slug}",
+                "entrypoint": None, "cmd": [],
+            },
+        })
+        raw_platforms.append({
+            "platform": platform,
+            "manifest_base64": base64.b64encode(manifest_raw.encode()).decode(),
+            "config_base64": base64.b64encode(config_raw.encode()).decode(),
+        })
+        index_manifests.append({
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": manifest_digest,
+            "size": len(manifest_raw.encode()),
+            "platform": {"os": os_name, "architecture": architecture},
+        })
+    index_raw = canonical_json({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": index_manifests,
+    })
+    return (
+        sha256_bytes(index_raw.encode()),
+        platform_records,
+        {
+            "index_base64": base64.b64encode(index_raw.encode()).decode(),
+            "platforms": raw_platforms,
+        },
+    )
 
 
 def _host_set_bindings(evidence_items: list[dict]) -> list[dict]:
@@ -469,7 +549,7 @@ def test_run_verifier_once_uses_the_manifest_image_not_ambient_environment(
     assert run.report["verifier_image"] == "sha256:local-dev"
 
 
-def test_source_hash_normalizes_the_self_referential_image_digest(tmp_path: Path) -> None:
+def test_source_hash_normalizes_only_release_config_fields(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     _copy_source_build_inputs(root)
     (root / "schemas").mkdir(parents=True)
@@ -480,11 +560,17 @@ def test_source_hash_normalizes_the_self_referential_image_digest(tmp_path: Path
     manifest = (ROOT / "problems" / "hadamard-mini" / "problem.yaml").read_text(encoding="utf-8")
     (problem / "problem.yaml").write_text(manifest, encoding="utf-8")
     before = compute_source_hash(problem)
-    (problem / "problem.yaml").write_text(
-        manifest.replace("sha256:local-dev", "sha256:" + "a" * 64),
-        encoding="utf-8",
-    )
+    release_manifest = yaml.safe_load(manifest)
+    release_manifest["verifier"].update({
+        "image": "sha256:" + "a" * 64,
+        "image_repository": "ghcr.io/projectforty2/verifiers/hadamard-mini",
+        "admission": {"trusted_hosts": [{"operator_id": "external-operator"}]},
+    })
+    (problem / "problem.yaml").write_text(yaml.safe_dump(release_manifest), encoding="utf-8")
     assert compute_source_hash(problem) == before
+    release_manifest["verifier"]["command"] += " --changed-source"
+    (problem / "problem.yaml").write_text(yaml.safe_dump(release_manifest), encoding="utf-8")
+    assert compute_source_hash(problem) != before
 
 
 def test_v2_dossier_adopts_digest_only_commit_but_rejects_later_source_change(
@@ -511,7 +597,12 @@ def test_v2_dossier_adopts_digest_only_commit_but_rejects_later_source_change(
     ).stdout.strip()
     source_hash = compute_source_hash(problem)
 
-    image_digest = "sha256:" + "a" * 64
+    image_digest, _target_platforms, _target_receipt = _portable_oci_graph(
+        slug="hadamard-mini",
+        version=manifest["verifier"]["version"],
+        source_commit=verifier_source_commit,
+        source_hash=source_hash,
+    )
     manifest["verifier"]["image"] = image_digest
     manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
     assert compute_source_hash(problem) == source_hash
@@ -524,35 +615,21 @@ def test_v2_dossier_adopts_digest_only_commit_but_rejects_later_source_change(
     def board(slug: str, *, target: bool) -> dict:
         version = manifest["verifier"]["version"] if target else "1.0.0"
         repo = repository if target else f"ghcr.io/projectforty2/verifiers/{slug}"
-        platform_records = []
-        for platform in ("linux/amd64", "linux/arm64"):
-            platform_records.append({
-                "platform": platform,
-                "manifest_digest": "sha256:" + "b" * 64,
-                "manifest_size": 1,
-                "config_digest": "sha256:" + "c" * 64,
-                "config_size": 1,
-                "layer_count": 1,
-                "labels": {
-                    admission.OCI_REVISION_LABEL: verifier_source_commit,
-                    admission.SOURCE_HASH_LABEL: source_hash,
-                    admission.SOURCE_HASH_ALGORITHM_LABEL: admission.SOURCE_HASH_ALGORITHM,
-                    admission.PROBLEM_ID_LABEL: slug,
-                    admission.VERIFIER_VERSION_LABEL: version,
-                },
-                "runtime": {
-                    "user": "65534:65534", "workdir": f"/repo/problems/{slug}",
-                    "entrypoint": None, "cmd": [],
-                },
-            })
+        board_digest, platform_records, receipt = _portable_oci_graph(
+            slug=slug,
+            version=version,
+            source_commit=verifier_source_commit,
+            source_hash=source_hash,
+        )
         return {
             "slug": slug, "problem_id": slug, "version": version,
             "source_hash": source_hash, "repository": repo,
-            "index_digest": image_digest,
-            "immutable_reference": f"{repo}@{image_digest}",
+            "index_digest": board_digest,
+            "immutable_reference": f"{repo}@{board_digest}",
             "release_manifest_path": f"problems/{slug}/problem.yaml",
             "release_manifest_sha256": sha256_file(manifest_path) if target else "sha256:" + "d" * 64,
             "platform_manifests": platform_records,
+            "descriptor_receipt": receipt,
         }
 
     dossier = {
@@ -645,10 +722,17 @@ def _portable_release_fixture(tmp_path: Path) -> tuple[Path, dict, Path, str]:
     source_hashes = {
         slug: compute_source_hash(root / "problems" / slug) for slug in slugs
     }
-    image_digest = "sha256:" + "a" * 64
+    image_digests: dict[str, str] = {}
     for slug in slugs:
         manifest_path = root / "problems" / slug / "problem.yaml"
         manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        image_digest, _platforms, _receipt = _portable_oci_graph(
+            slug=slug,
+            version=versions[slug],
+            source_commit=source_commit,
+            source_hash=source_hashes[slug],
+        )
+        image_digests[slug] = image_digest
         manifest["verifier"]["image"] = image_digest
         manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
         assert compute_source_hash(root / "problems" / slug) == source_hashes[slug]
@@ -673,24 +757,13 @@ def _portable_release_fixture(tmp_path: Path) -> tuple[Path, dict, Path, str]:
             admission.PROBLEM_ID_LABEL: slug,
             admission.VERIFIER_VERSION_LABEL: versions[slug],
         }
-        platforms = [
-            {
-                "platform": platform,
-                "manifest_digest": "sha256:" + str(index + 1) * 64,
-                "manifest_size": 100 + index,
-                "config_digest": "sha256:" + str(index + 3) * 64,
-                "config_size": 200 + index,
-                "layer_count": 1,
-                "labels": labels,
-                "runtime": {
-                    "user": "65534:65534",
-                    "workdir": f"/repo/problems/{slug}",
-                    "entrypoint": None,
-                    "cmd": [],
-                },
-            }
-            for index, platform in enumerate(("linux/amd64", "linux/arm64"))
-        ]
+        image_digest, platforms, descriptor_receipt = _portable_oci_graph(
+            slug=slug,
+            version=versions[slug],
+            source_commit=source_commit,
+            source_hash=source_hashes[slug],
+        )
+        assert image_digest == image_digests[slug]
         release_record = {
             "slug": slug,
             "problem_id": slug,
@@ -700,6 +773,7 @@ def _portable_release_fixture(tmp_path: Path) -> tuple[Path, dict, Path, str]:
             "index_digest": image_digest,
             "immutable_reference": f"{repository}@{image_digest}",
             "platform_manifests": platforms,
+            "descriptor_receipt": descriptor_receipt,
         }
         dossier_boards.append({
             **release_record,
@@ -717,10 +791,24 @@ def _portable_release_fixture(tmp_path: Path) -> tuple[Path, dict, Path, str]:
             "metadata_digest": "sha256:" + "9" * 64,
             "release_record": release_record,
         })
+    publication_authority = {
+        "schema": "p42-verifier-image-publication-authority/v1",
+        "commit": source_commit,
+        "authority_head": source_commit,
+        "receipt_hash": "sha256:" + "6" * 64,
+        "source_release_evidence_hash": "sha256:" + "7" * 64,
+        "run": {"id": 123, "attempt": 1, "workflow_id": 310385148},
+        "pull_request": {"number": 178, "head_sha": release_commit, "merged_at": "2026-07-19T13:00:00Z"},
+        "approvers": [{"login": "reviewer", "review_id": 3000, "commit_id": release_commit, "submitted_at": "2026-07-19T12:00:00Z", "permission": "write"}],
+        "jobs": [{"id": index + 1000, "name": name, "status": "completed", "conclusion": "success", "runId": 123, "headSha": source_commit} for index, name in enumerate(("Autonomous agent gates", "Contract gates", "Portal gates", "Python verifier gates", "SP1 objective-program gates (ubuntu-22.04)", "SP1 objective-program gates (ubuntu-24.04)", "SP1 objective-program reproducibility"))],
+        "artifacts": [{"id": index + 2000, "name": f"artifact-{index}", "sizeInBytes": index + 1, "digest": f"sha256:{index + 1:064x}", "expired": False, "workflowRun": {"id": 123, "headBranch": "main", "headSha": source_commit}} for index in range(10)],
+    }
+    publication_authority["authority_hash"] = sha256_bytes(canonical_json(publication_authority).encode("utf-8"))
     journal = {
-        "schema_version": "p42-verifier-image-publish-journal/v2",
+        "schema_version": "p42-verifier-image-publish-journal/v3",
         "verifier_source_commit": source_commit,
         "verifier_source_archive_digest": source_archive,
+        "publication_authority": publication_authority,
         "registry_base": registry,
         "platforms": ["linux/amd64", "linux/arm64"],
         "generation": 20,
@@ -826,9 +914,21 @@ def test_portable_release_validator_rejects_unrelated_same_tree_source_commit(
         dossier["boards"], journal["boards"], strict=True,
     ):
         journal_board["tag"] = f"{journal_board['repository']}:{unrelated_source}"
-        for record in (dossier_board, journal_board["release_record"]):
-            for platform in record["platform_manifests"]:
-                platform["labels"][admission.OCI_REVISION_LABEL] = unrelated_source
+        index_digest, platforms, receipt = _portable_oci_graph(
+            slug=dossier_board["slug"],
+            version=dossier_board["version"],
+            source_commit=unrelated_source,
+            source_hash=dossier_board["source_hash"],
+        )
+        dossier_board["index_digest"] = index_digest
+        dossier_board["immutable_reference"] = f"{dossier_board['repository']}@{index_digest}"
+        dossier_board["platform_manifests"] = platforms
+        dossier_board["descriptor_receipt"] = receipt
+        journal_board["release_record"] = {
+            key: copy.deepcopy(value)
+            for key, value in dossier_board.items()
+            if key not in ("release_manifest_path", "release_manifest_sha256")
+        }
     journal.pop("journal_hash")
     journal["journal_hash"] = sha256_bytes(canonical_json(journal).encode("utf-8"))
     journal_path.write_text(canonical_json(journal) + "\n", encoding="utf-8")
@@ -836,7 +936,7 @@ def test_portable_release_validator_rejects_unrelated_same_tree_source_commit(
     dossier.pop("dossier_hash")
     dossier["dossier_hash"] = sha256_bytes(canonical_json(dossier).encode("utf-8"))
 
-    with pytest.raises(AdmissionError, match="merge-base"):
+    with pytest.raises(AdmissionError, match="authority"):
         admission.validate_image_release_checkout(
             root,
             dossier,

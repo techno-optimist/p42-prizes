@@ -146,6 +146,18 @@ aliases, and profile substitutions, then constructs both RPC providers
 internally. This is provenance-preserving quorum evidence, not a claim that any
 currently configured pair is independently operated.
 
+For continuous non-activated checkpointing, install
+`deployments/p42-indexer.service.example` with a current immutable manifest and
+private RPC credential. The service keeps `agent/indexer.mjs` as the one-cycle
+reconstruction engine, writes each cycle to `candidate.json`, and atomically
+promotes only a complete same-binding checkpoint with a nondecreasing finalized
+height. Monitor `/var/lib/p42/indexer/health.json`; `degraded` records a failed
+cycle while retaining the last good checkpoint, and `stale` means no successful
+publication within the configured 300-second ceiling. Activation-bound v4 use
+also requires the secondary RPC credential and every release-bound activation
+artifact named by the one-shot command above; do not silently downgrade that
+path to the single-RPC v3 service configuration.
+
 Disk:
 
 ```bash
@@ -158,8 +170,11 @@ The disk-backed JSON state is still a Phase 0 demo ledger only. Real settlement 
 Health check path:
 
 ```bash
-/prizes
+/prizes/api/health
 ```
+
+This endpoint returns success only when the runtime PostgreSQL role can reach
+the validated schema and its singleton portal-state row exists.
 
 ### Release Contract
 
@@ -196,14 +211,30 @@ make verify-render-release P42_GIT_REMOTE=github
 
 The service root is `web/`, so Render correctly skips docs-only and
 release-tooling-only commits. If a `web/` or `render.yaml` change is missing or
-failed, agents may request a recovery build, then must run the guard again:
+failed, capture the one live deployment, pin the exact fetched `main` commit,
+reject a moving branch, and run the guard after the recovery build:
 
 ```bash
-render deploys create srv-d96pokeq1p3s73foqk60 --wait --confirm
+SERVICE=srv-d96pokeq1p3s73foqk60
+git fetch --quiet origin main
+TARGET=$(git rev-parse origin/main)
+PREVIOUS=$(render deploys list "$SERVICE" --output json |
+  jq -er '[.[] | select(.status=="live")] | if length==1 then .[0].commit.id else error("live deploy count") end')
+test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "$TARGET"
+render deploys create "$SERVICE" --commit "$TARGET" --wait --confirm
+test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "$TARGET"
+make verify-render-release
 ```
 
 The guard runs those smoke checks itself and only reports success after the
-metadata and routes agree.
+metadata and routes agree. If the exact deployment fails and database identity
+has not been rolled backward, restore the captured application commit and run
+the same guard:
+
+```bash
+render deploys create "$SERVICE" --commit "$PREVIOUS" --wait --confirm
+node scripts/verify-render-release.mjs --expected-live-commit "$PREVIOUS"
+```
 
 ## Observatory Proxy
 
@@ -222,11 +253,28 @@ deployment creates governance-owned contracts and pending operation bundles;
 independent governance signers schedule, confirm, and execute those bundles;
 then a keyless continuation verifies finalized on-chain completion.
 
+Reconciliation is also dual-RPC end to end. Each registered operator endpoint
+independently supplies runtime bytecode, the complete event catalog, replayed
+state, storage snapshots, and configuration reads at the agreed finalized
+block. The canonical reports must match exactly before `latest.json` can be
+published; agreement on the finalized header alone is insufficient. The two
+operator IDs and canonical HTTPS origins must be exact members of the protected
+activation RPC registry. Reconciliation consumes the registry digest from the
+owner-provisioned, root-owned, non-writable fixed pin at
+`/etc/p42/activation-rpc-operator-registry.sha256` and consumes the registry's
+trusted root through
+`P42_ACTIVATION_RPC_OPERATOR_REGISTRY_PATH`,
+`P42_ACTIVATION_RPC_REGISTRY_TRUSTED_ROOT`; ambient labels do not establish
+operator identity. This observation authority deliberately precedes the final
+launch authorization: that authorization binds the completed reconciliation
+report and cannot bootstrap its own first publication.
+
 For a fresh public prize deployment, the only canonical route is
 `npm run deploy:base-sepolia` and the typed procedure in
 [MULTIBOARD_CEREMONY.md](MULTIBOARD_CEREMONY.md). It refuses to broadcast until
-every board passes local `admit-ready` and the resulting admission-matrix digest
-is bound to the registry hash. The npm command unconditionally selects the
+every board passes `admit-release-ready` against the independently pinned v2
+image dossier, publication journal, and four-host evidence, and the resulting
+admission-matrix digest is bound to the registry hash. The npm command unconditionally selects the
 production-specific `deploy-multiboard-production` entry point, ignoring any
 caller-supplied `P42_DEPLOY_MODE`; direct invocation of that entry point rejects
 a missing or non-production mode before importing deployment code. No supported
@@ -420,6 +468,55 @@ The named signers review the manifest, then submit its `transactionBuilder`
 requests from their own wallets or multisig interface. Do not collect multiple
 private keys in one shell or environment file.
 
+The canonical production path requires five timelock signers, a strict-majority
+threshold of at least three, a guardian address distinct from every signer, a
+minimum 48-hour standard delay, and at least twice that delay for overrides.
+Identity and organizational independence remain part of the external governance
+signoff; address cardinality alone cannot prove them.
+
+The phased deploy intentionally exits at the first incomplete governance check
+after durably writing a private v2 journal with all 40 prerequisite builders.
+Before the first deployment transaction is signed or broadcast, production also
+reserves the exact final 110-operation journal from the frozen nonce/address
+plan and capsule-derived timelock runtime. Any missing, stale, substituted, or
+conflicting final-journal path therefore fails before gas is spent. A partial
+phase report hashes the journal only after recording every observation, so its
+reported digest always identifies the bytes left on disk.
+The journal's `deploymentConfigHash` is the immutable pre-broadcast ceremony
+input digest recorded as `releaseEvidence.configDigest`; it is intentionally
+distinct from the completed manifest's later hash over mined deployment
+evidence. The final exporter requires both bindings through the manifest.
+Export a no-key, no-RPC operator bundle without a deployment manifest:
+
+```bash
+P42_GOVERNANCE_OPERATION_JOURNAL=../deployments/base-sepolia/p42-prizes.json.predeployment-governance-operations.json \
+P42_GOVERNANCE_OPERATION_JOURNAL_SHA256=sha256:<independently-pinned-exact-bytes-digest> \
+P42_GOVERNANCE_REQUEST_OUTPUT_ROOT=/secure/p42/governance \
+P42_GOVERNANCE_REQUEST_OUTPUT=/secure/p42/governance/predeployment-40.json \
+npm run export:governance-requests
+```
+
+After the remaining eleven contracts are deployed and the pending manifest
+exists, export the final manifest-cross-checked 110-operation bundle:
+
+```bash
+P42_DEPLOYMENT_MANIFEST=../deployments/base-sepolia/p42-prizes.json \
+P42_GOVERNANCE_OPERATION_JOURNAL=../deployments/base-sepolia/p42-prizes.json.governance-operations.json \
+P42_GOVERNANCE_OPERATION_JOURNAL_SHA256=sha256:<independently-pinned-exact-bytes-digest> \
+P42_GOVERNANCE_REQUEST_OUTPUT_ROOT=/secure/p42/governance \
+P42_GOVERNANCE_REQUEST_OUTPUT=/secure/p42/governance/final-110.json \
+npm run export:governance-requests
+```
+
+Both artifacts are exclusive-created private files, preserve every complete
+schedule/confirm/execute request and deterministic override fallback, bind the
+release and deployment journal, and explicitly set `broadcastAuthorized=false`.
+The command contains no provider, wallet, signing, or broadcast path.
+The deploy/phase-check output reports the journal's exact-byte digest, but the
+signer workstation must receive and approve that digest through the protected
+release-authority channel; a digest copied only from the same untrusted journal
+directory is not an independent trust anchor.
+
 Execute operations in ascending `sequence` order and honor every `dependsOn`
 operation ID. Child wiring, registration, and freeze use standard operations.
 The timelock self-calls that register ledger, submission, and challenge pause
@@ -443,15 +540,48 @@ env -u BASE_SEPOLIA_PRIVATE_KEY \
   P42_PRIMARY_RPC_OPERATOR_ID=... \
   P42_SECONDARY_BASE_SEPOLIA_RPC_URL=... \
   P42_SECONDARY_RPC_OPERATOR_ID=... \
+  P42_ACTIVATION_RPC_OPERATOR_REGISTRY_PATH=/secure/p42/rpc/registry.json \
+  P42_ACTIVATION_RPC_REGISTRY_TRUSTED_ROOT=/secure/p42/rpc \
   P42_DEPLOYMENT_MANIFEST=../deployments/base-sepolia/p42-prizes.json \
   P42_EXPLORER_DOSSIER_PATH=... \
   P42_EXPLORER_DOSSIER_SHA256=sha256:... \
   P42_RELEASE_CAPSULE=... \
+  P42_ROLE_ACCEPTANCE_CAPSULE_SHA256=sha256:... \
+  P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_PATH=.../sha256/<digest>.json \
+  P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_SHA256=sha256:... \
   P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES=0x...,0x... \
   P42_ROLE_ACCEPTANCE_PACKET=... \
-  ETHERSCAN_API_KEY=... \
+  P42_ROLE_ACCEPTANCE_PACKET_SHA256=sha256:... \
   npm run continue:base-sepolia
 ```
+
+Run `npm run reconcile:base-sepolia` with the same keyless environment after
+continuation. Its RPC registry digest must come from the protected release
+observation-authority pin, not from the registry directory or the
+reconciliation caller. Provision that fixed pin before the ceremony:
+
+```bash
+install -d -o root -g root -m 0755 /etc/p42
+printf '%s\n' 'sha256:<canonical-registry-digest>' \
+  | sudo tee /etc/p42/activation-rpc-operator-registry.sha256 >/dev/null
+sudo chown root:root /etc/p42/activation-rpc-operator-registry.sha256
+sudo chmod 0444 /etc/p42/activation-rpc-operator-registry.sha256
+```
+
+The command compiles the pinned contract sources before loading their
+artifacts, performs a raw chain-ID probe with redirect rejection,
+reconstructs the complete finalized state independently through both exact
+registry members, and writes no report unless their canonical reports agree.
+
+`P42_ROLE_ACCEPTANCE_PACKET_SHA256` must be obtained independently from the
+packet path. Continuation hashes the exact packet bytes and rejects a packet
+whose bytes differ even when its internal canonical digest still verifies.
+Reconciliation repeats this exact-byte check against the digest recorded in the
+completed manifest.
+The capsule and pending-manifest paths must be the immutable content-addressed
+artifacts emitted by role-acceptance prepare, and their SHA-256 values must be
+observed independently. Indexer and reconciliation validation reject packet
+claims that are not accompanied by these external byte observations.
 
 Continuation is read-only on chain. It requires two operator-distinct RPCs to
 agree on Base Sepolia's canonical `finalized` and `safe` tags and on
@@ -517,7 +647,7 @@ Before pushing an Observatory change:
 # Explorer verification gate
 
 Before production governance can be marked complete, generate and validate a
-content-addressed `p42-prizes/explorer-verification-dossier/v2` artifact. The
+content-addressed `p42-prizes/explorer-verification-dossier/v3` artifact. The
 gate requires exact one-to-one coverage of all 47 addresses, current BaseScan
 official API evidence, independent Sourcify evidence, and on-chain runtime code
 matching the attested release capsule. Set `P42_EXPLORER_DOSSIER_PATH` and the
@@ -533,7 +663,8 @@ receipt, indexed deployment event, recomputed CREATE2 address, and historical
 configuration getter at the receipt block. This is source evidence only until
 the ceremony is run against Base Sepolia and independently reviewed.
 
-The current schema is `p42-prizes/explorer-verification-dossier/v2`. It embeds
+The current schema is `p42-prizes/explorer-verification-dossier/v3`. Its nested
+evidence artifact embeds
 the bounded exact raw response bytes and URL, host, HTTP status, fetch time, and
 SHA-256 for Etherscan V2 at `https://api.etherscan.io/v2/api?chainid=84532` and
 Sourcify V2 at `/server/v2/contract/84532/<address>?fields=all`. Derived metadata
@@ -542,10 +673,44 @@ sources/settings, compiler identity, and constructor arguments are reparsed
 from those bytes during every validation. The finalized `eth_getCode` frame is
 stored separately and compared byte-for-byte with Sourcify and the capsule.
 
-Set `P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES` to exactly two distinct
-trusted operator addresses. Both must EIP-712 sign the evidence digest and
-release binding with unique nonces, a finalized validation instant, and expiry.
-Governance completion and reconciliation re-query both services live and fail
-closed before publication. Tests always inject mocked HTTP responses. An
-optional operator-only smoke run may use `ETHERSCAN_API_KEY=<key> npm run
-reconcile:base-sepolia`; it performs live reads and must not be used in CI.
+Run the four-phase ceremony with separate environments: `explorer:collect`
+uses the Etherscan key and two operator-distinct RPC endpoints but has no signing
+keys; `explorer:prepare-request` runs offline and creates CSPRNG nonces for the
+exact two-address operator roster; each signer signs the emitted EIP-712 typed
+data outside the collector and `explorer:record-attestation` verifies that
+detached signature; `explorer:assemble` runs offline and emits the final dossier.
+Every phase reads exact bytes against an out-of-band SHA-256 pin and writes a new
+regular file exclusively. The request binds the complete evidence digest,
+roster, release, capsule, and one immutable finalized block number/hash.
+
+Start collection from a credential-minimal environment that contains the
+explorer credential and RPC observations, but no wallet, signer, mnemonic, JWK,
+or other secret-bearing variable:
+
+```bash
+env -i PATH="$PATH" HOME="$HOME" \
+  ETHERSCAN_API_KEY=... \
+  BASE_SEPOLIA_RPC_URL=... \
+  P42_SECONDARY_BASE_SEPOLIA_RPC_URL=... \
+  P42_PRIMARY_RPC_OPERATOR_ID=... \
+  P42_SECONDARY_RPC_OPERATOR_ID=... \
+  P42_EXPLORER_INPUT_ROOT=/secure/p42/input \
+  P42_DEPLOYMENT_MANIFEST=... \
+  P42_DEPLOYMENT_MANIFEST_SHA256=sha256:... \
+  P42_RELEASE_CAPSULE=... \
+  P42_RELEASE_CAPSULE_SHA256=sha256:... \
+  P42_EXPLORER_OUTPUT_ROOT=/secure/p42/explorer \
+  P42_EXPLORER_EVIDENCE_OUTPUT=/secure/p42/explorer/evidence.json \
+  npm run explorer:collect
+```
+
+Governance completion and reconciliation validate the complete retained dossier
+at the durable completion timestamp, then recheck its finality anchor across the
+two configured RPC authorities. They do not re-query either explorer, so an
+expired API response or API-key host has no authority during deployment. Tests
+always inject mocked HTTP and RPC responses; networked tests are prohibited.
+The request expiry is the deadline for assembling and accepting the dossier at
+governance completion. Once the completed manifest immutably binds that dossier,
+later reconciliation and launch authorization replay its historical validity at
+the finalized completion instant; they do not reinterpret it against wall-clock
+time or require the launch authorization itself to expire at the same instant.

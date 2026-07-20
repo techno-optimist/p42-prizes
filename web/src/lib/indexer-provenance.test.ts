@@ -1,4 +1,4 @@
-import { chmodSync, linkSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,8 +11,13 @@ import {
   canonicalActivationRpcOrigin,
   computePortalDeploymentConfigHash,
   configuredIndexerArtifactPaths,
+  loadActivatedIndexerSnapshot,
   loadProtectedActivationRpcOperatorRegistry,
   loadIndexerProvenance,
+  portalRoleManifestBinding,
+  portalRoleTopologyDigest,
+  replayPortalRoleAcceptances,
+  verifyPortalRoleArtifactBytes,
 } from "@/lib/indexer-provenance";
 
 const root = resolve(process.cwd(), "..");
@@ -36,6 +41,37 @@ function digest(char: string): string { return `sha256:${char.repeat(64)}`; }
 function canonical(value: any): any { if (Array.isArray(value)) return value.map(canonical); if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])); return value; }
 function canonicalDigest(value: any): string { return `sha256:${createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex")}`; }
 function bytesDigest(value: any): string { return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`; }
+
+const roleTypes = { RoleAcceptance: [
+  { name: "requestSetDigest", type: "string" }, { name: "requestSetNonce", type: "bytes32" }, { name: "pendingManifestBytesDigest", type: "string" }, { name: "manifestBindingDigest", type: "string" }, { name: "releaseBindingDigest", type: "string" }, { name: "capsuleBytesDigest", type: "string" }, { name: "capsuleDigest", type: "string" }, { name: "expectedExplorerDossierDigest", type: "string" }, { name: "slateDigest", type: "string" }, { name: "configDigest", type: "string" }, { name: "deploymentCommit", type: "string" }, { name: "topologyDigest", type: "string" }, { name: "role", type: "string" }, { name: "account", type: "address" }, { name: "policyVersion", type: "string" }, { name: "expiresAt", type: "uint64" }, { name: "nonce", type: "bytes32" }, { name: "riskAccepted", type: "bool" }, { name: "roleAccepted", type: "bool" },
+] };
+
+function attachCompletedRolePacket(manifest: Record<string, any>, options: {
+  fundingWallets?: any[];
+  pendingManifestBytesDigest?: string;
+  capsuleBytesDigest?: string;
+  capsuleDigest?: string;
+} = {}): { wallets: any[] } {
+  const baseWallets = Array.from({ length: 10 }, (_, index) => new Wallet(`0x${(index + 1).toString(16).padStart(64, "0")}`));
+  const fundingWallets = options.fundingWallets ?? baseWallets.slice(7, 10);
+  const wallets = [...baseWallets.slice(0, 7), ...fundingWallets];
+  manifest.releaseMode = "production"; manifest.status = "governance-setup-complete";
+  manifest.governance.signers = wallets.slice(0, 5).map(({ address }) => address); manifest.governance.guardian = wallets[5].address;
+  manifest.roles.treasury = wallets[6].address; manifest.roles.productionLaunchAuthority = wallets[7].address; manifest.roles.independentSecurityAuthority = wallets[8].address; manifest.roles.governanceAuthority = wallets[9].address;
+  manifest.releaseEvidence = { ...(manifest.releaseEvidence ?? {}), releaseBindingDigest: digest("1"), capsuleDigest: options.capsuleDigest ?? digest("2"), slateDigest: digest("3"), configDigest: digest("4") };
+  manifest.sourceVerification = { ...(manifest.sourceVerification ?? {}), status: "verified", dossierDigest: digest("5") };
+  const completion = 1_900_000_000; manifest.governanceSetup = { ...(manifest.governanceSetup ?? {}), status: "complete", acceptanceValidatedAt: new Date(completion * 1000).toISOString(), completionBlockTimestamp: completion, roleAcceptancePacketBytesDigest: digest("6") };
+  const common = { policyVersion: "p42-governance-role-policy/v2", chainId: 84532, requestSetNonce: hash("a"), requestSetDigest: digest("7"), pendingManifestBytesDigest: options.pendingManifestBytesDigest ?? digest("8"), manifestBindingDigest: portalRoleManifestBinding(manifest), releaseBindingDigest: manifest.releaseEvidence.releaseBindingDigest, capsuleBytesDigest: options.capsuleBytesDigest ?? digest("9"), capsuleDigest: manifest.releaseEvidence.capsuleDigest, expectedExplorerDossierDigest: manifest.sourceVerification.dossierDigest, slateDigest: manifest.releaseEvidence.slateDigest, configDigest: manifest.releaseEvidence.configDigest, deploymentCommit: manifest.deploymentCommit, timelock: getAddress(manifest.contracts.timelock.address), topologyDigest: portalRoleTopologyDigest(manifest), contractCount: 47, expiresAt: completion + 1000 };
+  const roster = [...wallets.slice(0, 5).map((wallet) => ({ role: "timelock-signer", wallet })), { role: "guardian", wallet: wallets[5] }, { role: "treasury", wallet: wallets[6] }, { role: "production-launch-authority", wallet: wallets[7] }, { role: "independent-security-authority", wallet: wallets[8] }, { role: "governance-authority", wallet: wallets[9] }, ...wallets.slice(0, 5).map((wallet) => ({ role: "resolver-quorum-signer", wallet }))].sort((a, b) => ["timelock-signer", "guardian", "treasury", "production-launch-authority", "independent-security-authority", "governance-authority", "resolver-quorum-signer"].indexOf(a.role) - ["timelock-signer", "guardian", "treasury", "production-launch-authority", "independent-security-authority", "governance-authority", "resolver-quorum-signer"].indexOf(b.role) || a.wallet.address.toLowerCase().localeCompare(b.wallet.address.toLowerCase()));
+  const domain = { name: "P42 Deployment Role Acceptance", version: "2", chainId: 84532, verifyingContract: common.timelock };
+  const acceptances = roster.map(({ role, wallet }, index) => {
+    const acceptance = { role, address: wallet.address, nonce: `0x${(index + 1).toString(16).padStart(64, "0")}`, riskAccepted: true, roleAccepted: true };
+    const message = { requestSetDigest: common.requestSetDigest, requestSetNonce: common.requestSetNonce, pendingManifestBytesDigest: common.pendingManifestBytesDigest, manifestBindingDigest: common.manifestBindingDigest, releaseBindingDigest: common.releaseBindingDigest, capsuleBytesDigest: common.capsuleBytesDigest, capsuleDigest: common.capsuleDigest, expectedExplorerDossierDigest: common.expectedExplorerDossierDigest, slateDigest: common.slateDigest, configDigest: common.configDigest, deploymentCommit: common.deploymentCommit, topologyDigest: common.topologyDigest, role, account: wallet.address, policyVersion: common.policyVersion, expiresAt: common.expiresAt, nonce: acceptance.nonce, riskAccepted: true, roleAccepted: true };
+    return { ...acceptance, signature: wallet.signingKey.sign(TypedDataEncoder.hash(domain, roleTypes, message)).serialized };
+  });
+  const body = { schema: "p42-prizes/deployment-role-acceptance/v2", ...common, acceptances }; manifest.roleAcceptances = { ...body, packetDigest: canonicalDigest(body) };
+  return { wallets };
+}
 
 function artifacts() {
   // The v1 example supplies canonical contract/setup shapes; this promotes its
@@ -114,6 +150,116 @@ function artifacts() {
     reconstruction: { ok: true, complete: true, checks: [{ ...checks[0], name: "board/1.complete" }] },
   };
   return { manifest: base, checkpoint };
+}
+
+function roleArtifactFixture({ capsuleDigestOverride }: { capsuleDigestOverride?: string } = {}) {
+  const { manifest, checkpoint } = artifacts();
+  const templateBoard = clone(checkpoint.boards[0]);
+  manifest.problems = Array.from({ length: 10 }, (_, index) => {
+    const problem = clone(manifest.problems[0]);
+    problem.problemId = String(index + 1); problem.problemSlug = launchProblems[index].slug;
+    for (const [offset, key] of boardKeys.entries()) problem.contracts[key].address = `0x${(1000 + index * 4 + offset).toString(16).padStart(40, "0")}`;
+    problem.pool = problem.contracts.pool.address; problem.ledger = problem.contracts.ledger.address;
+    problem.submissionManager = problem.contracts.submissions.address; problem.challengeManager = problem.contracts.challenges.address;
+    return problem;
+  });
+  manifest.releaseEvidence = {
+    mode: "production", slateDigest: digest("3"), capsuleDigest: digest("2"), configDigest: digest("4"),
+    releaseBindingDigest: digest("1"),
+    finalityPolicy: { schema: "p42-prizes/base-sepolia-finality-policy/v1", chainId: 84532, finalizedTag: "finalized", safeTag: "safe", l1EvidenceMethod: "optimism_syncStatus", rpcQuorum: 2 },
+    boardSetDigest: digest("a"), operationPlanDigest: digest("b"), contractCount: 47, boardCount: 10, operationCount: 110,
+  };
+  const transactionHash = (index: number) => `0x${index.toString(16).padStart(64, "0")}`;
+  manifest.setupTransactions = Array.from({ length: 110 }, (_, index) => {
+    const operation = clone(manifest.setupTransactions[index % manifest.setupTransactions.length]);
+    return { ...operation, sequence: index + 1, status: "executed", executedOperationId: operation.operationId,
+      executedOperationClass: "standard", txHash: transactionHash(index + 1), blockNumber: 100 + index };
+  });
+  manifest.problems.forEach((problem: Record<string, any>, index: number) => {
+    problem.registrationStatus = "registered-and-frozen"; problem.explicitlyFrozen = true;
+    problem.registerTxHash = transactionHash(1000 + index); problem.registerBlockNumber = 200 + index;
+    for (const key of ["submissions", "challenges"]) {
+      problem.contracts[key].factoryCreation = {
+        factoryAddress: manifest.contracts[`${key === "submissions" ? "submissionManager" : "challengeManager"}Factory`].address,
+        transactionHash: transactionHash(2000 + index), eventTopic: hash("1"), salt: hash("2"),
+        configurationHash: hash("3"), configurationReadCalldata: "0x", createdAddress: problem.contracts[key].address,
+      };
+    }
+  });
+  const completion = 1_900_000_000;
+  manifest.governanceSetup = {
+    status: "complete", completedAt: new Date(completion * 1000).toISOString(), completionBlock: 100,
+    acceptanceValidatedAt: new Date(completion * 1000).toISOString(), completionBlockTimestamp: completion,
+    completionBlockHash: hash("4"), roleAcceptancePacketBytesDigest: digest("6"),
+    completionBlockEvidence: { blockNumber: 100, blockHash: hash("4"), timestamp: completion,
+      primaryOperatorId: "operator-primary", secondaryOperatorId: "operator-secondary",
+      primaryBlockHash: hash("4"), secondaryBlockHash: hash("4") },
+    finalityAnchor: { schema: "p42-prizes/base-sepolia-finality-anchor/v1", checkedAt: new Date(completion * 1000).toISOString(),
+      l2: { finalized: { number: 100, hash: hash("4") }, safe: { number: 101, hash: hash("5") } },
+      l1: { origin: { number: 200, hash: hash("6") }, finalized: { number: 201, hash: hash("7") } },
+      operators: ["operator-primary", "operator-secondary"],
+      rpcEvidence: { primaryOperatorId: "operator-primary", secondaryOperatorId: "operator-secondary",
+        primaryOrigin: "https://primary.example", secondaryOrigin: "https://secondary.example",
+        primaryHost: "primary.example", secondaryHost: "secondary.example",
+        primaryEndpointDigest: digest("c"), secondaryEndpointDigest: digest("d") } },
+    checks: [{ name: "complete", ok: true }],
+  };
+  manifest.sourceVerification = { status: "verified", requiredExplorer: "https://sepolia.basescan.org", dossierDigest: digest("5"), contracts: {
+    timelock: "https://sepolia.basescan.org/address/timelock", registry: "https://sepolia.basescan.org/address/registry",
+    rolloverVault: "https://sepolia.basescan.org/address/rollover", submissionManagerFactory: "https://sepolia.basescan.org/address/submission-factory",
+    challengeManagerFactory: "https://sepolia.basescan.org/address/challenge-factory", objectiveVerifier: "https://sepolia.basescan.org/address/verifier",
+    resolverQuorum: "https://sepolia.basescan.org/address/resolver", boards: manifest.problems.map((problem: Record<string, any>) => ({
+      problemId: problem.problemId, pool: "https://sepolia.basescan.org/address/pool", ledger: "https://sepolia.basescan.org/address/ledger",
+      submissions: "https://sepolia.basescan.org/address/submissions", challenges: "https://sepolia.basescan.org/address/challenges",
+    })),
+  } };
+  attachCompletedRolePacket(manifest);
+  const pending = clone(manifest);
+  pending.status = "pending-governance-setup";
+  pending.governanceSetup = { status: "pending", completedAt: null, completionBlock: null, checks: [] };
+  delete pending.roleAcceptances;
+  pending.sourceVerification = { ...pending.sourceVerification, status: "pending", dossierDigest: null };
+
+  const capsuleBody = { schema: "p42-prizes/release-capsule/v1", gitCommit: manifest.deploymentCommit, contracts: [] };
+  const capsuleDigest = capsuleDigestOverride ?? canonicalDigest(capsuleBody);
+  const capsule = { ...capsuleBody, capsuleDigest };
+  const capsuleBytes = Buffer.from(`${JSON.stringify(capsule)}\n`);
+  pending.releaseEvidence.capsuleDigest = capsuleDigest;
+  pending.deploymentConfigHash = computePortalDeploymentConfigHash(pending);
+  const pendingBytes = Buffer.from(`${JSON.stringify(pending)}\n`);
+  attachCompletedRolePacket(manifest, {
+    pendingManifestBytesDigest: `sha256:${createHash("sha256").update(pendingBytes).digest("hex")}`,
+    capsuleBytesDigest: `sha256:${createHash("sha256").update(capsuleBytes).digest("hex")}`,
+    capsuleDigest,
+  });
+
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "p42-role-artifacts-"))); created.push(directory); chmodSync(directory, 0o700);
+  const writeProtected = (name: string, bytes: Buffer) => {
+    const path = join(directory, name); writeFileSync(path, bytes); chmodSync(path, 0o400);
+    return { path, sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}` };
+  };
+  const packetBytes = Buffer.from(`${JSON.stringify(manifest.roleAcceptances)}\n`);
+  const packetFile = writeProtected("packet.json", packetBytes);
+  const pendingFile = writeProtected("pending.json", pendingBytes);
+  const capsuleFile = writeProtected("capsule.json", capsuleBytes);
+  manifest.governanceSetup.roleAcceptancePacketBytesDigest = packetFile.sha256;
+  manifest.deploymentConfigHash = computePortalDeploymentConfigHash(manifest);
+  const contractBinding = (entry: Record<string, any>) => ({ address: entry.address, deployedCodeHash: entry.deployedCodeHash, abiHash: entry.abiHash });
+  checkpoint.manifestBinding.deploymentConfigHash = manifest.deploymentConfigHash;
+  checkpoint.manifestBinding.boards = Object.fromEntries(manifest.problems.map((problem: Record<string, any>) => [
+    problem.problemId,
+    Object.fromEntries(boardKeys.map((key) => [key, contractBinding(problem.contracts[key])])),
+  ])) as typeof checkpoint.manifestBinding.boards;
+  checkpoint.boards = manifest.problems.map((problem: Record<string, any>) => ({
+    ...clone(templateBoard), problemId: problem.problemId, problemSlug: problem.problemSlug,
+  }));
+  const paths = {
+    deploymentManifestPath: "/unused/manifest.json", indexerCheckpointPath: "/unused/checkpoint.json",
+    roleAcceptancePacketPath: packetFile.path, roleAcceptancePacketSha256: packetFile.sha256,
+    roleAcceptancePendingManifestPath: pendingFile.path, roleAcceptancePendingManifestSha256: pendingFile.sha256,
+    roleAcceptanceCapsulePath: capsuleFile.path, roleAcceptanceCapsuleSha256: capsuleFile.sha256,
+  };
+  return { manifest, pending, capsule, checkpoint, paths, directory };
 }
 
 function writeArtifacts(manifest: unknown, checkpoint: unknown) {
@@ -242,10 +388,135 @@ describe("indexer provenance v2", () => {
 
   it("keeps Render-bundled schemas byte-equivalent to canonical protocol schemas", () => {
     for (const name of ["activation-rpc-operator-registry.schema.json", "deployment-manifest-v2.schema.json", "indexer-checkpoint-v2.schema.json", "indexer-checkpoint-v3.schema.json", "indexer-checkpoint-v4.schema.json", "funding-activation-completion.schema.json"]) {
-      const canonical = JSON.parse(require("node:fs").readFileSync(join(root, "schemas", name), "utf8"));
-      const bundled = JSON.parse(require("node:fs").readFileSync(join(process.cwd(), "src", "schemas", name), "utf8"));
-      expect(bundled).toEqual(canonical);
+      const canonical = require("node:fs").readFileSync(join(root, "schemas", name));
+      const bundled = require("node:fs").readFileSync(join(process.cwd(), "src", "schemas", name));
+      expect(bundled.equals(canonical)).toBe(true);
     }
+  });
+
+  it("cryptographically replays a completed v2 role packet and rejects schema-valid forgery", () => {
+    const { manifest } = artifacts();
+    manifest.problems = Array.from({ length: 10 }, (_, index) => { const problem = clone(manifest.problems[0]); problem.problemId = String(index + 1); for (const [offset, key] of boardKeys.entries()) problem.contracts[key].address = `0x${(1000 + index * 4 + offset).toString(16).padStart(40, "0")}`; return problem; });
+    attachCompletedRolePacket(manifest);
+    expect(() => replayPortalRoleAcceptances(manifest)).not.toThrow();
+    const forged = clone(manifest); forged.roleAcceptances.acceptances[0].signature = forged.roleAcceptances.acceptances[1].signature;
+    const { packetDigest: _ignored, ...forgedBody } = forged.roleAcceptances; forged.roleAcceptances.packetDigest = canonicalDigest(forgedBody);
+    expect(() => replayPortalRoleAcceptances(forged)).toThrow();
+    const crossRole = clone(manifest); [crossRole.roleAcceptances.acceptances[0], crossRole.roleAcceptances.acceptances[5]] = [crossRole.roleAcceptances.acceptances[5], crossRole.roleAcceptances.acceptances[0]];
+    const { packetDigest: _crossIgnored, ...crossBody } = crossRole.roleAcceptances; crossRole.roleAcceptances.packetDigest = canonicalDigest(crossBody);
+    expect(() => replayPortalRoleAcceptances(crossRole)).toThrow();
+  });
+
+  it("requires protected independently pinned role artifacts for completed production manifests", () => {
+    const { manifest, paths } = roleArtifactFixture();
+    expect(() => verifyPortalRoleArtifactBytes(manifest, paths)).not.toThrow();
+    expect(() => verifyPortalRoleArtifactBytes(manifest, {
+      deploymentManifestPath: paths.deploymentManifestPath,
+      indexerCheckpointPath: paths.indexerCheckpointPath,
+    })).toThrow();
+
+    const fixture = artifacts();
+    expect(() => verifyPortalRoleArtifactBytes(fixture.manifest, {
+      deploymentManifestPath: "/fixture/manifest.json", indexerCheckpointPath: "/fixture/checkpoint.json",
+    })).not.toThrow();
+  });
+
+  it("rejects reserialized and substituted exact role artifacts", () => {
+    const { manifest, pending, capsule, paths, directory } = roleArtifactFixture();
+    const variant = (name: string, value: unknown, pretty = false) => {
+      const bytes = Buffer.from(`${JSON.stringify(value, null, pretty ? 2 : undefined)}\n`);
+      const path = join(directory, name); writeFileSync(path, bytes); chmodSync(path, 0o400);
+      return { path, sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}` };
+    };
+
+    const reserializedPacket = variant("packet-pretty.json", manifest.roleAcceptances, true);
+    expect(() => verifyPortalRoleArtifactBytes(manifest, {
+      ...paths, roleAcceptancePacketPath: reserializedPacket.path,
+    })).toThrow();
+
+    const substitutedPacketValue = clone(manifest.roleAcceptances);
+    substitutedPacketValue.requestSetDigest = digest("f");
+    const substitutedPacket = variant("packet-substituted.json", substitutedPacketValue);
+    const substitutedManifest = clone(manifest);
+    substitutedManifest.governanceSetup.roleAcceptancePacketBytesDigest = substitutedPacket.sha256;
+    expect(() => verifyPortalRoleArtifactBytes(substitutedManifest, {
+      ...paths, roleAcceptancePacketPath: substitutedPacket.path, roleAcceptancePacketSha256: substitutedPacket.sha256,
+    })).toThrow();
+
+    const substitutedPending = variant("pending-substituted.json", { ...pending, deploymentCommit: "f".repeat(40) });
+    expect(() => verifyPortalRoleArtifactBytes(manifest, {
+      ...paths, roleAcceptancePendingManifestPath: substitutedPending.path, roleAcceptancePendingManifestSha256: substitutedPending.sha256,
+    })).toThrow();
+
+    const reserializedCapsule = variant("capsule-pretty.json", capsule, true);
+    expect(() => verifyPortalRoleArtifactBytes(manifest, {
+      ...paths, roleAcceptanceCapsulePath: reserializedCapsule.path, roleAcceptanceCapsuleSha256: reserializedCapsule.sha256,
+    })).toThrow();
+  });
+
+  it("rejects a byte-pinned capsule with a false canonical digest and unsafe artifact paths", () => {
+    const invalid = roleArtifactFixture({ capsuleDigestOverride: digest("f") });
+    expect(() => verifyPortalRoleArtifactBytes(invalid.manifest, invalid.paths)).toThrow();
+
+    const valid = roleArtifactFixture();
+    expect(() => verifyPortalRoleArtifactBytes(valid.manifest, {
+      ...valid.paths, roleAcceptancePacketPath: "relative-packet.json",
+    })).toThrow();
+    chmodSync(valid.paths.roleAcceptancePacketPath, 0o600);
+    expect(() => verifyPortalRoleArtifactBytes(valid.manifest, valid.paths)).toThrow();
+  });
+
+  it("fails closed through public loaders when completed production role artifact pins are missing or substituted", () => {
+    const { manifest, checkpoint, paths } = roleArtifactFixture();
+    const persisted = writeArtifacts(manifest, checkpoint);
+    const fundingPaths = (rolePaths: typeof persisted) => ({
+      ...rolePaths,
+      launchAuthorizationPath: "/missing/authorization.json",
+      fundingActivationPlanPath: "/missing/plan.json",
+      fundingActivationSignaturesPath: "/missing/signatures.json",
+      fundingActivationCompletionPath: "/missing/completion.json",
+      indexerCheckpointAttestationPath: "/missing/checkpoint-attestation.json",
+      activationRpcOperatorRegistryPath: "/missing/rpc-registry.json",
+      activationRpcOperatorRegistryTrustedRoot: "/missing",
+    });
+
+    expectLocalOnly(loadIndexerProvenance(launchProblems[0], persisted));
+    expect(loadActivatedIndexerSnapshot(launchProblems, fundingPaths(persisted))).toBeNull();
+
+    const substituted = { ...paths, ...persisted, roleAcceptancePacketSha256: digest("f") };
+    expectLocalOnly(loadIndexerProvenance(launchProblems[0], substituted));
+    expect(loadActivatedIndexerSnapshot(launchProblems, fundingPaths(substituted))).toBeNull();
+  });
+
+  it("accepts valid pinned role artifacts through the public loader", () => {
+    const { manifest, checkpoint, paths } = roleArtifactFixture();
+    const result = loadIndexerProvenance(launchProblems[0], { ...paths, ...writeArtifacts(manifest, checkpoint) });
+    expect(result).toMatchObject({
+      settlementState: "manifest-pending", source: "indexer-artifacts-v2",
+      reconciliationOk: true, poolAddress: null, donationWalletAddress: null,
+    });
+  });
+
+  it("keeps fixture and pending manifests operational without role artifacts", () => {
+    const fixture = artifacts();
+    expect(loadIndexerProvenance(problems[0], writeArtifacts(fixture.manifest, fixture.checkpoint))).toMatchObject({
+      settlementState: "manifest-pending", source: "indexer-artifacts-v2", reconciliationOk: true,
+    });
+
+    const { pending: preservedPending, checkpoint } = roleArtifactFixture();
+    const pending = clone(preservedPending);
+    pending.setupTransactions = pending.setupTransactions.map((operation: Record<string, any>) => ({
+      ...operation, status: "pending", executedOperationId: null, executedOperationClass: null, txHash: null, blockNumber: null,
+    }));
+    pending.problems = pending.problems.map((problem: Record<string, any>) => ({
+      ...problem, registrationStatus: "pending", explicitlyFrozen: false, registerTxHash: null, registerBlockNumber: null,
+    }));
+    pending.deploymentConfigHash = computePortalDeploymentConfigHash(pending);
+    const pendingCheckpoint = clone(checkpoint);
+    pendingCheckpoint.manifestBinding.deploymentConfigHash = pending.deploymentConfigHash;
+    expect(loadIndexerProvenance(launchProblems[0], writeArtifacts(pending, pendingCheckpoint))).toMatchObject({
+      settlementState: "manifest-pending", source: "indexer-artifacts-v2", reconciliationOk: true,
+    });
   });
 
   it("loads only a fully bound, completely reconstructed board and keeps funding disabled", () => {
@@ -290,6 +561,17 @@ describe("indexer provenance v2", () => {
     expect(configuredIndexerArtifactPaths({})).toBeNull();
     expect(configuredIndexerArtifactPaths({ P42_DEPLOYMENT_MANIFEST_PATH: "/m" })).toBeNull();
     expect(configuredIndexerArtifactPaths({ P42_DEPLOYMENT_MANIFEST_PATH: " /m ", P42_INDEXER_CHECKPOINT_PATH: " /c " })).toEqual({ deploymentManifestPath: "/m", indexerCheckpointPath: "/c" });
+    expect(configuredIndexerArtifactPaths({
+      P42_DEPLOYMENT_MANIFEST_PATH: "/m", P42_INDEXER_CHECKPOINT_PATH: "/c",
+      P42_ROLE_ACCEPTANCE_PACKET_PATH: " /role/packet.json ", P42_ROLE_ACCEPTANCE_PACKET_SHA256: digest("1"),
+      P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_PATH: "/role/pending.json", P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_SHA256: digest("2"),
+      P42_ROLE_ACCEPTANCE_CAPSULE_PATH: "/role/capsule.json", P42_ROLE_ACCEPTANCE_CAPSULE_SHA256: digest("3"),
+    })).toEqual({
+      deploymentManifestPath: "/m", indexerCheckpointPath: "/c",
+      roleAcceptancePacketPath: "/role/packet.json", roleAcceptancePacketSha256: digest("1"),
+      roleAcceptancePendingManifestPath: "/role/pending.json", roleAcceptancePendingManifestSha256: digest("2"),
+      roleAcceptanceCapsulePath: "/role/capsule.json", roleAcceptanceCapsuleSha256: digest("3"),
+    });
     expect(configuredIndexerArtifactPaths({
       P42_DEPLOYMENT_MANIFEST_PATH: "/m", P42_INDEXER_CHECKPOINT_PATH: "/c",
       P42_LAUNCH_AUTHORIZATION_PATH: "/a", P42_INDEXER_CHECKPOINT_ATTESTATION_PATH: "/ca",
@@ -338,6 +620,7 @@ describe("indexer provenance v2", () => {
     const fundingWallets = fundingRoles.map(() => Wallet.createRandom());
     fundingRoles.forEach(([, field], index) => { base.manifest.roles[field] = fundingWallets[index].address; });
     base.manifest.problems = manifestProblems;
+    attachCompletedRolePacket(base.manifest, { fundingWallets });
     base.manifest.deploymentConfigHash = computePortalDeploymentConfigHash(base.manifest);
     base.checkpoint.manifestBinding.deploymentConfigHash = base.manifest.deploymentConfigHash;
     base.checkpoint.manifestBinding.boards = Object.fromEntries(manifestProblems.map((item) => [item.problemId, Object.fromEntries(boardKeys.map((key) => [key, { address: item.contracts[key].address, deployedCodeHash: item.contracts[key].deployedCodeHash, abiHash: item.contracts[key].abiHash }]))]));

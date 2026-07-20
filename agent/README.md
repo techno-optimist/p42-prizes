@@ -13,6 +13,47 @@ The agent runtime has three persistent state machines:
 This is Phase 1/testnet plumbing. It does not close the external audit, legal,
 governance, resolver, verifier-image, or real-value gates.
 
+## Detached Role Acceptance
+
+The production role ceremony never loads a signing key. Prepare 15 EIP-712
+requests from the exact pending-manifest and capsule bytes, distribute the
+individual request objects to the five governance signers and other named role
+holders, then assemble externally produced detached signature artifacts:
+
+```bash
+p42-role-acceptance-prepare \
+  --pending-manifest ../deployments/base-sepolia/p42-prizes.json \
+  --capsule /secure/release-capsule.json \
+  --expected-explorer-dossier-sha256 sha256:... \
+  --expires-at 1900000000 \
+  --artifact-root /secure/role-acceptance/artifacts \
+  --trusted-root /secure/role-acceptance \
+  --output /secure/role-acceptance/requests.json
+
+p42-role-acceptance-assemble \
+  --pending-manifest /secure/role-acceptance/artifacts/sha256/<manifest-digest>.json \
+  --capsule /secure/role-acceptance/artifacts/sha256/<capsule-digest>.json \
+  --expected-explorer-dossier-sha256 sha256:... \
+  --trusted-root /secure/role-acceptance \
+  --request-set /secure/role-acceptance/requests.json \
+  --signature /secure/role-acceptance/signature-01.json \
+  --output /secure/role-acceptance/packet.json
+```
+
+Prepare first preserves the exact pending-manifest and capsule bytes as
+read-only `sha256/<digest>.json` artifacts beneath `--artifact-root`; an
+existing path is accepted only when its immutable metadata and bytes match.
+Supply all 15 `--signature` arguments. Both commands create owner-private files
+exclusively and refuse replacement. Assembly is offline: it performs no RPC
+calls and accepts no private key, mnemonic, or seed-phrase input. Expiry is
+checked later against the canonical finalized governance completion timestamp.
+Completed production indexer and reconciliation validation must read those
+preserved paths and receive independent pins through
+`P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_PATH`,
+`P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_SHA256`, and
+`P42_ROLE_ACCEPTANCE_CAPSULE_SHA256`; packet-contained digests are not accepted
+as their own observations.
+
 ## Operator Path
 
 The only live verification path is:
@@ -256,16 +297,64 @@ packet for the exact EIP-712 `Decision`, including the current signer epoch,
 transcript URI/content bindings, manager, challenge instance, beneficiary,
 nonce, and expiry.
 
-`resolver-signer.mjs` is the fail-closed independent signer policy service. It
-requires a separately generated private Docker-runner transcript, retrieves the
-published transcript byte-for-byte from two independently operated gateways,
-validates the frozen manifest/registry binding through two independent RPCs,
-requires those RPCs to agree on one finalized block and complete signable state,
-and recomputes the exact verdict hash. It then repeats the finalized state check,
+`resolver-signer.mjs` is the fail-closed independent signer policy service. A
+caller-selected local transcript is not rerun authority. Before dispatching its
+isolated executor, the signer first creates a random, packet-scoped challenge in
+its private `--signature-root`:
+
+```bash
+node resolver-signer.mjs --prepare-rerun \
+  --manifest /opt/p42/deployments/base-sepolia/p42-prizes-v2.json \
+  --registry-problem-id 1 \
+  --packet /var/lib/p42/resolver/actions/decision.quorum-decision.json \
+  --published-transcript /var/lib/p42/resolver/transcripts/published.json \
+  --signature-root /var/lib/p42/resolver-quorum-signatures
+```
+
+Preparation emits a canonical `p42-resolver-rerun-request/v1`. It contains only
+the signer challenge plus immutable packet, manifest, board, published-transcript,
+and chain-claim references. A root-owned dispatcher installs that byte-identical
+request as `/var/lib/p42/resolver-rerun-requests/<registry-problem-id>/request.json` and
+starts `p42-resolver-rerun@<registry-problem-id>.service`; the requester cannot
+provide a transcript, job id, elapsed time, or runner metadata.
+
+The dispatcher is activated by a path unit plus a recovery timer. It validates
+the signer authorization and a root-only board map, then journals a per-board
+slot through `rotating`, `dispatching`, `dispatched`, and `completed`. A later
+request can replace the fixed service slot only while the exact board unit is
+inactive and the prior request is durably terminal. The rotation journal is
+durable before bytes change, and the new slot binding is durable before start.
+Only the dispatcher constructs the systemd unit name.
+
+The dedicated per-board executor independently retrieves reveal calldata or
+the Arweave payload, checks the exact bytes against `commitDaHash`, and enqueues
+an ordinary `p42-runner` job over the host-global verifier executor socket. That
+existing authority injects the protected board identity and applies its FIFO,
+OOM, swap, cgroup, pinned-image, and resource policies. The host executor reads
+its terminal queue or authenticated archive, reconstructs the canonical
+`p42-resolver-rerun/v1` receipt, and signs it with an executor-only Ed25519 key.
+The rerun UID never receives that key and cannot submit a receipt body or
+transcript as signing authority. The signer pins that public key
+through an owner-only credential file. The receipt binds the exact packet and
+decision digests, chain/quorum/manager/submission and challenge/reveal instance,
+published and local transcript hashes, solution and DA hashes, immutable image
+and source digests, resource identity, and the signer-issued challenge nonce.
+The signer rejects cross-packet replay, copied transcripts, timestamp-only
+rewraps, altered receipts, and signatures outside the pinned executor trust
+input. There is no production flag that accepts a caller transcript, unsigned
+fixture receipt, caller-provided nonce, or caller-owned run metadata.
+
+After that authority check, the service retrieves the published transcript
+byte-for-byte from two independently operated gateways, validates the frozen
+manifest/registry binding through two independent RPCs, requires those RPCs to
+agree on one finalized block and complete signable state, and recomputes the
+exact verdict hash. It repeats the finalized state check, binds the exact receipt,
 fsyncs an anti-equivocation authorization keyed by chain, quorum, manager, and
-challenge instance, and only then invokes the signer key. Distinct transcript
-envelopes are permitted only when their exact report, candidate, chain claim,
-registry binding, and outcome agree.
+challenge instance, durably writes the signature artifact, and finally records
+attempt completion. An identical receipt retry resumes after a crash at any of
+those boundaries. A different receipt or nonce is rejected. An expired attempt
+may be renewed only when it has no receipt, authorization, or signature; renewal
+retains an immutable tombstone for the prior nonce.
 
 ```bash
 cd agent
@@ -277,18 +366,63 @@ node resolver-signer.mjs \
   --manifest ../deployments/base-sepolia/p42-prizes-v2.json \
   --registry-problem-id 1 \
   --packet /var/lib/p42/resolver/actions/decision.quorum-decision.json \
-  --local-transcript /var/lib/p42/signer-1/transcripts/local-rerun.json \
   --signature-root /var/lib/p42/resolver-quorum-signatures
 ```
 
-The local transcript must be produced by this signer's own isolated runner from
-independently retrieved solution bytes and the immutable manifest-bound image;
-copying the relay's transcript is not an independent rerun. The service rejects
-non-production manifests, a mutable/stale registry binding, gateway or RPC
-disagreement, stale epochs, replaced challenge instances, pending/expired
-decisions, rerun disagreement, and conflicting retries. Production key custody
-still requires the named HSM or equivalent non-exportable signer integration and
-rehearsal; the environment-key adapter is testnet plumbing, not a custody claim.
+The signer derives transcript and receipt paths from the active packet+nonce
+under `/var/lib/p42/resolver-rerun-results/<registry-problem-id>/`; neither is a
+CLI input. The attestor private credential is available only to
+`p42-verifier-executor.service`. Per-board rerun users and the signer receive only
+the matching public trust credential. Source and unit definitions do not prove
+that an independent executor host, credential, HSM, or rehearsal has been
+deployed. The environment decision-key adapter remains testnet plumbing, not a
+custody claim.
+
+The signer reads transcript and receipt through a dedicated cross-UID reader,
+not the generic private-file helper. Generate the result-authority credential
+and dispatch map from the actual `getent passwd/group` IDs after
+`systemd-sysusers`; numeric IDs in the example JSON are illustrative. Result
+directories must be exact rerun-UID/submitter-GID `0750` paths and files must be
+single-link `0640` regular files with the same ownership. Descriptor traversal
+is no-follow and checks inode stability. The signer has group read access only.
+
+The executor trust credential path is fixed at
+`/run/credentials/p42/resolver-rerun-executor-trust`; it is deliberately not a
+CLI option. Provision that owner-only JSON credential with schema
+`p42-resolver-rerun-executor-trust/v1`, purpose `resolver-rerun`, algorithm
+`ed25519`, a stable `key_id`, and the pinned `ed25519:<64 lowercase hex>` public
+key.
+
+The private executor credential uses schema
+`p42-resolver-rerun-executor-key/v1`, purpose `resolver-rerun`, algorithm
+`ed25519`, the same `key_id`, and an `ed25519:<64 lowercase hex>` seed. Provision
+it only to `p42-verifier-executor.service`; never provision it to a per-board rerun process, the packet
+requester, resolver signer, operator, or relay. Install
+`deployments/p42-resolver-rerun@.service.example`, the corresponding sysusers,
+and the updated host-global executor unit together. A clean deployment must
+also create each service's `staging` directory before activation.
+
+The executor also pins an owner-only
+`p42-resolver-rerun-request-trust/v1` credential with purpose
+`resolver-rerun-request`, algorithm `eip191`, and the lowercase signer address.
+`--prepare-rerun` signs the request hash with that resolver signer identity.
+Re-signing an altered request with any other key is rejected before solution
+retrieval or queue admission.
+
+Executor staging is durable at
+`/var/lib/p42/resolver-rerun/<registry-problem-id>/staging/<request-hash>/`.
+The independently materialized solution and canonical job are fsynced before
+enqueue, including every newly created ancestor directory. Restart therefore reuses the same solution path retained by the real
+queue's `job_id` plus `source_event_hash` idempotency rule. Staging is removed
+only after transcript and receipt files and their parent directories are
+durable. The host executor exposes only request-bound enqueue, execute, attest,
+and archive-recovery operations to rerun UIDs. Generic bridge, action,
+terminalization, quarantine, and operator-job access are rejected. Attestation
+validates the exact job, signed request, event hash, chain claim, solution/DA
+hashes, manifest/image/source/resource identity, and executor-owned transcript.
+Its dual-index archive lookup returns that validated terminal job after live
+queue admission archives it, so crash recovery never treats rerun-owned
+transcript bytes as signing authority.
 
 Each accepted signer policy writes one
 self-hashed `p42-resolver-quorum-signature/v1` artifact beneath

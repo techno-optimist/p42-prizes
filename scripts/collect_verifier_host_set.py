@@ -25,6 +25,7 @@ from p42_prizes.runtime_admission import (
     host_signing_key_fingerprint,
     publish_host_set,
     reconcile_published_host_set,
+    registered_operator_identity,
     validate_clean_checkout,
 )
 from p42_prizes.verdict import canonical_json
@@ -110,6 +111,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run", action="store_true", help="confirm and run two local pull-only rehearsals per board")
     parser.add_argument("--runtime", default="docker")
     parser.add_argument("--host-label")
+    parser.add_argument(
+        "--operator-id",
+        required=True,
+        help="operator ID already registered in every exact-R trusted_hosts profile",
+    )
     return parser
 
 
@@ -131,6 +137,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         fixture_manifest = load_fixture_manifest(
             ROOT, fixture_path, expected_sha256=args.fixtures_sha256
         )
+        operator = registered_operator_identity(
+            ROOT,
+            dossier_manifest,
+            operator_id=args.operator_id,
+            key_fingerprint=key_fingerprint,
+            host=host_info,
+        )
         if output_dir.exists() or output_dir.is_symlink():
             index = reconcile_published_host_set(
                 output_dir,
@@ -142,6 +155,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 expected_host=host_info,
                 expected_key_fingerprint=key_fingerprint,
                 expected_runtime=args.runtime,
+                expected_operator=operator,
             )
             print(canonical_json(index))
             return 0
@@ -163,6 +177,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 fixture_sha256=args.fixtures_sha256,
                 report_paths=report_paths,
                 signing_key=signing_key,
+                operator_id=args.operator_id,
                 host=host_info,
                 runtime=args.runtime,
             )

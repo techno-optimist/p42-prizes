@@ -25,6 +25,7 @@ from p42_prizes.runner_worker import (
     _run_job,
     run_next_job_once,
 )
+from p42_prizes.admission import compute_source_hash
 from p42_prizes.verdict import canonical_json, sha256_bytes, sha256_file
 
 
@@ -277,7 +278,12 @@ def test_missing_offchain_da_emits_terminal_canonical_challenge_candidate(tmp_pa
         da_failure={"kind": "missing", "error": "content-addressed payload is absent"},
     )
 
-    transcript = _run_job(job, tmp_path, policy=RunnerPolicy(sandbox="docker"))
+    transcript = _run_job(
+        job,
+        tmp_path,
+        policy=RunnerPolicy(sandbox="docker"),
+        allow_test_identity_derivation=True,
+    )
     persisted = json.loads(Path(transcript["transcript_path"]).read_text(encoding="utf-8"))
 
     assert persisted["da"]["ok"] is False
@@ -301,7 +307,12 @@ def test_unrecoverable_onchain_calldata_is_quarantined_not_wrongfully_challenged
         da_failure={"kind": "calldata_unrecoverable", "error": "wrapper could not be decoded"},
     )
 
-    transcript = _run_job(job, tmp_path, policy=RunnerPolicy(sandbox="docker"))
+    transcript = _run_job(
+        job,
+        tmp_path,
+        policy=RunnerPolicy(sandbox="docker"),
+        allow_test_identity_derivation=True,
+    )
 
     assert transcript["da"]["challengeable"] is False
     assert transcript["da"]["retryable"] is False
@@ -327,6 +338,7 @@ def test_transient_chain_retrieval_failures_emit_retry_not_terminal_actions(
         ),
         tmp_path,
         policy=RunnerPolicy(sandbox="docker"),
+        allow_test_identity_derivation=True,
     )
 
     assert transcript["da"]["ok"] is False
@@ -360,6 +372,7 @@ def test_retry_state_promotes_later_verified_absence_to_terminal_challenge(tmp_p
         ),
         tmp_path,
         policy=RunnerPolicy(sandbox="docker"),
+        allow_test_identity_derivation=True,
     )
 
     assert transcript["da"]["failure_kind"] == "missing"
@@ -391,6 +404,7 @@ def test_retryable_calldata_failure_requeues_then_verifies_after_recovery(
         memory=_runner_memory(),
         policy=RunnerPolicy(sandbox="docker"),
         docker_host="unix:///run/p42-docker-fixture/docker.sock",
+        allow_test_identity_derivation=True,
     )
 
     assert first["verifier"]["challenge_candidate"]["action"] == "retry"
@@ -413,6 +427,7 @@ def test_retryable_calldata_failure_requeues_then_verifies_after_recovery(
         policy=RunnerPolicy(sandbox="docker"),
         now_utc="2030-01-01T00:00:00Z",
         docker_host="unix:///run/p42-docker-fixture/docker.sock",
+        allow_test_identity_derivation=True,
     )
 
     assert second["verifier"]["challenge_candidate"]["action"] == "none"
@@ -437,6 +452,7 @@ def test_unavailable_docker_fails_before_leasing_a_verifier_job(
             memory=_runner_memory(),
             policy=RunnerPolicy(sandbox="docker"),
             docker_host="unix:///run/p42-docker-fixture/docker.sock",
+            allow_test_identity_derivation=True,
         )
     assert read_runner_queue(queue)["jobs"][0]["status"] == "queued"
 
@@ -468,6 +484,7 @@ def test_retry_stops_at_the_operator_canonical_challenge_expiry(
         policy=RunnerPolicy(sandbox="docker"),
         now_utc="2020-01-01T00:00:00Z",
         docker_host="unix:///run/p42-docker-fixture/docker.sock",
+        allow_test_identity_derivation=True,
     )
 
     assert result["verifier"]["challenge_candidate"]["action"] == "retry"
@@ -508,7 +525,12 @@ def test_exact_score_underclaim_becomes_challenge_candidate(
     monkeypatch.setattr("p42_prizes.runner_worker._run_verifier_for_transcript", fake_verifier)
     job = _job(chain_claim=_claim(claimed="333333333333333333"))
 
-    transcript = _run_job(job, tmp_path, policy=RunnerPolicy(sandbox="docker"))
+    transcript = _run_job(
+        job,
+        tmp_path,
+        policy=RunnerPolicy(sandbox="docker"),
+        allow_test_identity_derivation=True,
+    )
 
     comparison = transcript["verifier"]["claim_comparison"]
     assert comparison["verifier_score_atoms"] == "333333333333333334"
@@ -521,9 +543,121 @@ def test_exact_score_underclaim_becomes_challenge_candidate(
     assert alerts["alerts"][0]["recommended_action"] == "challenge_submission"
 
 
+def test_python_runner_transcript_is_accepted_by_node_resolver(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_digest = compute_source_hash(PROBLEM)
+    digest_hashes = subprocess.run(
+        [
+            "node", "--input-type=module", "-e",
+            (
+                "import { verifierImageHashForDigest, verifierSourceHashForDigest } from './lib.mjs';"
+                "const d=process.argv[1];"
+                "console.log(JSON.stringify({image:verifierImageHashForDigest(d),source:verifierSourceHashForDigest(d)}));"
+            ),
+            source_digest,
+        ],
+        cwd=ROOT / "agent", text=True, capture_output=True, check=False,
+    )
+    assert digest_hashes.returncode == 0, digest_hashes.stderr
+    hashes = json.loads(digest_hashes.stdout)
+    claim = _claim(claimed="333333333333333333")
+    claim["registry_binding"] = {
+        "schema_version": "p42-registry-binding/v2",
+        "image_hash_algorithm": "keccak256-utf8/v1",
+        "source_digest_algorithm": "p42-source-tree-sha256/v2",
+        "source_hash_algorithm": "keccak256-utf8/v1",
+        "chain_id": claim["chain_id"],
+        "registry_address": "0x" + "4" * 40,
+        "problem_id": "1",
+        "problem_slug": claim["problem_id"],
+        "verifier_version": "1.0.0",
+        "observation_block_number": 100,
+        "observation_block_hash": "0x" + "5" * 64,
+        "verifier_image": source_digest,
+        "verifier_image_hash": hashes["image"],
+        "verifier_source_digest": source_digest,
+        "verifier_source_hash": hashes["source"],
+        "spec_hash": "0x" + "6" * 64,
+        "admission_hash": "0x" + "7" * 64,
+        "metadata_uri": "ipfs://p42-runner-resolver-integration",
+        "pool": "0x" + "8" * 40,
+        "ledger": "0x" + "9" * 40,
+        "submission_manager": claim["submission_contract"],
+        "challenge_manager": claim["challenge_contract"],
+        "challenge_window_seconds": "259200",
+        "min_improvement_atoms": "1",
+        "frozen": True,
+        "explicitly_frozen": True,
+    }
+
+    def integration_verifier(*args, **kwargs):
+        report = {
+            "problem_id": claim["problem_id"],
+            "verifier_version": "1.0.0",
+            "verifier_image": source_digest,
+            "solution_hash": sha256_file(SOLUTION),
+            "valid": True,
+            "improvement": "1/1",
+            "score": "1/3",
+            "reason": "verified",
+            "recomputed_at_commit": "integration-fixture",
+            "details": {},
+        }
+        return {
+            "ok": True, "valid": True, "elapsed_ms": 5, "sandbox": "docker",
+            "returncode": 0, "report": report,
+            "report_hash": sha256_bytes(canonical_json(report).encode("utf-8")),
+        }
+
+    monkeypatch.setattr("p42_prizes.runner_worker._run_verifier_for_transcript", integration_verifier)
+    emitted = _run_job(
+        _job(chain_claim=claim),
+        tmp_path,
+        policy=RunnerPolicy(sandbox="docker", memory_safety_factor=2),
+        allow_test_identity_derivation=True,
+    )
+    expected = {
+        "chain_id": claim["chain_id"],
+        "problem_id": claim["problem_id"],
+        "submission_contract": claim["submission_contract"],
+        "challenge_contract": claim["challenge_contract"],
+        "submission_id": claim["submission_id"],
+        "reveal_instance_hash": claim["reveal_instance_hash"],
+        "registry_address": claim["registry_binding"]["registry_address"],
+        "registry_problem_id": claim["registry_binding"]["problem_id"],
+        "registry_problem_slug": claim["registry_binding"]["problem_slug"],
+    }
+    consumed = subprocess.run(
+        [
+            "node", "--input-type=module", "-e",
+            (
+                "import { readFileSync } from 'node:fs';"
+                "import { verifyResolverTranscript } from './resolver.mjs';"
+                "const t=JSON.parse(readFileSync(process.argv[1],'utf8'));"
+                "const checked=verifyResolverTranscript(t,JSON.parse(process.argv[2]));"
+                "console.log(JSON.stringify({hash:checked.transcript.transcript_hash,slug:checked.boardIdentity.problem_slug}));"
+            ),
+            emitted["transcript_path"], canonical_json(expected),
+        ],
+        cwd=ROOT / "agent", text=True, capture_output=True, check=False,
+    )
+    assert consumed.returncode == 0, consumed.stderr
+    checked = json.loads(consumed.stdout)
+    assert checked == {
+        "hash": emitted["transcript_hash"],
+        "slug": claim["problem_id"],
+    }
+
+
 def test_chain_job_refuses_host_policy(tmp_path: Path) -> None:
     with pytest.raises(RunnerWorkerError, match="require policy.sandbox=docker"):
-        _run_job(_job(), tmp_path, policy=RunnerPolicy(sandbox="none"))
+        _run_job(
+            _job(),
+            tmp_path,
+            policy=RunnerPolicy(sandbox="none"),
+            allow_test_identity_derivation=True,
+        )
 
 
 def test_recovered_chain_da_job_still_refuses_host_policy(tmp_path: Path) -> None:
@@ -540,10 +674,15 @@ def test_recovered_chain_da_job_still_refuses_host_policy(tmp_path: Path) -> Non
     )
 
     with pytest.raises(RunnerWorkerError, match="require policy.sandbox=docker"):
-        _run_job(job, tmp_path, policy=RunnerPolicy(sandbox="none"))
+        _run_job(
+            job,
+            tmp_path,
+            policy=RunnerPolicy(sandbox="none"),
+            allow_test_identity_derivation=True,
+        )
 
 
-def test_runtime_bridge_vertical_slice_persists_missing_da_candidate(tmp_path: Path) -> None:
+def test_local_cli_vertical_slice_persists_missing_da_candidate(tmp_path: Path) -> None:
     queue = tmp_path / "queue.json"
     transcripts = tmp_path / "transcripts"
     spec = tmp_path / "job.json"
@@ -556,30 +695,58 @@ def test_runtime_bridge_vertical_slice_persists_missing_da_candidate(tmp_path: P
         ),
         encoding="utf-8",
     )
-    bridge = ROOT / "agent" / "runtime_bridge.py"
-
-    enqueue = subprocess.run(
+    enqueue_runner_job(queue, json.loads(spec.read_text(encoding="utf-8")))
+    work = subprocess.run(
         [
             "python3",
-            str(bridge),
-            "enqueue",
+            "-m",
+            "p42_prizes.cli",
+            "runner-work-once",
             "--queue",
             str(queue),
-            "--job",
-            str(spec),
-            "--chain-now-utc",
-            "2026-07-15T00:00:00Z",
+            "--transcripts",
+            str(transcripts),
+            "--total-memory-mb",
+            "16384",
+            "--available-memory-mb",
+            "16384",
+            "--swap-used-mb",
+            "0",
+            "--reserve-memory-mb",
+            "1024",
+            "--allow-unsafe-local-fixture",
         ],
         cwd=ROOT,
         text=True,
         capture_output=True,
         check=False,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(ROOT / "src"),
+            "P42_RUNNER_CHAIN_TIMESTAMP": "1784160000",
+        },
     )
-    assert enqueue.returncode == 0, enqueue.stderr
+    assert work.returncode == 0, work.stderr
+    result = json.loads(work.stdout)
+    assert result["verifier"]["challenge_candidate"]["action"] == "challenge"
+    queued = read_runner_queue(queue)["jobs"][0]
+    assert queued["status"] == "failed"
+    assert queued["challenge_candidate_hash"] == result["verifier"]["challenge_candidate"]["candidate_hash"]
+
+
+def test_runtime_bridge_terminalizes_job_without_production_board_identity(tmp_path: Path) -> None:
+    queue = tmp_path / "queue.json"
+    transcripts = tmp_path / "transcripts"
+    job = _job(
+        solution=None,
+        da_failure={"kind": "missing", "error": "payload unavailable before challenge window"},
+    )
+    enqueue_runner_job(queue, job)
+
     work = subprocess.run(
         [
             "python3",
-            str(bridge),
+            str(ROOT / "agent" / "runtime_bridge.py"),
             "work-once",
             "--queue",
             str(queue),
@@ -600,9 +767,15 @@ def test_runtime_bridge_vertical_slice_persists_missing_da_candidate(tmp_path: P
         check=False,
         env={**os.environ, "P42_RUNNER_CHAIN_TIMESTAMP": "1784160000"},
     )
+
     assert work.returncode == 0, work.stderr
     result = json.loads(work.stdout)
-    assert result["verifier"]["challenge_candidate"]["action"] == "challenge"
+    assert result["reason"].startswith(
+        "job_run_error: production job lacks the executor-forced closed board identity"
+    )
     queued = read_runner_queue(queue)["jobs"][0]
     assert queued["status"] == "failed"
-    assert queued["challenge_candidate_hash"] == result["verifier"]["challenge_candidate"]["candidate_hash"]
+    assert queued["terminal_disposition"]["reason_code"] == "job_run_error"
+    assert queued["terminal_disposition"]["fence_hash"] == job["source_event_hash"]
+    assert "transcript_path" not in queued
+    assert not transcripts.exists()

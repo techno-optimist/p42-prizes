@@ -34,6 +34,7 @@ export function portalDatabasePool(): PortalDatabasePool {
     max: boundedInteger("P42_PORTAL_DATABASE_POOL_SIZE", 10, 1, 50),
     connectionTimeoutMillis: boundedInteger("P42_PORTAL_DATABASE_CONNECT_TIMEOUT_MS", 5_000, 500, 30_000),
     idleTimeoutMillis: boundedInteger("P42_PORTAL_DATABASE_IDLE_TIMEOUT_MS", 30_000, 1_000, 300_000),
+    statement_timeout: portalDatabaseTimeouts().statementMs,
     allowExitOnIdle: false,
   });
   return globalPortalDb.__p42PortalPool;

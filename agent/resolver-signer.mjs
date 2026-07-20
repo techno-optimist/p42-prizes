@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Independent resolver signer. A signer authorizes a quorum decision only
-// after its own sandbox transcript agrees with the published transcript and
-// two RPC providers agree on the finalized chain state.
+// after a pinned executor attests a signer-challenged rerun, its evidence
+// agrees with the publication, and two RPC providers agree on finalized state.
 
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -22,6 +22,26 @@ import {
   validateResolverQuorumDecisionPacket,
 } from "./resolver-quorum.mjs";
 import {
+  bindResolverRerunReceipt,
+  issueResolverRerunChallenge,
+  isResolverRerunReceiptBound,
+  loadResolverRerunExecutorTrust,
+  markResolverRerunAuthorization,
+  markResolverRerunSignature,
+  persistResolverRerunRequest,
+  readResolverRerunChallenge,
+  verifyResolverRerunReceipt,
+} from "./resolver-rerun-attestation.mjs";
+import {
+  buildResolverRerunRequest,
+  resolverRerunResultPaths,
+} from "./resolver-rerun-executor.mjs";
+import {
+  loadResolverRerunResultAuthority,
+  readResolverRerunResultJsonSync,
+  resolverRerunResultBoardAuthority,
+} from "./resolver-rerun-result-reader.mjs";
+import {
   canonicalTranscriptArtifact,
   configuredTranscriptEndpoints,
   fetchTranscriptClientBytes,
@@ -37,6 +57,9 @@ import {
 } from "./strict-json.mjs";
 
 const JSON_LIMITS = Object.freeze({ maxBytes: 16 * 1024 * 1024, maxDepth: 64, canonicalBytes: true, trailingNewline: "require" });
+const RERUN_EXECUTOR_TRUST_CREDENTIAL = "/run/credentials/p42/resolver-rerun-executor-trust";
+const RERUN_RESULT_ROOT = "/var/lib/p42/resolver-rerun-results";
+const RERUN_RESULT_AUTHORITY_CREDENTIAL = "/run/credentials/p42/resolver-rerun-result-authority";
 const SIGNER_ABIS = Object.freeze({
   P42SubmissionManager: Object.freeze([
     "function revealInstanceHashOf(uint256) view returns (bytes32)",
@@ -146,6 +169,11 @@ export function verifyIndependentResolverDecision({
   registryProblemId,
   problemSlug,
   live,
+  rerunReceipt,
+  rerunChallenge,
+  executorTrust,
+  now,
+  allowExpiredRerunReceipt = false,
 }) {
   const packet = validateResolverQuorumDecisionPacket(packetValue);
   const expected = expectedTranscriptBinding(
@@ -196,6 +224,16 @@ export function verifyIndependentResolverDecision({
     throw new Error("independent rerun outcome does not match the published transcript");
   }
   verifyIndependentDaEvidence(published, local);
+  const verifiedRerunReceipt = verifyResolverRerunReceipt({
+    receipt: rerunReceipt,
+    challenge: rerunChallenge,
+    trust: executorTrust,
+    packet,
+    published,
+    local,
+    now,
+    allowExpired: allowExpiredRerunReceipt,
+  });
 
   const verdictHash = buildResolverVerdictHash({
     transcriptHash: published.transcript.transcript_hash,
@@ -240,7 +278,7 @@ export function verifyIndependentResolverDecision({
     throw new Error("resolver quorum stake cannot cover the live decision bond");
   }
   parseTranscriptUri(packet.transcript_uri);
-  return { packet, published, local, verdictHash };
+  return { packet, published, local, verdictHash, rerunReceipt: verifiedRerunReceipt };
 }
 
 function normalizeSnapshot(value) {
@@ -371,7 +409,10 @@ export function signerAuthorizationPath(signatureRoot, packet) {
   return join(signatureRoot, "authorizations", `${identity}.json`);
 }
 
-export function persistSignerAuthorization(signatureRoot, packet, evidence) {
+export function persistSignerAuthorization(signatureRoot, packet, evidence, rerunReceipt) {
+  if (!rerunReceipt || rerunReceipt.schema_version !== "p42-resolver-rerun/v1") {
+    throw new Error("signer authorization requires a verified resolver rerun receipt");
+  }
   const authorizations = join(signatureRoot, "authorizations");
   assertPrivateRoot(authorizations);
   const path = signerAuthorizationPath(signatureRoot, packet);
@@ -388,6 +429,9 @@ export function persistSignerAuthorization(signatureRoot, packet, evidence) {
     verdict_hash: packet.decision.verdictHash,
     challenger_wins: packet.decision.challengerWins,
     signer_epoch: packet.decision.signerEpoch,
+    rerun_receipt_hash: rerunReceipt.receipt_hash,
+    rerun_orchestrator_nonce: rerunReceipt.orchestrator_nonce,
+    rerun_local_transcript_hash: rerunReceipt.local_transcript_hash,
   };
   const authorization = {
     ...semanticAuthorization,
@@ -412,11 +456,34 @@ export async function main(argv = process.argv.slice(2), clients = {}) {
   const manifestPath = arg(argv, "manifest");
   const registryProblemId = arg(argv, "registry-problem-id");
   const packetPath = arg(argv, "packet");
-  const localTranscriptPath = arg(argv, "local-transcript");
   const signatureRoot = resolve(arg(argv, "signature-root", ""));
   const rpcUrls = repeatedArgs(argv, "rpc");
-  if (!manifestPath || !registryProblemId || !packetPath || !localTranscriptPath || !arg(argv, "signature-root")) {
-    throw new Error("required: --manifest --registry-problem-id --packet --local-transcript --signature-root");
+  if (arg(argv, "prepare-rerun") === true) {
+    const publishedTranscriptPath = arg(argv, "published-transcript");
+    if (!packetPath || !manifestPath || !registryProblemId || !publishedTranscriptPath || !arg(argv, "signature-root")) {
+      throw new Error("rerun preparation requires --manifest --registry-problem-id --packet --published-transcript --signature-root");
+    }
+    assertPrivateRoot(signatureRoot);
+    const packet = validateResolverQuorumDecisionPacket(readStrictJsonFileSync(resolve(packetPath), JSON_LIMITS));
+    const requestSignerPrivateKey = process.env.P42_RESOLVER_SIGNER_PRIVATE_KEY;
+    const issued = issueResolverRerunChallenge(signatureRoot, packet, { resumeActive: true });
+    const manifestBytes = readFileSync(resolve(manifestPath));
+    const manifest = readStrictJsonFileSync(resolve(manifestPath), { maxBytes: 8 * 1024 * 1024, maxDepth: 96 });
+    const problem = manifestProblemForRegistryId(manifest, registryProblemId);
+    const publishedTranscript = readStrictJsonFileSync(resolve(publishedTranscriptPath), JSON_LIMITS);
+    const request = buildResolverRerunRequest({
+      packet, challenge: issued.challenge,
+      boardId: `${manifest.network.chainId}:${registryProblemId}:${problem.problemSlug}`,
+      manifestPath: resolve(manifestPath), manifestBytes, publishedTranscript,
+      manifestRoot: clients.manifestRoot, requestSignerPrivateKey,
+    });
+    assertPrivateRoot(join(signatureRoot, "rerun-requests"));
+    const requestPath = persistResolverRerunRequest(signatureRoot, packet, issued.challenge, request);
+    console.log(canonicalJson({ status: "rerun-challenge-issued", path: issued.path, challenge: issued.challenge, request_path: requestPath }));
+    return;
+  }
+  if (!manifestPath || !registryProblemId || !packetPath || !arg(argv, "signature-root")) {
+    throw new Error("required: --manifest --registry-problem-id --packet --signature-root");
   }
   if (!clients.providers && rpcUrls.length !== 2) throw new Error("exactly two independently operated --rpc URLs are required");
   const [primary, secondary] = clients.providers ?? rpcUrls.map((url) => new ethers.JsonRpcProvider(url));
@@ -434,7 +501,24 @@ export async function main(argv = process.argv.slice(2), clients = {}) {
   resolveOperatorFinality({ manifest, localTest: false });
   const problem = manifestProblemForRegistryId(manifest, registryProblemId);
   const packet = validateResolverQuorumDecisionPacket(readStrictJsonFileSync(resolve(packetPath), JSON_LIMITS));
-  const localTranscript = readStrictJsonFileSync(resolve(localTranscriptPath), { ...JSON_LIMITS, privateFile: true });
+  assertPrivateRoot(signatureRoot);
+  const rerunChallenge = readResolverRerunChallenge(signatureRoot, packet);
+  const resultBoardRoot = join(clients.rerunResultRoot ?? RERUN_RESULT_ROOT, String(registryProblemId));
+  const rerunPaths = resolverRerunResultPaths(resultBoardRoot, {
+    packet_hash: packet.packet_hash, orchestrator_nonce: rerunChallenge.orchestrator_nonce,
+  });
+  const resultAuthorityValue = clients.rerunResultAuthority
+    ?? loadResolverRerunResultAuthority(RERUN_RESULT_AUTHORITY_CREDENTIAL);
+  const resultAuthority = resolverRerunResultBoardAuthority(resultAuthorityValue, registryProblemId);
+  const resultReader = clients.rerunResultReader ?? readResolverRerunResultJsonSync;
+  const resultReadOptions = {
+    root: resultBoardRoot, expectedUid: resultAuthority.uid, expectedGid: resultAuthority.gid,
+    maxBytes: JSON_LIMITS.maxBytes, maxDepth: JSON_LIMITS.maxDepth,
+  };
+  const localTranscript = resultReader(rerunPaths.transcript, resultReadOptions);
+  const rerunReceipt = resultReader(rerunPaths.receipt, resultReadOptions);
+  const executorTrust = loadResolverRerunExecutorTrust(RERUN_EXECUTOR_TRUST_CREDENTIAL);
+  const rerunReceiptAlreadyBound = isResolverRerunReceiptBound(signatureRoot, packet, rerunReceipt);
   const endpoints = clients.endpoints ?? configuredTranscriptEndpoints(argv, process.env);
   const publishedTranscript = await fetchPublishedTranscript(packet, endpoints, clients.fetchClient ?? httpTranscriptFetchClient());
 
@@ -461,6 +545,10 @@ export async function main(argv = process.argv.slice(2), clients = {}) {
     registryProblemId,
     problemSlug: problem.problemSlug,
     live,
+    rerunReceipt,
+    rerunChallenge,
+    executorTrust,
+    allowExpiredRerunReceipt: rerunReceiptAlreadyBound,
   });
 
   // Close epoch/challenge/reorg TOCTOU after the potentially slow transcript,
@@ -482,11 +570,16 @@ export async function main(argv = process.argv.slice(2), clients = {}) {
     registryProblemId,
     problemSlug: problem.problemSlug,
     live,
+    rerunReceipt,
+    rerunChallenge,
+    executorTrust,
+    allowExpiredRerunReceipt: rerunReceiptAlreadyBound,
   });
-  // The atomic no-clobber journal is the signing fence. Conflicting concurrent
-  // processes cannot both pass it; an identical retry is harmless and remains
-  // recoverable after a crash between authorization and key invocation.
-  const authorizationPath = persistSignerAuthorization(signatureRoot, packet, live);
+  // Bind the one executor receipt before authorization. Identical retries are
+  // resumable; a different receipt or nonce can never cross this attempt.
+  const rerunConsumptionPath = bindResolverRerunReceipt(signatureRoot, packet, rerunReceipt);
+  const authorizationPath = persistSignerAuthorization(signatureRoot, packet, live, rerunReceipt);
+  markResolverRerunAuthorization(signatureRoot, packet, rerunReceipt, authorizationPath);
   const artifact = await buildResolverQuorumSignatureArtifact(packet, signer);
   const decisionRoot = join(signatureRoot, packet.decision_digest.slice(2));
   assertPrivateRoot(decisionRoot);
@@ -497,7 +590,8 @@ export async function main(argv = process.argv.slice(2), clients = {}) {
   } else {
     writeTrustedFileSync(output, signatureRoot, payload);
   }
-  console.log(canonicalJson({ status: "signed", signer: artifact.signer, decision_digest: packet.decision_digest, authorization: authorizationPath, output }));
+  markResolverRerunSignature(signatureRoot, packet, rerunReceipt, output, artifact);
+  console.log(canonicalJson({ status: "signed", signer: artifact.signer, decision_digest: packet.decision_digest, rerun_consumption: rerunConsumptionPath, authorization: authorizationPath, output }));
   for (const provider of [primary, secondary]) provider.destroy?.();
 }
 

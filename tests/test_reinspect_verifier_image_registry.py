@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timezone
 import importlib.util
 import json
@@ -50,6 +51,7 @@ def _graph(slug: str, version: str):
     blobs: dict[tuple[str, str], bytes] = {}
     manifests = []
     platform_records = []
+    receipt_platforms = []
     for position, platform in enumerate(release.PLATFORMS):
         os_name, architecture = platform.split("/")
         labels = {
@@ -105,6 +107,7 @@ def _graph(slug: str, version: str):
             "config_digest": config_digest,
             "config_size": len(config),
             "layer_count": 1,
+            "layer_descriptors": child_value["layers"],
             "labels": labels,
             "runtime": {
                 "user": "inherited-root-overridden-by-runner",
@@ -113,12 +116,17 @@ def _graph(slug: str, version: str):
                 "cmd": [],
             },
         })
+        receipt_platforms.append({
+            "platform": platform,
+            "manifest_base64": base64.b64encode(child).decode("ascii"),
+            "config_base64": base64.b64encode(config).decode("ascii"),
+        })
     index = release.canonical_json({
         "schemaVersion": 2,
         "mediaType": release.INDEX_MEDIA_TYPE,
         "manifests": manifests,
     }).encode()
-    return index, blobs, platform_records
+    return index, blobs, platform_records, receipt_platforms
 
 
 def _dossier_and_registry():
@@ -126,7 +134,7 @@ def _dossier_and_registry():
     registry: dict[str, bytes] = {}
     for slug in release.LAUNCH_SLUGS:
         version = release.load_manifest(ROOT / "problems" / slug)["verifier"]["version"]
-        index, blobs, platform_records = _graph(slug, version)
+        index, blobs, platform_records, receipt_platforms = _graph(slug, version)
         index_digest = reinspect._sha256(index)
         repository = f"{BASE}/{slug}"
         registry[f"{repository}@{index_digest}"] = index
@@ -143,6 +151,10 @@ def _dossier_and_registry():
             "index_digest": index_digest,
             "immutable_reference": f"{repository}@{index_digest}",
             "platform_manifests": platform_records,
+            "descriptor_receipt": {
+                "index_base64": base64.b64encode(index).decode("ascii"),
+                "platforms": receipt_platforms,
+            },
             "release_manifest_path": f"problems/{slug}/problem.yaml",
             "release_manifest_sha256": reinspect._sha256((ROOT / "problems" / slug / "problem.yaml").read_bytes()),
         })

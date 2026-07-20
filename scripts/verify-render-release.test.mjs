@@ -5,6 +5,7 @@ import {
   DEPLOY_RELEVANT_PATHS,
   EXPECTED_BOARD_MANIFEST,
   assertProbeEquivalence,
+  assertRollbackRelease,
   assertReleaseAncestry,
   findLiveDeploy,
   findService,
@@ -199,6 +200,42 @@ test("release ancestry accepts the exact branch head as live", async () => {
     },
     ancestry(["runtime", "branch-head"]),
   ));
+});
+
+test("rollback verification requires the exact pinned commit on branch history", async () => {
+  await assert.doesNotReject(() => assertRollbackRelease(
+    {
+      expectedLiveCommit: "previous",
+      liveCommit: "previous",
+      branchHead: "new-head",
+      remoteRef: "origin/main",
+    },
+    ancestry(["previous", "new-head"]),
+  ));
+  await assert.rejects(
+    () => assertRollbackRelease(
+      {
+        expectedLiveCommit: "previous",
+        liveCommit: "wrong-live",
+        branchHead: "new-head",
+        remoteRef: "origin/main",
+      },
+      ancestry(["previous", "new-head"]),
+    ),
+    /does not equal the pinned rollback commit/,
+  );
+  await assert.rejects(
+    () => assertRollbackRelease(
+      {
+        expectedLiveCommit: "previous",
+        liveCommit: "previous",
+        branchHead: "rewritten-head",
+        remoteRef: "origin/main",
+      },
+      ancestry(),
+    ),
+    /not on the exact fetched origin\/main history/,
+  );
 });
 
 test("probeUrls retains the standalone and proxied prize paths", () => {
@@ -434,5 +471,6 @@ test("paired direct and proxy probes reject body and semantic divergence", () =>
 test("parseArgs keeps main as the default and rejects unknown input", () => {
   assert.equal(parseArgs([]).branch, "main");
   assert.equal(parseArgs(["--git-remote", "github"]).gitRemote, "github");
+  assert.equal(parseArgs(["--expected-live-commit", "a".repeat(40)]).expectedLiveCommit, "a".repeat(40));
   assert.throws(() => parseArgs(["--nope"]), /Unknown argument/);
 });

@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.ai/prizes/protocol/production-board-bindings-v2.schema.json",
+  "title": "P42 production board proof-promotion bindings v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "board_set", "base_bindings", "authority_registry", "evaluated_at_utc", "max_evidence_age_seconds", "minimum_independent_hosts", "records"],
+  "properties": {
+    "schema_version": {"const": "p42-prizes/production-board-bindings/v2"},
+    "board_set": {"$ref": "#/$defs/boardSet"},
+    "base_bindings": {"$ref": "#/$defs/baseBindings"},
+    "authority_registry": {"$ref": "#/$defs/authorityRegistry"},
+    "evaluated_at_utc": {"type": "string", "format": "date-time"},
+    "max_evidence_age_seconds": {"type": "integer", "minimum": 1, "maximum": 2678400},
+    "minimum_independent_hosts": {"type": "integer", "minimum": 3, "maximum": 64},
+    "records": {"type": "array", "minItems": 10, "maxItems": 10, "items": {"$ref": "#/$defs/record"}}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$"},
+        "sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "boardSet": {
+      "type": "object", "additionalProperties": false, "required": ["path", "sha256"],
+      "properties": {"path": {"const": "protocol/production-board-set-v1.json"}, "sha256": {"const": "sha256:1519ea83e14b780a3b0818890a5be45cc72a71b62cf1ed7b4b4d9582702b6cc8"}}
+    },
+    "baseBindings": {
+      "type": "object", "additionalProperties": false, "required": ["path", "sha256", "schema_version", "schema_sha256"],
+      "properties": {
+        "path": {"const": "protocol/production-board-bindings-v1.json"},
+        "sha256": {"const": "sha256:05a74eefb7f5717b91ffea49809a02713ec1af9580bad0e2eccf79e9a4bfe23f"},
+        "schema_version": {"const": "p42-prizes/production-board-bindings/v1"},
+        "schema_sha256": {"const": "sha256:8c88f88842c8c32dd8699b250ae339a454faa95fc112049cd24148c967869f98"}
+      }
+    },
+    "authorityRegistry": {
+      "type": "object", "additionalProperties": false, "required": ["path", "sha256", "pin_path"],
+      "properties": {
+        "path": {"const": "protocol/objective-proof-promotion-authorities-v1.json"},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "pin_path": {"const": "protocol/objective-proof-promotion-authorities-v1.sha256"}
+      }
+    },
+    "record": {
+      "type": "object", "additionalProperties": false,
+      "required": ["slug", "v1_record_sha256", "activation_eligible", "promotion"],
+      "properties": {
+        "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "v1_record_sha256": {"$ref": "#/$defs/digest"},
+        "activation_eligible": {"const": false},
+        "promotion": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/promotion"}]}
+      }
+    },
+    "promotion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "program_identity", "proof_receipt", "public_values", "solidity_replay", "economics", "host_matrix", "reviews", "dependency_security", "external_runtime", "release_receipt"],
+      "properties": {
+        "schema_version": {"const": "p42-prizes/objective-proof-promotion/v2"},
+        "program_identity": {"$ref": "#/$defs/artifact"},
+        "proof_receipt": {"$ref": "#/$defs/artifact"},
+        "public_values": {"$ref": "#/$defs/artifact"},
+        "solidity_replay": {"$ref": "#/$defs/artifact"},
+        "economics": {"$ref": "#/$defs/artifact"},
+        "host_matrix": {"$ref": "#/$defs/artifact"},
+        "reviews": {
+          "type": "object", "additionalProperties": false, "required": ["math", "provenance", "rights", "scope"],
+          "properties": {"math": {"$ref": "#/$defs/artifact"}, "provenance": {"$ref": "#/$defs/artifact"}, "rights": {"$ref": "#/$defs/artifact"}, "scope": {"$ref": "#/$defs/artifact"}}
+        },
+        "dependency_security": {"$ref": "#/$defs/artifact"},
+        "external_runtime": {"$ref": "#/$defs/artifact"},
+        "release_receipt": {"$ref": "#/$defs/artifact"}
+      }
+    }
+  }
+}

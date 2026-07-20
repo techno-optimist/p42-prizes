@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -18,16 +19,23 @@ from p42_prizes.legal import (
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
-SECURITY_AUDIT_SCHEMA_VERSION = "p42-security-audit/v1"
+SECURITY_AUDIT_SCHEMA_VERSION = "p42-security-audit/v2"
+SECURITY_AUDIT_ATTESTATION_CLASS = "p42-security-audit/v2"
 AUDITOR_ROLE = "external-security-auditor"
+SECURITY_OWNER_ROLE = "security-owner"
 REQUIRED_SCOPE = {
-    "solidity_source",
-    "deployed_runtime_bytecode",
-    "access_control_and_governance",
-    "upgrade_and_initialization",
-    "funding_and_payout_flows",
-    "submission_challenge_resolution",
-    "cryptographic_verifier_boundary",
+    "verifier_soundness_and_determinism",
+    "commit_reveal_and_data_availability",
+    "challenge_resolver_finality",
+    "payout_claim_bond_and_economic_transitions",
+    "api_and_local_persistence_concurrency",
+    "event_chain_integrity",
+    "agent_wallet_and_session_scoping",
+    "key_governance_pause_custody_recovery_and_cancellation",
+    "reconciliation",
+    "evidence_forgery",
+    "source_deployment_consistency",
+    "upgrade_or_immutability_assumptions",
     "denial_of_service",
 }
 FINDING_SEVERITIES = {"critical", "high", "medium", "low", "informational"}
@@ -67,11 +75,15 @@ def normalize_security_audit(
             "engagement_identifier",
             "engagement_artifact",
             "audit_report",
+            "findings_register",
             "scope",
             "contracts_reviewed",
             "findings",
+            "security_owner",
+            "residual_risk_acceptance",
             "audit_hash",
             "auditor_signature",
+            "security_owner_signature",
         },
         SecurityAuditError,
     )
@@ -79,6 +91,7 @@ def normalize_security_audit(
     normalized = dict(report)
     provided_hash = normalized.pop("audit_hash", None)
     auditor_signature = normalized.pop("auditor_signature", None)
+    security_owner_signature = normalized.pop("security_owner_signature", None)
 
     _validate_real_world_field(
         normalized.get("audit_id"), "report.audit_id", SecurityAuditError, min_length=5
@@ -119,15 +132,45 @@ def normalize_security_audit(
     _validate_artifact_reference(
         normalized.get("audit_report"), "report.audit_report", SecurityAuditError, context
     )
+    _validate_artifact_reference(
+        normalized.get("findings_register"),
+        "report.findings_register",
+        SecurityAuditError,
+        context,
+    )
     _validate_scope(normalized.get("scope"))
     _validate_contract_coverage(normalized.get("contracts_reviewed"), release_binding)
     _validate_findings(normalized.get("findings"), context)
+    security_owner = _validate_security_owner(normalized.get("security_owner"), context)
+    if any(
+        str(security_owner[field]).strip().casefold()
+        == str(auditor[field]).strip().casefold()
+        for field in ("name", "professional_email", "public_key")
+    ):
+        raise SecurityAuditError(
+            "security owner and external auditor must use distinct identities and keys"
+        )
+    _validate_artifact_reference(
+        normalized.get("residual_risk_acceptance"),
+        "report.residual_risk_acceptance",
+        SecurityAuditError,
+        context,
+    )
 
     signed_at = _require_utc(
         auditor.get("signed_at_utc"), "report.auditor.signed_at_utc", SecurityAuditError
     )
     if signed_at > completed_at:
         raise SecurityAuditError("report.auditor.signed_at_utc must not be after report completion")
+    owner_signed_at = _require_utc(
+        security_owner.get("signed_at_utc"),
+        "report.security_owner.signed_at_utc",
+        SecurityAuditError,
+    )
+    if owner_signed_at < signed_at or owner_signed_at > completed_at:
+        raise SecurityAuditError(
+            "report.security_owner.signed_at_utc must be on/after the auditor signature and on/before report completion"
+        )
 
     audit_hash = sha256_bytes(canonical_json(normalized).encode("utf-8"))
     if provided_hash is not None and provided_hash != audit_hash:
@@ -138,7 +181,7 @@ def normalize_security_audit(
     _validate_signature(
         auditor_signature,
         "report.auditor_signature",
-        schema_version=SECURITY_AUDIT_SCHEMA_VERSION,
+        schema_version=SECURITY_AUDIT_ATTESTATION_CLASS,
         artifact_hash=audit_hash,
         identity=auditor,
         expected_role=AUDITOR_ROLE,
@@ -146,9 +189,23 @@ def normalize_security_audit(
         context=context,
         expected_signed_at=signed_at,
         not_after=completed_at,
+        require_after_context_evidence=False,
+    )
+    _validate_signature(
+        security_owner_signature,
+        "report.security_owner_signature",
+        schema_version=SECURITY_AUDIT_ATTESTATION_CLASS,
+        artifact_hash=audit_hash,
+        identity=security_owner,
+        expected_role=SECURITY_OWNER_ROLE,
+        error_type=SecurityAuditError,
+        context=context,
+        expected_signed_at=owner_signed_at,
+        not_after=completed_at,
     )
 
     normalized["auditor_signature"] = dict(auditor_signature)
+    normalized["security_owner_signature"] = dict(security_owner_signature)
     normalized["audit_hash"] = audit_hash
     return normalized
 
@@ -177,10 +234,32 @@ def _validate_auditor(value: Any, context: Any) -> Mapping[str, Any]:
     )
 
 
+def _validate_security_owner(value: Any, context: Any) -> Mapping[str, Any]:
+    owner = _require_mapping(value, "report.security_owner")
+    expected = {
+        "name",
+        "organization",
+        "professional_email",
+        "role",
+        "public_key",
+        "identity_evidence",
+        "signed_at_utc",
+    }
+    if set(owner) != expected:
+        raise SecurityAuditError("report.security_owner must contain the exact security-owner identity fields")
+    return _validate_identity(
+        owner,
+        "report.security_owner",
+        expected_role=SECURITY_OWNER_ROLE,
+        error_type=SecurityAuditError,
+        context=context,
+    )
+
+
 def _validate_scope(value: Any) -> None:
     scope = _require_mapping(value, "report.scope")
     if set(scope) != REQUIRED_SCOPE:
-        raise SecurityAuditError("report.scope must contain the exact mandatory v1 audit scope")
+        raise SecurityAuditError("report.scope must contain every mandatory SECURITY.md audit surface")
     missing = sorted(key for key in REQUIRED_SCOPE if scope.get(key) is not True)
     if missing:
         raise SecurityAuditError(f"report.scope must mark every mandatory area reviewed: {', '.join(missing)}")
@@ -224,11 +303,18 @@ def _validate_findings(value: Any, context: Any) -> None:
     for index, item in enumerate(value):
         prefix = f"report.findings[{index}]"
         finding = _require_mapping(item, prefix)
-        base_fields = {"finding_id", "title", "severity", "disposition"}
+        base_fields = {
+            "finding_id",
+            "title",
+            "severity",
+            "affected_code",
+            "recommendation",
+            "disposition",
+            "residual_risk",
+        }
         evidence_fields = {
-            "remediation_artifact",
+            "remediation_commits",
             "retest_artifact",
-            "risk_acceptance_artifact",
         }
         if not base_fields <= set(finding) or set(finding) - base_fields - evidence_fields:
             raise SecurityAuditError(f"{prefix} has unexpected or missing fields")
@@ -240,6 +326,15 @@ def _validate_findings(value: Any, context: Any) -> None:
         seen.add(finding_id)
         _validate_real_world_field(
             finding.get("title"), f"{prefix}.title", SecurityAuditError, min_length=3
+        )
+        _validate_real_world_field(
+            finding.get("affected_code"), f"{prefix}.affected_code", SecurityAuditError, min_length=3
+        )
+        _validate_real_world_field(
+            finding.get("recommendation"), f"{prefix}.recommendation", SecurityAuditError, min_length=3
+        )
+        _validate_real_world_field(
+            finding.get("residual_risk"), f"{prefix}.residual_risk", SecurityAuditError, min_length=3
         )
         severity = finding.get("severity")
         disposition = finding.get("disposition")
@@ -253,34 +348,35 @@ def _validate_findings(value: Any, context: Any) -> None:
             raise SecurityAuditError("open non-informational security findings block launch")
 
         if disposition == "resolved" and severity != "informational":
-            expected_fields = base_fields | {"remediation_artifact", "retest_artifact"}
+            expected_fields = base_fields | {"remediation_commits", "retest_artifact"}
             if set(finding) != expected_fields:
                 raise SecurityAuditError(
-                    f"{prefix} resolved non-informational findings require exactly remediation_artifact and retest_artifact"
+                    f"{prefix} resolved non-informational findings require exactly remediation_commits and retest_artifact"
                 )
-            _validate_artifact_reference(
-                finding["remediation_artifact"],
-                f"{prefix}.remediation_artifact",
-                SecurityAuditError,
-                context,
-            )
+            _validate_remediation_commits(finding["remediation_commits"], prefix)
             _validate_artifact_reference(
                 finding["retest_artifact"], f"{prefix}.retest_artifact", SecurityAuditError, context
             )
         elif disposition == "accepted":
-            expected_fields = base_fields | {"risk_acceptance_artifact"}
-            if set(finding) != expected_fields:
+            if set(finding) != base_fields:
                 raise SecurityAuditError(
-                    f"{prefix} accepted findings require exactly risk_acceptance_artifact"
+                    f"{prefix} accepted findings are covered only by the signed residual-risk acceptance"
                 )
-            _validate_artifact_reference(
-                finding["risk_acceptance_artifact"],
-                f"{prefix}.risk_acceptance_artifact",
-                SecurityAuditError,
-                context,
-            )
         elif set(finding) != base_fields:
             raise SecurityAuditError(f"{prefix} evidence fields are not allowed for this finding state")
+
+
+def _validate_remediation_commits(value: Any, prefix: str) -> None:
+    if not isinstance(value, list) or not value:
+        raise SecurityAuditError(f"{prefix}.remediation_commits must contain at least one full git commit")
+    if len(value) != len(set(value)):
+        raise SecurityAuditError(f"{prefix}.remediation_commits must not contain duplicates")
+    for index, commit in enumerate(value):
+        match = re.fullmatch(r"[a-f0-9]{40}", commit) if isinstance(commit, str) else None
+        if match is None or len(set(commit)) < 8:
+            raise SecurityAuditError(
+                f"{prefix}.remediation_commits[{index}] must be a non-dummy 40-character lowercase commit hash"
+            )
 
 
 def _require_mapping(value: Any, prefix: str) -> Mapping[str, Any]:

@@ -12,8 +12,9 @@ import signal
 import stat
 import subprocess
 import sys
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib import request as urllib_request
+from urllib.parse import urlsplit
 
 import jsonschema
 from referencing import Registry, Resource
@@ -32,7 +33,12 @@ from p42_prizes.adversarial import AdversarialCampaignError, normalize_adversari
 from p42_prizes.da import DaEvidenceError, build_da_evidence, validate_da_evidence
 from p42_prizes.governance import GovernanceSignoffError, normalize_governance_signoff
 from p42_prizes.incident import IncidentDrillError, normalize_incident_drill_report
-from p42_prizes.legal import ChainReader, LegalMemoError, normalize_legal_memo
+from p42_prizes.legal import (
+    ChainReader,
+    LegalMemoError,
+    ethereum_keccak256,
+    normalize_legal_memo,
+)
 from p42_prizes.launch_authorization import (
     LaunchAuthorizationError,
     normalize_launch_authorization,
@@ -83,6 +89,8 @@ _SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas"
 _RPC_MAX_RESPONSE_BYTES = 1024 * 1024
 _RPC_MAX_RESPONSE_DEPTH = 64
 _PRODUCTION_TRUST_ROOT = Path("/etc/p42/production-attestation-root.sha256")
+_PRODUCTION_GOVERNANCE_RPC_POLICY = Path("/etc/p42/governance-rpc-policy.json")
+_PRODUCTION_GOVERNANCE_RPC_POLICY_ROOT = Path("/etc/p42/governance-rpc-policy.sha256")
 
 
 def _enforce_gate_schema(report: dict, schema_name: str) -> None:
@@ -174,6 +182,174 @@ def _read_production_trust_root() -> str:
     return value
 
 
+def _load_governance_rpc_policy(
+    *,
+    trust_environment: str,
+    test_policy_path: str | None,
+    test_digest_path: str | None,
+) -> dict[str, Any]:
+    if trust_environment == "production":
+        if test_policy_path is not None or test_digest_path is not None:
+            raise AdmissionError("production governance rejects caller-supplied RPC policy paths")
+        policy_path = _PRODUCTION_GOVERNANCE_RPC_POLICY
+        expected_digest = _read_protected_governance_policy_digest()
+        expected_environment = "production"
+    else:
+        if test_policy_path is None or test_digest_path is None:
+            raise AdmissionError("test governance validation requires a pinned test RPC quorum policy")
+        policy_path = Path(test_policy_path)
+        try:
+            expected_digest = Path(test_digest_path).read_text(encoding="ascii").strip()
+        except OSError as exc:
+            raise AdmissionError("could not read test governance RPC policy digest") from exc
+        expected_environment = "test"
+    try:
+        policy = load_evidence_file(policy_path)
+    except Exception as exc:
+        raise AdmissionError("could not load governance RPC quorum policy") from exc
+    normalized = _validate_governance_rpc_policy(policy, expected_environment=expected_environment)
+    actual_digest = sha256_bytes(canonical_json(normalized).encode("utf-8"))
+    if expected_digest != actual_digest:
+        raise AdmissionError("governance RPC policy does not match its pinned digest")
+    return normalized
+
+
+def _validate_governance_rpc_policy(
+    value: Mapping[str, Any], *, expected_environment: str
+) -> dict[str, Any]:
+    expected_keys = {
+        "schema_version", "environment", "network", "chain_id", "rpc_quorum",
+        "max_head_lag_blocks", "max_finalized_lag_blocks", "rpc_endpoints",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected_keys:
+        raise AdmissionError("governance RPC policy must contain the closed authority fields")
+    policy = dict(value)
+    if policy.get("schema_version") != "p42-governance-rpc-policy/v2":
+        raise AdmissionError("governance RPC policy schema_version is invalid")
+    if policy.get("environment") != expected_environment:
+        raise AdmissionError("governance RPC policy environment does not match its authority path")
+    if policy.get("network") not in {"base-sepolia", "base-mainnet"}:
+        raise AdmissionError("governance RPC policy network is invalid")
+    chain_id = policy.get("chain_id")
+    expected_chain_id = 84532 if policy["network"] == "base-sepolia" else 8453
+    if chain_id != expected_chain_id:
+        raise AdmissionError("governance RPC policy chain_id does not match its network")
+    endpoints = policy.get("rpc_endpoints")
+    quorum = policy.get("rpc_quorum")
+    max_head_lag = policy.get("max_head_lag_blocks")
+    max_finalized_lag = policy.get("max_finalized_lag_blocks")
+    if (
+        not isinstance(endpoints, list)
+        or len(endpoints) < 2
+        or len(endpoints) > 5
+        or not isinstance(quorum, int)
+        or isinstance(quorum, bool)
+        or quorum < 2
+        or quorum > len(endpoints)
+        or not isinstance(max_head_lag, int)
+        or isinstance(max_head_lag, bool)
+        or max_head_lag < 0
+        or max_head_lag > 256
+        or not isinstance(max_finalized_lag, int)
+        or isinstance(max_finalized_lag, bool)
+        or max_finalized_lag < 0
+        or max_finalized_lag > 256
+    ):
+        raise AdmissionError(
+            "governance RPC policy requires at least two quorum providers with bounded freshness"
+        )
+    provider_ids: set[str] = set()
+    urls: set[str] = set()
+    authorities: set[str] = set()
+    ownership_groups: set[str] = set()
+    for endpoint in endpoints:
+        if not isinstance(endpoint, Mapping) or set(endpoint) != {
+            "provider_id", "ownership_group", "url"
+        }:
+            raise AdmissionError(
+                "governance RPC endpoint must contain provider_id, ownership_group, and url"
+            )
+        provider_id = endpoint.get("provider_id")
+        ownership_group = endpoint.get("ownership_group")
+        url = endpoint.get("url")
+        if not isinstance(provider_id, str) or not provider_id or provider_id in provider_ids:
+            raise AdmissionError("governance RPC provider identities must be nonempty and distinct")
+        if (
+            not isinstance(ownership_group, str)
+            or not ownership_group
+            or ownership_group in ownership_groups
+        ):
+            raise AdmissionError(
+                "governance RPC providers must have distinct certified ownership groups"
+            )
+        if not isinstance(url, str):
+            raise AdmissionError("governance RPC endpoint URL is invalid")
+        parsed = urlsplit(url)
+        authority = (
+            parsed.netloc.casefold()
+            if expected_environment == "test"
+            else (parsed.hostname or "").casefold()
+        )
+        test_loopback = expected_environment == "test" and parsed.scheme == "http" and parsed.hostname in {
+            "127.0.0.1", "localhost"
+        }
+        if (
+            (parsed.scheme != "https" and not test_loopback)
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or url.casefold() in urls
+            or authority in authorities
+        ):
+            raise AdmissionError("governance RPC endpoints must be distinct credential-free provider URLs")
+        provider_ids.add(provider_id)
+        urls.add(url.casefold())
+        authorities.add(authority)
+        ownership_groups.add(ownership_group)
+    return policy
+
+
+def _read_protected_governance_policy_digest() -> str:
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise AdmissionError("production governance RPC roots require O_NOFOLLOW support")
+    try:
+        fd = os.open(_PRODUCTION_GOVERNANCE_RPC_POLICY_ROOT, os.O_RDONLY | nofollow)
+    except OSError as exc:
+        raise AdmissionError("production governance requires a protected RPC policy root") from exc
+    try:
+        before = os.fstat(fd)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != 0
+            or before.st_mode & 0o0222
+        ):
+            raise AdmissionError("production governance RPC policy root metadata is unsafe")
+        raw = os.read(fd, 257)
+        after = os.fstat(fd)
+        if (before.st_dev, before.st_ino, before.st_mode, before.st_uid, before.st_size) != (
+            after.st_dev, after.st_ino, after.st_mode, after.st_uid, after.st_size
+        ):
+            raise AdmissionError("production governance RPC policy root changed while being read")
+    finally:
+        os.close(fd)
+    if len(raw) > 256:
+        raise AdmissionError("production governance RPC policy root is oversized")
+    try:
+        digest = raw.decode("ascii").strip()
+    except UnicodeDecodeError as exc:
+        raise AdmissionError("production governance RPC policy root must be ASCII") from exc
+    if (
+        len(digest) != 71
+        or not digest.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in digest[7:])
+    ):
+        raise AdmissionError("production governance RPC policy root must contain a sha256 digest")
+    return digest
+
+
 def _load_attestation_inputs(args: argparse.Namespace) -> tuple[dict, Path, ChainReader]:
     trust_registry = _load_pinned_trust_registry(
         args.trust_registry,
@@ -189,7 +365,7 @@ def _build_http_chain_reader(rpc_url: str) -> ChainReader:
     request_id = 0
     cached_chain_id: int | None = None
 
-    def rpc_call(method: str, params: list[object]) -> object:
+    def rpc_exchange(method: str, params: list[object]) -> dict[str, Any]:
         nonlocal request_id
         request_id += 1
         payload = json.dumps(
@@ -208,13 +384,18 @@ def _build_http_chain_reader(rpc_url: str) -> ChainReader:
                 max_bytes=_RPC_MAX_RESPONSE_BYTES,
                 max_depth=_RPC_MAX_RESPONSE_DEPTH,
             )
-        if not isinstance(parsed, dict) or "error" in parsed or "result" not in parsed:
+        if not isinstance(parsed, dict):
+            raise ValueError(f"JSON-RPC {method} returned a malformed response")
+        return parsed
+
+    def rpc_call(method: str, params: list[object]) -> object:
+        parsed = rpc_exchange(method, params)
+        if "error" in parsed or "result" not in parsed:
             raise ValueError(f"JSON-RPC {method} returned an error or malformed response")
         return parsed["result"]
 
-    def read_chain(network: str, chain_id: int, address: str, block_number: int) -> dict[str, str]:
+    def checked_block(chain_id: int, block_tag: str) -> dict[str, Any]:
         nonlocal cached_chain_id
-        del network
         if cached_chain_id is None:
             chain_result = rpc_call("eth_chainId", [])
             if not isinstance(chain_result, str):
@@ -222,16 +403,537 @@ def _build_http_chain_reader(rpc_url: str) -> ChainReader:
             cached_chain_id = int(chain_result, 16)
         if cached_chain_id != chain_id:
             raise ValueError(f"RPC chain ID {cached_chain_id} does not match release chain ID {chain_id}")
-        block_tag = hex(block_number)
         block = rpc_call("eth_getBlockByNumber", [block_tag, False])
+        if (
+            not isinstance(block, dict)
+            or not isinstance(block.get("hash"), str)
+            or not isinstance(block.get("number"), str)
+        ):
+            raise ValueError("eth_getBlockByNumber did not return a numbered block hash")
+        checked = {"block_number": int(block["number"], 16), "block_hash": block["hash"]}
+        timestamp = block.get("timestamp")
+        if timestamp is not None:
+            if not isinstance(timestamp, str):
+                raise ValueError("eth_getBlockByNumber returned a malformed timestamp")
+            checked["block_timestamp"] = int(timestamp, 16)
+        return checked
+
+    def read_chain(
+        network: str,
+        chain_id: int,
+        address: str,
+        block_number: int,
+    ) -> dict[str, Any]:
+        del network
+        block_tag = hex(block_number)
+        block = checked_block(chain_id, block_tag)
         runtime_bytecode = rpc_call("eth_getCode", [address, block_tag])
-        if not isinstance(block, dict) or not isinstance(block.get("hash"), str):
-            raise ValueError("eth_getBlockByNumber did not return a block hash")
         if not isinstance(runtime_bytecode, str):
             raise ValueError("eth_getCode returned a non-string result")
-        return {"block_hash": block["hash"], "runtime_bytecode": runtime_bytecode}
+        return {"block_hash": block["block_hash"], "runtime_bytecode": runtime_bytecode}
+
+    def eth_call_word(address: str, signature: str, block_tag: str, argument: int | None = None) -> int:
+        selector = ethereum_keccak256(signature.encode("ascii"))[:10]
+        data = selector if argument is None else selector + argument.to_bytes(32, "big").hex()
+        result = rpc_call("eth_call", [{"to": address, "data": data}, block_tag])
+        if (
+            not isinstance(result, str)
+            or len(result) != 66
+            or not result.startswith("0x")
+            or any(character not in "0123456789abcdefABCDEF" for character in result[2:])
+        ):
+            raise ValueError(f"eth_call {signature} did not return one ABI word")
+        return int(result, 16)
+
+    def eth_call_words(address: str, data: str, block_tag: str, count: int) -> list[int]:
+        result = rpc_call("eth_call", [{"to": address, "data": data}, block_tag])
+        if (
+            not isinstance(result, str)
+            or len(result) != 2 + count * 64
+            or not result.startswith("0x")
+            or any(character not in "0123456789abcdefABCDEF" for character in result[2:])
+        ):
+            raise ValueError("eth_call returned malformed ABI words")
+        return [int(result[2 + index * 64:2 + (index + 1) * 64], 16) for index in range(count)]
+
+    def read_wallet_session_state(
+        network: str,
+        chain_id: int,
+        address: str,
+        block_number: int,
+        query: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        del network
+        if set(query) != {"install_transaction_hash", "permissions"}:
+            raise ValueError("wallet session query has unexpected fields")
+        block_tag = hex(block_number)
+        block = checked_block(chain_id, block_tag)
+        if "block_timestamp" not in block:
+            raise ValueError("wallet state block is missing its canonical timestamp")
+        finalized = checked_block(chain_id, "finalized")
+        if block_number > finalized["block_number"] or checked_block(
+            chain_id, hex(finalized["block_number"])
+        ) != finalized:
+            raise ValueError("wallet state block is not canonically finalized")
+        receipt = rpc_call("eth_getTransactionReceipt", [query["install_transaction_hash"]])
+        if not isinstance(receipt, dict):
+            raise ValueError("wallet installation receipt is unavailable")
+        transaction_receipt = {
+            "transaction_hash": str(receipt.get("transactionHash", "")).casefold(),
+            "block_number": int(str(receipt.get("blockNumber", "0x0")), 16),
+            "block_hash": str(receipt.get("blockHash", "")).casefold(),
+            "transaction_index": int(str(receipt.get("transactionIndex", "0x0")), 16),
+            "status": int(str(receipt.get("status", "0x0")), 16),
+        }
+        creation_transaction = rpc_call(
+            "eth_getTransactionByHash", [query["install_transaction_hash"]]
+        )
+        if not isinstance(creation_transaction, dict):
+            raise ValueError("wallet creation transaction is unavailable")
+        install_block = checked_block(chain_id, hex(transaction_receipt["block_number"]))
+        if (
+            transaction_receipt["block_number"] > finalized["block_number"]
+            or install_block["block_hash"].casefold() != transaction_receipt["block_hash"]
+        ):
+            raise ValueError("wallet installation receipt is not canonically finalized")
+        raw_logs = receipt.get("logs")
+        if not isinstance(raw_logs, list):
+            raise ValueError("wallet creation receipt logs are unavailable")
+        creation_logs = []
+        for log in raw_logs:
+            if not isinstance(log, dict) or not isinstance(log.get("topics"), list):
+                raise ValueError("wallet creation receipt contains malformed logs")
+            creation_logs.append({
+                "address": str(log.get("address", "")).casefold(),
+                "topics": [str(topic).casefold() for topic in log["topics"]],
+                "data": str(log.get("data", "")).casefold(),
+            })
+        runtime_bytecode = rpc_call("eth_getCode", [address, block_tag])
+        if (
+            not isinstance(runtime_bytecode, str)
+            or not runtime_bytecode.startswith("0x")
+            or len(runtime_bytecode) % 2 != 0
+        ):
+            raise ValueError("wallet runtime bytecode is malformed")
+        runtime_code_hash = ethereum_keccak256(bytes.fromhex(runtime_bytecode[2:]))
+        owner_address = abi_address(eth_call_word(address, "owner()", block_tag), "owner()")
+        normalized_creation = {
+            "transaction_hash": str(creation_transaction.get("hash", "")).casefold(),
+            "from": str(creation_transaction.get("from", "")).casefold(),
+            "to": creation_transaction.get("to"),
+            "contract_address": str(receipt.get("contractAddress", "")).casefold(),
+            "input": str(creation_transaction.get("input", "")).casefold(),
+        }
+        if (
+            normalized_creation["transaction_hash"] != str(query["install_transaction_hash"]).casefold()
+            or normalized_creation["from"] != owner_address
+            or normalized_creation["to"] is not None
+            or normalized_creation["contract_address"] != address.casefold()
+        ):
+            raise ValueError("wallet creation transaction does not bind owner and created wallet")
+        session_key = abi_address(eth_call_word(address, "sessionKey()", block_tag), "sessionKey()")
+        session_expires = eth_call_word(address, "sessionExpiresAt()", block_tag)
+        deployment_policy_mutation_epoch = eth_call_word(
+            address, "policyMutationEpoch()", hex(transaction_receipt["block_number"])
+        )
+        policies = []
+        permissions = query.get("permissions")
+        if not isinstance(permissions, list):
+            raise ValueError("wallet session permissions query must be an array")
+        for permission in permissions:
+            target = str(permission["target_address"])
+            selector = str(permission["selector"])
+            allowed_data = ethereum_keccak256(b"allowed(address,bytes4)")[:10]
+            allowed_data += target[2:].rjust(64, "0") + selector[2:].ljust(64, "0")
+            if eth_call_words(address, allowed_data, block_tag, 1)[0] != 1:
+                raise ValueError("wallet target/selector is not allowlisted")
+            policy_data = ethereum_keccak256(b"callPolicies(address,bytes4)")[:10]
+            policy_data += target[2:].rjust(64, "0") + selector[2:].ljust(64, "0")
+            configured, expires_at, max_calls, calls, policy_chain, calldata_hash, scope_hash = eth_call_words(
+                address, policy_data, block_tag, 7
+            )
+            if configured != 1:
+                raise ValueError("wallet call policy is not configured")
+            policies.append({
+                **permission,
+                "calldata_hash": "0x" + calldata_hash.to_bytes(32, "big").hex(),
+                "scope_hash": "0x" + scope_hash.to_bytes(32, "big").hex(),
+                "max_calls": max_calls,
+                "current_calls": calls,
+                "policy_expires_at_utc": datetime.fromtimestamp(expires_at, timezone.utc).isoformat().replace("+00:00", "Z"),
+            })
+            if policy_chain != chain_id:
+                raise ValueError("wallet call policy chain ID mismatch")
+        wallet_state = {
+            "wallet_address": address.casefold(),
+            "allowlisted_policy_count": eth_call_word(address, "allowlistedPolicyCount()", block_tag),
+            "policy_mutation_epoch": eth_call_word(address, "policyMutationEpoch()", block_tag),
+            "session_key": session_key,
+            "session_chain_id": eth_call_word(address, "sessionChainId()", block_tag),
+            "session_expires_at_utc": datetime.fromtimestamp(session_expires, timezone.utc).isoformat().replace("+00:00", "Z"),
+            "revoked": bool(eth_call_word(address, "revoked()", block_tag)),
+            "per_call_value_cap_wei": str(eth_call_word(address, "perCallValueCapWei()", block_tag)),
+            "total_spend_cap_wei": str(eth_call_word(address, "totalSpendCapWei()", block_tag)),
+            "spent_wei": str(eth_call_word(address, "spentWei()", block_tag)),
+            "policies": policies,
+        }
+        return {
+            "block_hash": block["block_hash"].casefold(),
+            "block_timestamp": block["block_timestamp"],
+            "install_block_timestamp": install_block.get("block_timestamp"),
+            "deployment_policy_mutation_epoch": deployment_policy_mutation_epoch,
+            "runtime_bytecode": runtime_bytecode.casefold(),
+            "runtime_code_hash": runtime_code_hash,
+            "owner_address": owner_address,
+            "creation_transaction": normalized_creation,
+            "creation_logs": creation_logs,
+            "transaction_receipt": transaction_receipt,
+            "wallet_state": wallet_state,
+        }
+
+    def replay_wallet_call(
+        network: str,
+        chain_id: int,
+        address: str,
+        block_number: int,
+        replay_call: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        del network
+        if str(replay_call.get("to", "")).casefold() != address.casefold():
+            raise ValueError("wallet replay target does not match requested wallet")
+        block_tag = hex(block_number)
+        block = checked_block(chain_id, block_tag)
+        finalized = checked_block(chain_id, "finalized")
+        if block_number > finalized["block_number"] or checked_block(
+            chain_id, hex(finalized["block_number"])
+        ) != finalized:
+            raise ValueError("wallet replay block is not canonically finalized")
+        response = rpc_exchange("eth_call", [dict(replay_call), block_tag])
+        if "error" in response:
+            error = response["error"]
+            raw = error.get("data") if isinstance(error, dict) else None
+            if not isinstance(raw, str):
+                raise ValueError("eth_call revert did not expose canonical raw error data")
+            return {"block_hash": block["block_hash"].casefold(), "reverted": True, "raw_result": raw.casefold()}
+        result = response.get("result")
+        if not isinstance(result, str):
+            raise ValueError("eth_call replay returned a malformed result")
+        return {"block_hash": block["block_hash"].casefold(), "reverted": False, "raw_result": result.casefold()}
+
+    def recheck_operational_wallets(
+        network: str,
+        chain_id: int,
+        issued_at_utc: str,
+        queries: list[Mapping[str, Any]],
+    ) -> Mapping[str, Any]:
+        del network, issued_at_utc
+        finalized = checked_block(chain_id, "finalized")
+        if "block_timestamp" not in finalized or checked_block(
+            chain_id, hex(finalized["block_number"])
+        ) != finalized:
+            raise ValueError("authorization wallet recheck finalized block is not canonical")
+        wallets = []
+        for query in queries:
+            state = read_wallet_session_state(
+                "base-sepolia" if chain_id == 84532 else "base-mainnet",
+                chain_id, query["wallet_address"], finalized["block_number"],
+                {
+                    "install_transaction_hash": query["install_transaction_hash"],
+                    "permissions": query["permissions"],
+                },
+            )
+            wallet = state["wallet_state"]
+            wallets.append({
+                "board_number": query["board_number"],
+                "problem_id": query["problem_id"],
+                "wallet_address": str(query["wallet_address"]).casefold(),
+                "runtime_bytecode": state["runtime_bytecode"],
+                "runtime_code_hash": state["runtime_code_hash"],
+                "owner_address": state["owner_address"],
+                "allowlisted_policy_count": wallet["allowlisted_policy_count"],
+                "policy_mutation_epoch_baseline": state["deployment_policy_mutation_epoch"],
+                "policy_mutation_epoch": wallet["policy_mutation_epoch"],
+                "session_key": wallet["session_key"],
+                "session_chain_id": wallet["session_chain_id"],
+                "session_expires_at_utc": wallet["session_expires_at_utc"],
+                "revoked": wallet["revoked"],
+                "per_call_value_cap_wei": wallet["per_call_value_cap_wei"],
+                "total_spend_cap_wei": wallet["total_spend_cap_wei"],
+                "spent_wei": wallet["spent_wei"],
+                "policies": wallet["policies"],
+            })
+        return {
+            "finalized_block": finalized,
+            "wallets": wallets,
+        }
+
+    def abi_address(word: int, signature: str) -> str:
+        if word >= 1 << 160:
+            raise ValueError(f"eth_call {signature} returned a non-canonical ABI address")
+        return "0x" + word.to_bytes(20, "big").hex()
+
+    def read_governance_state(
+        network: str, chain_id: int, address: str, block_number: int
+    ) -> dict[str, Any]:
+        del network
+        def governance_state_at(block_tag: str) -> dict[str, Any]:
+            signer_count = eth_call_word(address, "signerCount()", block_tag)
+            if signer_count > 256:
+                raise ValueError("deployed timelock signerCount exceeds the governance evidence limit")
+            signers = [
+                abi_address(
+                    eth_call_word(address, "signers(uint256)", block_tag, index),
+                    "signers(uint256)",
+                )
+                for index in range(signer_count)
+            ]
+            guardian_word = eth_call_word(address, "guardian()", block_tag)
+            return {
+                "signer_count": signer_count,
+                "signers": signers,
+                "threshold": eth_call_word(address, "threshold()", block_tag),
+                "delay_seconds": eth_call_word(address, "delay()", block_tag),
+                "guardian": abi_address(guardian_word, "guardian()"),
+                "governance_epoch": eth_call_word(address, "governanceEpoch()", block_tag),
+            }
+
+        block_tag = hex(block_number)
+        block = checked_block(chain_id, block_tag)
+        state = governance_state_at(block_tag)
+        finalized = checked_block(chain_id, "finalized")
+        head = checked_block(chain_id, "latest")
+        finalized_canonical = checked_block(chain_id, hex(finalized["block_number"]))
+        if finalized_canonical != finalized:
+            raise ValueError("finalized tag does not match the canonical block at its height")
+        live_state = governance_state_at(hex(finalized["block_number"]))
+        return {
+            "block_hash": block["block_hash"],
+            "live_finalized": finalized,
+            "live_head": head,
+            "governance_state": state,
+            "live_governance_state": live_state,
+        }
+
+    setattr(read_chain, "read_governance_state", read_governance_state)
+    setattr(read_chain, "read_wallet_session_state", read_wallet_session_state)
+    setattr(read_chain, "replay_wallet_call", replay_wallet_call)
+    setattr(read_chain, "recheck_operational_wallets", recheck_operational_wallets)
 
     return read_chain
+
+
+class _GovernanceQuorumChainReader:
+    def __init__(self, policy: Mapping[str, Any]):
+        self._network = str(policy["network"])
+        self._chain_id = int(policy["chain_id"])
+        self._required = int(policy["rpc_quorum"])
+        self._max_head_lag = int(policy["max_head_lag_blocks"])
+        self._max_finalized_lag = int(policy["max_finalized_lag_blocks"])
+        self._providers = [
+            (
+                str(endpoint["provider_id"]),
+                str(endpoint["ownership_group"]),
+                _build_http_chain_reader(str(endpoint["url"])),
+            )
+            for endpoint in policy["rpc_endpoints"]
+        ]
+
+    def _check_scope(self, network: str, chain_id: int) -> None:
+        if network != self._network or chain_id != self._chain_id:
+            raise ValueError("governance RPC policy does not authorize the requested release chain")
+
+    def _agreed(
+        self,
+        observations: list[tuple[str, str, Mapping[str, Any]]],
+        *,
+        state_key: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+    ) -> tuple[Mapping[str, Any], list[tuple[str, str]]]:
+        groups: dict[str, list[tuple[str, str, Mapping[str, Any]]]] = {}
+        for provider_id, ownership_group, observation in observations:
+            agreed_state = state_key(observation) if state_key is not None else observation
+            groups.setdefault(canonical_json(agreed_state), []).append(
+                (provider_id, ownership_group, observation)
+            )
+        agreed = [items for items in groups.values() if len(items) >= self._required]
+        if len(agreed) != 1:
+            raise ValueError("pinned governance RPC providers did not reach one state quorum")
+        providers = [(provider_id, ownership_group) for provider_id, ownership_group, _ in agreed[0]]
+        return agreed[0][0][2], providers
+
+    def _collect(
+        self, operation: Callable[[Any], Mapping[str, Any]]
+    ) -> list[tuple[str, str, Mapping[str, Any]]]:
+        observations: list[tuple[str, str, Mapping[str, Any]]] = []
+        for provider_id, ownership_group, reader in self._providers:
+            try:
+                observations.append((provider_id, ownership_group, operation(reader)))
+            except Exception:
+                continue
+        if len(observations) < self._required:
+            raise ValueError("pinned governance RPC providers did not return a transport quorum")
+        return observations
+
+    def __call__(
+        self, network: str, chain_id: int, address: str, block_number: int
+    ) -> Mapping[str, Any]:
+        self._check_scope(network, chain_id)
+        observations = self._collect(
+            lambda reader: reader(network, chain_id, address, block_number)
+        )
+        return self._agreed(observations)[0]
+
+    def read_governance_state(
+        self, network: str, chain_id: int, address: str, block_number: int
+    ) -> Mapping[str, Any]:
+        self._check_scope(network, chain_id)
+        def read(reader: Any) -> Mapping[str, Any]:
+            method = getattr(reader, "read_governance_state", None)
+            if not callable(method):
+                raise ValueError("governance RPC provider cannot query timelock ABI state")
+            return method(network, chain_id, address, block_number)
+
+        observations = self._collect(read)
+        bounded: list[tuple[str, str, Mapping[str, Any], int, int]] = []
+        for item in observations:
+            observation = item[2]
+            try:
+                head_number = observation["live_head"]["block_number"]
+                finalized_number = observation["live_finalized"]["block_number"]
+            except (KeyError, TypeError):
+                continue
+            if (
+                not isinstance(head_number, int)
+                or isinstance(head_number, bool)
+                or not isinstance(finalized_number, int)
+                or isinstance(finalized_number, bool)
+                or finalized_number < 0
+                or head_number < finalized_number
+            ):
+                continue
+            if head_number - finalized_number > self._max_finalized_lag:
+                continue
+            bounded.append((*item, head_number, finalized_number))
+        if len(bounded) < self._required:
+            raise ValueError("pinned governance RPC providers did not reach the bounded freshness quorum")
+
+        quorum_head = sorted((item[3] for item in bounded), reverse=True)[self._required - 1]
+        fresh = [
+            item[:3] for item in bounded
+            if abs(quorum_head - item[3]) <= self._max_head_lag
+        ]
+        if len(fresh) < self._required:
+            raise ValueError("pinned governance RPC providers did not reach the bounded freshness quorum")
+
+        def canonical_governance_state(value: Mapping[str, Any]) -> Mapping[str, Any]:
+            return {
+                "completion_block_hash": value.get("block_hash"),
+                "completion_state": value.get("governance_state"),
+                "finalized_state": value.get("live_governance_state"),
+            }
+
+        observation, providers = self._agreed(fresh, state_key=canonical_governance_state)
+        return {
+            **observation,
+            "rpc_quorum": {
+                "required": self._required,
+                "provider_ids": [provider_id for provider_id, _ in providers],
+                "ownership_groups": [ownership_group for _, ownership_group in providers],
+            },
+        }
+
+    def read_wallet_session_state(
+        self,
+        network: str,
+        chain_id: int,
+        address: str,
+        block_number: int,
+        query: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        self._check_scope(network, chain_id)
+        def read(reader: Any) -> Mapping[str, Any]:
+            method = getattr(reader, "read_wallet_session_state", None)
+            if not callable(method):
+                raise ValueError("RPC provider cannot query P42AgentWallet state")
+            return method(network, chain_id, address, block_number, query)
+        observations = self._collect(read)
+        observation, providers = self._agreed(observations)
+        if len({group for _, group in providers}) < self._required:
+            raise ValueError("wallet state quorum lacks independent operator ownership")
+        return observation
+
+    def replay_wallet_call(
+        self,
+        network: str,
+        chain_id: int,
+        address: str,
+        block_number: int,
+        replay_call: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        self._check_scope(network, chain_id)
+        def replay(reader: Any) -> Mapping[str, Any]:
+            method = getattr(reader, "replay_wallet_call", None)
+            if not callable(method):
+                raise ValueError("RPC provider cannot replay P42AgentWallet calls")
+            return method(network, chain_id, address, block_number, replay_call)
+        observations = self._collect(replay)
+        observation, providers = self._agreed(observations)
+        if len({group for _, group in providers}) < self._required:
+            raise ValueError("wallet replay quorum lacks independent operator ownership")
+        return observation
+
+    def recheck_operational_wallets(
+        self,
+        network: str,
+        chain_id: int,
+        issued_at_utc: str,
+        queries: list[Mapping[str, Any]],
+    ) -> Mapping[str, Any]:
+        self._check_scope(network, chain_id)
+        def recheck(reader: Any) -> Mapping[str, Any]:
+            method = getattr(reader, "recheck_operational_wallets", None)
+            if not callable(method):
+                raise ValueError("RPC provider cannot recheck exact-ten operational wallets")
+            return method(network, chain_id, issued_at_utc, queries)
+        observations = self._collect(recheck)
+        observation, providers = self._agreed(observations)
+        if len({group for _, group in providers}) < self._required:
+            raise ValueError("authorization wallet recheck lacks independent operator ownership")
+        return {
+            **observation,
+            "rpc_quorum": {
+                "required": self._required,
+                "provider_ids": [provider_id for provider_id, _ in providers],
+                "ownership_groups": [group for _, group in providers],
+            },
+        }
+
+    def post_service_probe(
+        self, endpoint_url: str, probe_request: Mapping[str, Any], max_response_bytes: int
+    ) -> Mapping[str, Any]:
+        class NoRedirect(urllib_request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                del req, fp, code, msg, headers, newurl
+                return None
+
+        payload = (canonical_json(dict(probe_request)) + "\n").encode("ascii")
+        request = urllib_request.Request(
+            endpoint_url, data=payload, method="POST",
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        opener = urllib_request.build_opener(NoRedirect())
+        with opener.open(request, timeout=10) as response:
+            if response.status != 200 or response.geturl() != endpoint_url:
+                raise ValueError("service probe endpoint redirected or returned non-200")
+            declared = response.headers.get("Content-Length")
+            if declared is not None and int(declared) > max_response_bytes:
+                raise ValueError("service probe response exceeds the protected bound")
+            raw = response.read(max_response_bytes + 1)
+        if len(raw) > max_response_bytes:
+            raise ValueError("service probe response exceeds the protected bound")
+        parsed = loads_strict_json(raw)
+        if not isinstance(parsed, dict) or raw != (canonical_json(parsed) + "\n").encode("ascii"):
+            raise ValueError("service probe response is not canonical JSON with one LF")
+        return parsed
 
 
 class _OpenWitnessQuorumChainReader:
@@ -269,6 +971,22 @@ def _add_attestation_validation_args(parser: argparse.ArgumentParser) -> None:
         "--chain-rpc-url",
         required=True,
         help="JSON-RPC endpoint queried at each recorded bytecode evidence block",
+    )
+
+
+def _add_governance_validation_args(parser: argparse.ArgumentParser) -> None:
+    _add_offline_attestation_validation_args(parser)
+    parser.add_argument(
+        "--chain-rpc-url",
+        help="legacy v1-only single RPC endpoint; rejected for governance v2",
+    )
+    parser.add_argument(
+        "--governance-rpc-policy",
+        help="test-only RPC quorum policy; production uses the fixed /etc/p42 policy",
+    )
+    parser.add_argument(
+        "--governance-rpc-policy-digest",
+        help="test-only pinned digest for --governance-rpc-policy",
     )
 
 
@@ -813,6 +1531,7 @@ def _cmd_runner_work_once(args: argparse.Namespace) -> int:
             lease_seconds=args.lease_seconds,
             sandbox_staging_root=args.sandbox_staging_root,
             docker_host=args.docker_host,
+            allow_test_identity_derivation=args.allow_unsafe_local_fixture,
         )
     except (AdmissionError, RunnerQueueError, RunnerWorkerError, OSError) as exc:
         print(str(exc), file=sys.stderr)
@@ -834,6 +1553,7 @@ def _cmd_runner_drain(args: argparse.Namespace) -> int:
             max_jobs=args.max_jobs,
             sandbox_staging_root=args.sandbox_staging_root,
             docker_host=args.docker_host,
+            allow_test_identity_derivation=args.allow_unsafe_local_fixture,
         )
     except (AdmissionError, RunnerQueueError, RunnerWorkerError, OSError) as exc:
         print(str(exc), file=sys.stderr)
@@ -916,9 +1636,30 @@ def _cmd_adversarial_campaign_validate(args: argparse.Namespace) -> int:
 
 def _cmd_governance_signoff_validate(args: argparse.Namespace) -> int:
     try:
-        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        raw_report = load_evidence_file(args.report)
+        trust_registry = _load_pinned_trust_registry(
+            args.trust_registry, allow_test=args.allow_test_trust_registry
+        )
+        artifact_root = Path(args.artifact_root).resolve()
+        if not artifact_root.is_dir():
+            raise AdmissionError("--artifact-root must be an existing directory")
+        if raw_report.get("schema_version") == "p42-governance-signoff/v2":
+            if args.chain_rpc_url is not None:
+                raise AdmissionError("governance v2 rejects caller-selected --chain-rpc-url")
+            policy = _load_governance_rpc_policy(
+                trust_environment=str(trust_registry.get("environment")),
+                test_policy_path=args.governance_rpc_policy,
+                test_digest_path=args.governance_rpc_policy_digest,
+            )
+            chain_reader = _GovernanceQuorumChainReader(policy)
+        else:
+            if args.governance_rpc_policy is not None or args.governance_rpc_policy_digest is not None:
+                raise AdmissionError("historical governance v1 cannot consume a production RPC quorum policy")
+            if args.chain_rpc_url is None:
+                raise AdmissionError("historical governance v1 requires --chain-rpc-url")
+            chain_reader = _build_http_chain_reader(args.chain_rpc_url)
         report = normalize_governance_signoff(
-            load_evidence_file(args.report),
+            raw_report,
             trust_registry=trust_registry,
             artifact_root=artifact_root,
             chain_reader=chain_reader,
@@ -956,9 +1697,31 @@ def _cmd_legal_memo_validate(args: argparse.Namespace) -> int:
 
 def _cmd_operational_controls_validate(args: argparse.Namespace) -> int:
     try:
-        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        trust_registry = _load_pinned_trust_registry(
+            args.trust_registry,
+            allow_test=args.allow_test_trust_registry,
+        )
+        artifact_root = Path(args.artifact_root).resolve()
+        if not artifact_root.is_dir():
+            raise AdmissionError("--artifact-root must be an existing directory")
+        source_report = load_evidence_file(args.report)
+        if source_report.get("schema_version") == "p42-operational-controls/v3":
+            if args.chain_rpc_url is not None:
+                raise AdmissionError(
+                    "operational controls v3 rejects caller-selected --chain-rpc-url"
+                )
+            policy = _load_governance_rpc_policy(
+                trust_environment=trust_registry["environment"],
+                test_policy_path=args.governance_rpc_policy,
+                test_digest_path=args.governance_rpc_policy_digest,
+            )
+            chain_reader = _GovernanceQuorumChainReader(policy)
+        else:
+            if args.chain_rpc_url is None:
+                raise AdmissionError("historical operational controls require --chain-rpc-url")
+            chain_reader = _build_http_chain_reader(args.chain_rpc_url)
         report = normalize_operational_controls(
-            load_evidence_file(args.report),
+            source_report,
             trust_registry=trust_registry,
             artifact_root=artifact_root,
             chain_reader=chain_reader,
@@ -990,22 +1753,33 @@ def _cmd_security_audit_validate(args: argparse.Namespace) -> int:
 
 def _cmd_production_launch_authorization_validate(args: argparse.Namespace) -> int:
     try:
-        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        trust_registry = _load_pinned_trust_registry(
+            args.trust_registry,
+            allow_test=args.allow_test_trust_registry,
+        )
+        artifact_root = Path(args.artifact_root).resolve()
+        if not artifact_root.is_dir():
+            raise AdmissionError("--artifact-root must be an existing directory")
         if trust_registry.get("environment") != "production":
             raise LaunchAuthorizationError(
                 "production launch authorization never accepts a test trust registry"
             )
-        now_utc = (
-            datetime.fromisoformat(args.now_utc.replace("Z", "+00:00"))
-            if args.now_utc
-            else None
+        if args.chain_rpc_url is not None:
+            raise AdmissionError(
+                "production launch authorization rejects caller-selected --chain-rpc-url"
+            )
+        policy = _load_governance_rpc_policy(
+            trust_environment="production",
+            test_policy_path=args.governance_rpc_policy,
+            test_digest_path=args.governance_rpc_policy_digest,
         )
+        chain_reader = _GovernanceQuorumChainReader(policy)
         report = normalize_launch_authorization(
             load_evidence_file(args.authorization),
             trust_registry=trust_registry,
             artifact_root=artifact_root,
             chain_reader=chain_reader,
-            now_utc=now_utc,
+            now_utc=None,
         )
         _enforce_gate_schema(report, "production-launch-authorization.schema.json")
     except (
@@ -1183,7 +1957,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     admit_release_ready = subparsers.add_parser(
         "admit-release-ready",
-        help="require matrix admission and an exact v2 verifier-source/release-config dossier",
+        help="require matrix admission and an exact v3 verifier image release dossier",
     )
     admit_release_ready.add_argument("--problem", required=True)
     admit_release_matrix = admit_release_ready.add_mutually_exclusive_group(required=True)
@@ -1403,7 +2177,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate and hash Gate 2 custody/governance signoff evidence",
     )
     governance_signoff.add_argument("--report", required=True)
-    _add_attestation_validation_args(governance_signoff)
+    _add_governance_validation_args(governance_signoff)
     governance_signoff.add_argument("--output")
     governance_signoff.set_defaults(func=_cmd_governance_signoff_validate)
 
@@ -1425,7 +2199,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate and hash Gate 2 wallet/session and abuse-control evidence",
     )
     operational_controls.add_argument("--report", required=True)
-    _add_attestation_validation_args(operational_controls)
+    _add_governance_validation_args(operational_controls)
     operational_controls.add_argument("--output")
     operational_controls.set_defaults(func=_cmd_operational_controls_validate)
 
@@ -1443,8 +2217,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="compose every production gate into one release-bound funding authorization",
     )
     launch_authorization.add_argument("--authorization", required=True)
-    _add_attestation_validation_args(launch_authorization)
-    launch_authorization.add_argument("--now-utc")
+    _add_governance_validation_args(launch_authorization)
     launch_authorization.add_argument("--output")
     launch_authorization.set_defaults(
         func=_cmd_production_launch_authorization_validate

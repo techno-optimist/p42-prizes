@@ -461,6 +461,7 @@ def _validate_runner_transcript_shape(transcript: Mapping[str, Any], prefix: str
         "generated_at_utc",
         "started_at_utc",
         "problem",
+        "board_identity",
         "solution",
         "da",
         "resource_limits",
@@ -475,6 +476,43 @@ def _validate_runner_transcript_shape(transcript: Mapping[str, Any], prefix: str
         raise AdversarialCampaignError(f"{prefix}.schema_version must be p42-runner-transcript/v1")
     for key in ("job_id", "generated_at_utc", "started_at_utc", "problem", "solution", "transcript_hash"):
         _require_string(transcript, key, prefix)
+    identity = _require_mapping(transcript["board_identity"], f"{prefix}.board_identity")
+    identity_keys = {
+        "problem_slug",
+        "problem_path",
+        "verifier_command",
+        "verifier_image",
+        "verifier_source_sha256",
+        "resource_identity",
+        "memory_mb",
+        "wall_seconds",
+    }
+    if set(identity) != identity_keys:
+        raise AdversarialCampaignError(
+            f"{prefix}.board_identity must contain the exact production identity fields"
+        )
+    for key in ("problem_slug", "problem_path", "verifier_command"):
+        _require_string(identity, key, f"{prefix}.board_identity")
+    if identity["problem_path"] != transcript["problem"]:
+        raise AdversarialCampaignError(
+            f"{prefix}.board_identity.problem_path must match {prefix}.problem"
+        )
+    image_repository, separator, image_digest = identity["verifier_image"].rpartition("@") \
+        if isinstance(identity["verifier_image"], str) else ("", "", "")
+    if not separator or not image_repository or "@" in image_repository or not _is_sha256(image_digest):
+        raise AdversarialCampaignError(
+            f"{prefix}.board_identity.verifier_image must be an immutable repository@sha256 reference"
+        )
+    for key in ("verifier_source_sha256", "resource_identity"):
+        if not _is_sha256(identity[key]):
+            raise AdversarialCampaignError(
+                f"{prefix}.board_identity.{key} must be a canonical SHA-256 digest"
+            )
+    for key in ("memory_mb", "wall_seconds"):
+        if not isinstance(identity[key], int) or isinstance(identity[key], bool) or identity[key] < 1:
+            raise AdversarialCampaignError(
+                f"{prefix}.board_identity.{key} must be a positive integer"
+            )
     da = transcript["da"]
     if da is not None and (not isinstance(da, dict) or not isinstance(da.get("ok"), bool)):
         raise AdversarialCampaignError(f"{prefix}.da must be null or an object with boolean ok")

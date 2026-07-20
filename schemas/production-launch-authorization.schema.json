@@ -15,6 +15,8 @@
     "release_binding",
     "artifacts",
     "problem_reviews",
+    "operational_wallet_recheck",
+    "operational_service_probe_recheck",
     "authorizers",
     "authorization_digest",
     "authorization_signatures"
@@ -37,6 +39,8 @@
       "maxItems": 10,
       "items": { "$ref": "#/$defs/problemReview" }
     },
+    "operational_wallet_recheck": { "$ref": "#/$defs/operationalWalletRecheck" },
+    "operational_service_probe_recheck": { "$ref": "#/$defs/operationalServiceProbeRecheck" },
     "authorizers": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/authorizer" } },
     "authorization_digest": { "$ref": "#/$defs/hash" },
     "authorization_signatures": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/signature" } }
@@ -95,6 +99,216 @@
         "signature": { "type": "string", "pattern": "^ed25519:[a-f0-9]{128}$" }
       }
     },
+    "sessionPolicy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["action", "target_address", "selector", "calldata", "calldata_hash", "scope", "scope_hash", "max_calls", "current_calls", "policy_expires_at_utc"],
+      "properties": {
+        "action": { "enum": ["commit", "reveal", "challenge", "claim", "fund"] },
+        "target_address": { "type": "string", "pattern": "^0x[a-f0-9]{40}$" },
+        "selector": { "type": "string", "pattern": "^0x(?!00000000$)[a-f0-9]{8}$" },
+        "calldata": { "type": "string", "pattern": "^0x[a-f0-9]{10,}$" },
+        "calldata_hash": { "type": "string", "pattern": "^0x[a-f0-9]{64}$" },
+        "scope": {
+          "type": "object", "additionalProperties": false,
+          "required": ["problem_id", "action", "wallet_address", "session_key"],
+          "properties": {
+            "problem_id": { "type": "string", "minLength": 1 },
+            "action": { "enum": ["commit", "reveal", "challenge", "claim", "fund"] },
+            "wallet_address": { "type": "string", "pattern": "^0x[a-f0-9]{40}$" },
+            "session_key": { "type": "string", "pattern": "^0x[a-f0-9]{40}$" }
+          }
+        },
+        "scope_hash": { "type": "string", "pattern": "^0x[a-f0-9]{64}$" },
+        "max_calls": { "const": 1 },
+        "current_calls": { "const": 0 },
+        "policy_expires_at_utc": { "type": "string", "format": "date-time" }
+      }
+    },
+    "operationalWalletRecheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "operational_controls_hash", "operational_window_completed_at_utc", "authorization_issued_at_utc", "network", "chain_id", "finalized_block", "wallets", "rpc_quorum"],
+      "properties": {
+        "schema_version": { "const": "p42-operational-wallet-recheck/v1" },
+        "operational_controls_hash": { "$ref": "#/$defs/hash" },
+        "operational_window_completed_at_utc": { "type": "string", "format": "date-time" },
+        "authorization_issued_at_utc": { "type": "string", "format": "date-time" },
+        "network": { "enum": ["base-sepolia", "base-mainnet"] },
+        "chain_id": { "enum": [84532, 8453] },
+        "finalized_block": {
+          "type": "object", "additionalProperties": false,
+          "required": ["block_number", "block_hash", "block_timestamp"],
+          "properties": {
+            "block_number": { "type": "integer", "minimum": 1 },
+            "block_hash": { "type": "string", "pattern": "^0x[a-f0-9]{64}$" },
+            "block_timestamp": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "wallets": {
+          "type": "array", "minItems": 10, "maxItems": 10,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["board_number", "problem_id", "wallet_address", "runtime_bytecode", "runtime_code_hash", "owner_address", "allowlisted_policy_count", "policy_mutation_epoch_baseline", "policy_mutation_epoch", "session_key", "session_chain_id", "session_expires_at_utc", "revoked", "per_call_value_cap_wei", "total_spend_cap_wei", "spent_wei", "policies"],
+            "properties": {
+              "board_number": { "type": "integer", "minimum": 1, "maximum": 10 },
+              "problem_id": { "type": "string", "minLength": 1 },
+              "wallet_address": { "type": "string", "pattern": "^0x[a-f0-9]{40}$" },
+              "runtime_bytecode": { "type": "string", "pattern": "^0x(?:[a-f0-9]{2})+$" },
+              "runtime_code_hash": { "type": "string", "pattern": "^0x[a-f0-9]{64}$" },
+              "owner_address": { "type": "string", "pattern": "^0x[a-f0-9]{40}$" },
+              "allowlisted_policy_count": { "const": 5 },
+              "policy_mutation_epoch_baseline": { "const": 0 },
+              "policy_mutation_epoch": { "const": 5 },
+              "session_key": { "type": "string", "pattern": "^0x[a-f0-9]{40}$" },
+              "session_chain_id": { "enum": [84532, 8453] },
+              "session_expires_at_utc": { "type": "string", "format": "date-time" },
+              "revoked": { "const": false },
+              "per_call_value_cap_wei": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+              "total_spend_cap_wei": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+              "spent_wei": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+              "policies": { "type": "array", "minItems": 5, "maxItems": 5, "items": { "$ref": "#/$defs/sessionPolicy" } }
+            }
+          }
+        },
+        "rpc_quorum": {
+          "type": "object", "additionalProperties": false,
+          "required": ["required", "provider_ids", "ownership_groups"],
+          "properties": {
+            "required": { "const": 2 },
+            "provider_ids": { "type": "array", "minItems": 2, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+            "ownership_groups": { "type": "array", "minItems": 2, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+          }
+        }
+      }
+    },
+    "operationalServiceProbeRecheck": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "challenge_nonce", "challenge_issued_at_utc", "operational_controls_hash", "release_binding_hash", "challenge_digest", "registry_hash", "controls"],
+      "properties": {
+        "schema_version": { "const": "p42-operational-service-probe-recheck/v1" },
+        "challenge_nonce": { "type": "string", "pattern": "^0x[a-f0-9]{64}$" },
+        "challenge_issued_at_utc": { "type": "string", "format": "date-time" },
+        "operational_controls_hash": { "$ref": "#/$defs/hash" },
+        "release_binding_hash": { "$ref": "#/$defs/hash" },
+        "challenge_digest": { "$ref": "#/$defs/hash" },
+        "registry_hash": { "$ref": "#/$defs/hash" },
+        "controls": {
+          "type": "array", "minItems": 7, "maxItems": 7,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["control", "request", "responses"],
+            "properties": {
+              "control": { "$ref": "#/$defs/serviceControl" },
+              "request": { "$ref": "#/$defs/serviceProbeRequest" },
+              "responses": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/serviceProbeResponse" } }
+            }
+          }
+        }
+      }
+    },
+    "serviceControl": { "enum": ["mutation_api_auth", "distributed_rate_limit", "distributed_idempotency", "abuse_alerting", "payload_size_limit", "payload_quarantine", "malware_archive_bomb_rejection"] },
+    "serviceProbeRequestItem": {
+      "type": "object", "additionalProperties": false,
+      "required": ["nonce", "timestamp_utc", "endpoint_id", "operation", "credential_class", "shared_key", "payload_size_bytes", "payload_digest"],
+      "properties": {
+        "nonce": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "timestamp_utc": { "type": "string", "format": "date-time" },
+        "endpoint_id": { "type": "string", "minLength": 3 },
+        "operation": { "type": "string", "minLength": 1 },
+        "credential_class": { "type": "string", "minLength": 1 },
+        "shared_key": { "type": "string", "minLength": 1 },
+        "payload_size_bytes": { "type": "integer", "minimum": 0 },
+        "payload_digest": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "serviceProbeRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "challenge_nonce", "challenge_issued_at_utc", "operational_controls_hash", "release_binding_hash", "challenge_digest", "control", "network", "chain_id", "service_id", "deployment_id", "build_digest", "request_sequence"],
+      "properties": {
+        "schema_version": { "const": "p42-service-probe-request/v1" },
+        "challenge_nonce": { "type": "string", "pattern": "^0x[a-f0-9]{64}$" },
+        "challenge_issued_at_utc": { "type": "string", "format": "date-time" },
+        "operational_controls_hash": { "$ref": "#/$defs/hash" },
+        "release_binding_hash": { "$ref": "#/$defs/hash" },
+        "challenge_digest": { "$ref": "#/$defs/hash" },
+        "control": { "$ref": "#/$defs/serviceControl" },
+        "network": { "enum": ["base-sepolia", "base-mainnet"] },
+        "chain_id": { "enum": [84532, 8453] },
+        "service_id": { "type": "string", "minLength": 8 },
+        "deployment_id": { "type": "string", "minLength": 8 },
+        "build_digest": { "$ref": "#/$defs/hash" },
+        "request_sequence": { "type": "array", "minItems": 2, "maxItems": 3, "items": { "$ref": "#/$defs/serviceProbeRequestItem" } }
+      }
+    },
+    "serviceProbeResponse": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "challenge_digest", "request_digest", "control", "release_binding_hash", "build_digest", "endpoint_url", "endpoint_id", "instance_id", "ownership_group", "responded_at_utc", "raw_outcomes", "derived_invariant", "signature"],
+      "properties": {
+        "schema_version": { "const": "p42-service-probe-response/v1" },
+        "challenge_digest": { "$ref": "#/$defs/hash" },
+        "request_digest": { "$ref": "#/$defs/hash" },
+        "control": { "$ref": "#/$defs/serviceControl" },
+        "release_binding_hash": { "$ref": "#/$defs/hash" },
+        "build_digest": { "$ref": "#/$defs/hash" },
+        "endpoint_url": { "type": "string", "pattern": "^https://" },
+        "endpoint_id": { "type": "string", "minLength": 3 },
+        "instance_id": { "type": "string", "minLength": 3 },
+        "ownership_group": { "type": "string", "minLength": 3 },
+        "responded_at_utc": { "type": "string", "format": "date-time" },
+        "raw_outcomes": { "type": "array", "minItems": 2, "maxItems": 3, "items": { "$ref": "#/$defs/serviceProbeRawOutcome" } },
+        "derived_invariant": { "$ref": "#/$defs/serviceProbeInvariant" },
+        "signature": { "type": "string", "pattern": "^ed25519:[a-f0-9]{128}$" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "control": { "enum": ["distributed_rate_limit", "distributed_idempotency", "payload_quarantine"] } }, "required": ["control"] },
+          "then": { "properties": { "raw_outcomes": { "minItems": 3, "maxItems": 3 } } }
+        },
+        {
+          "if": { "properties": { "control": { "enum": ["mutation_api_auth", "abuse_alerting", "payload_size_limit", "malware_archive_bomb_rejection"] } }, "required": ["control"] },
+          "then": { "properties": { "raw_outcomes": { "minItems": 2, "maxItems": 2 } } }
+        }
+      ]
+    },
+    "serviceProbeRawOutcome": {
+      "type": "object", "additionalProperties": false,
+      "required": ["nonce", "status", "raw_body"],
+      "properties": {
+        "nonce": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+        "raw_body": { "type": "string", "minLength": 2, "maxLength": 4096 },
+        "mutation_count": { "type": "integer", "minimum": 0 },
+        "shared_count": { "type": "integer", "minimum": 0 },
+        "alert_count": { "type": "integer", "minimum": 0 },
+        "persisted_bytes": { "type": "integer", "minimum": 0 },
+        "execution_count": { "type": "integer", "minimum": 0 },
+        "cpu_ms": { "type": "integer", "minimum": 0 },
+        "peak_memory_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "serviceProbeInvariant": {
+      "type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": {
+        "unauthorized_mutations": { "type": "integer", "minimum": 0 },
+        "authorized_mutations": { "type": "integer", "minimum": 0 },
+        "accepted": { "type": "integer", "minimum": 0 },
+        "rejected": { "type": "integer", "minimum": 0 },
+        "shared_counter": { "type": "integer", "minimum": 0 },
+        "mutation_count": { "type": "integer", "minimum": 0 },
+        "cross_instance_replay": { "type": "boolean" },
+        "conflict_rejected": { "type": "boolean" },
+        "alert_count": { "type": "integer", "minimum": 0 },
+        "deduplicated": { "type": "boolean" },
+        "limit_bytes": { "type": "integer", "minimum": 1 },
+        "boundary_accepted": { "type": "boolean" },
+        "plus_one_rejected": { "type": "boolean" },
+        "lifecycle": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "string" } },
+        "pre_release_executions": { "type": "integer", "minimum": 0 },
+        "max_cpu_ms": { "type": "integer", "minimum": 1 },
+        "max_peak_memory_bytes": { "type": "integer", "minimum": 1 },
+        "executions": { "type": "integer", "minimum": 0 }
+      }
+    },
     "artifacts": {
       "type": "object",
       "additionalProperties": false,
@@ -108,12 +322,16 @@
         "production_release_verification",
         "production_release_slate",
         "production_board_bindings",
+        "verifier_image_release",
+        "verifier_image_publication_journal",
         "release_capsule",
         "deployment_manifest",
         "reconciliation_report",
         "explorer_dossier",
         "explorer_operator_policy",
-        "activation_rpc_operator_registry"
+        "activation_rpc_operator_registry",
+        "production_timestamp_dossier",
+        "service_probe_endpoint_registry"
       ],
       "properties": {
         "security_audit": { "$ref": "#/$defs/artifact" },
@@ -125,12 +343,16 @@
         "production_release_verification": { "$ref": "#/$defs/artifact" },
         "production_release_slate": { "$ref": "#/$defs/artifact" },
         "production_board_bindings": { "$ref": "#/$defs/artifact" },
+        "verifier_image_release": { "$ref": "#/$defs/artifact" },
+        "verifier_image_publication_journal": { "$ref": "#/$defs/artifact" },
         "release_capsule": { "$ref": "#/$defs/artifact" },
         "deployment_manifest": { "$ref": "#/$defs/artifact" },
         "reconciliation_report": { "$ref": "#/$defs/artifact" },
         "explorer_dossier": { "$ref": "#/$defs/artifact" },
         "explorer_operator_policy": { "$ref": "#/$defs/artifact" },
-        "activation_rpc_operator_registry": { "$ref": "#/$defs/artifact" }
+        "activation_rpc_operator_registry": { "$ref": "#/$defs/artifact" },
+        "production_timestamp_dossier": { "$ref": "#/$defs/artifact" },
+        "service_probe_endpoint_registry": { "$ref": "#/$defs/artifact" }
       }
     },
     "problemReview": {

@@ -1,0 +1,69 @@
+[Unit]
+Description=P42 host-global verifier executor
+Requires=p42-verifier-docker.service
+After=p42-verifier-docker.service
+Before=p42-operator@.service
+OnFailure=p42-runtime-failure@%n.service
+StartLimitIntervalSec=30min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=p42-verifier-executor
+Group=p42-verifier-submitters
+LoadCredential=resolver-rerun-attestor-key:/etc/p42/verifier-executor/credentials/resolver-rerun-attestor-key.json
+ExecStartPre=/usr/bin/test -S /run/p42-verifier-docker/docker.sock
+ExecStart=/usr/bin/python3 /opt/p42/agent/verifier-executor.py \
+  --config /etc/p42/verifier-executor/boards.json \
+  --repository-root /opt/p42 \
+  --runtime-release /etc/p42/verifier-executor/runtime-release.json \
+  --runtime-release-sha256-file /etc/p42/verifier-executor/runtime-release.sha256 \
+  --socket /run/p42-verifier-executor/executor.sock \
+  --state /var/lib/p42/verifier-executor/state.json \
+  --lock /var/lib/p42/verifier-executor/executor.lock \
+  --cgroup-attestation /run/p42-verifier-docker/cgroup-attestation.json \
+  --reserve-memory-mb 2048 \
+  --memory-safety-factor 2.0 \
+  --authorization-fence-timeout-seconds 30 \
+  --operator-user-prefix p42-operator- \
+  --resolver-rerun-user-prefix p42-resolver-rerun- \
+  --resolver-rerun-attestor-key ${CREDENTIALS_DIRECTORY}/resolver-rerun-attestor-key \
+  --resolver-rerun-request-root /var/lib/p42/resolver-rerun-requests \
+  --resolver-rerun-state-root /var/lib/p42/resolver-rerun \
+  --docker-host unix:///run/p42-verifier-docker/docker.sock
+Restart=on-failure
+RestartSec=15s
+OOMPolicy=kill
+LimitCORE=0
+MemoryHigh=2G
+MemoryMax=3G
+MemorySwapMax=0
+TasksMax=512
+KillMode=mixed
+TimeoutStopSec=30s
+SendSIGKILL=yes
+UMask=0007
+RuntimeDirectory=p42-verifier-executor
+RuntimeDirectoryMode=0710
+StateDirectory=p42/verifier-executor
+StateDirectoryMode=0700
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadOnlyPaths=/etc/p42/verifier-executor /opt/p42 /var/lib/p42/resolver-rerun-requests /var/lib/p42/resolver-rerun
+ReadWritePaths=/var/lib/p42/verifier-executor /run/p42-verifier-executor
+InaccessiblePaths=/etc/p42/operator /etc/p42/resolver /var/lib/p42/resolver /var/lib/p42/runtime-evidence
+
+[Install]
+WantedBy=multi-user.target

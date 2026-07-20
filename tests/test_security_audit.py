@@ -5,16 +5,32 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-from attestation_helpers import AttestationFixture, attach_signatures, unsigned_hash
+from attestation_helpers import AttestationFixture, _sign
 from p42_prizes import cli
 from p42_prizes.security_audit import (
+    SECURITY_AUDIT_ATTESTATION_CLASS,
     SECURITY_AUDIT_SCHEMA_VERSION,
     SecurityAuditError,
     normalize_security_audit,
 )
+from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 AUDITOR_ROLE = "external-security-auditor"
+SECURITY_OWNER_ROLE = "security-owner"
+LEGACY_SECURITY_AUDIT_ATTESTATION_CLASS = "p42-security-audit/v1"
+
+
+def finding(finding_id: str, title: str, severity: str, disposition: str) -> dict:
+    return {
+        "finding_id": finding_id,
+        "title": title,
+        "severity": severity,
+        "affected_code": "contracts/src/P42SubmissionManager.sol",
+        "recommendation": "Apply the documented control and independently retest it",
+        "disposition": disposition,
+        "residual_risk": "Residual operational risk is documented in the signed owner acceptance",
+    }
 
 
 def valid_security_audit(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
@@ -27,6 +43,12 @@ def valid_security_audit(tmp_path: Path) -> tuple[dict, AttestationFixture, dict
         organization="Northstar Protocol Security",
         independent=True,
         signed_at_utc="2026-07-08T19:30:00Z",
+    )
+    security_owner = fixture.identity(
+        "security-audit-owner",
+        "Emerson Shah",
+        SECURITY_OWNER_ROLE,
+        signed_at_utc="2026-07-08T19:45:00Z",
     )
     report = {
         "schema_version": SECURITY_AUDIT_SCHEMA_VERSION,
@@ -43,14 +65,22 @@ def valid_security_audit(tmp_path: Path) -> tuple[dict, AttestationFixture, dict
         "audit_report": fixture.artifact(
             "external-security-audit-report", created_at_utc="2026-07-08T18:00:00Z"
         ),
+        "findings_register": fixture.artifact(
+            "external-security-findings-register", created_at_utc="2026-07-08T18:05:00Z"
+        ),
         "scope": {
-            "solidity_source": True,
-            "deployed_runtime_bytecode": True,
-            "access_control_and_governance": True,
-            "upgrade_and_initialization": True,
-            "funding_and_payout_flows": True,
-            "submission_challenge_resolution": True,
-            "cryptographic_verifier_boundary": True,
+            "verifier_soundness_and_determinism": True,
+            "commit_reveal_and_data_availability": True,
+            "challenge_resolver_finality": True,
+            "payout_claim_bond_and_economic_transitions": True,
+            "api_and_local_persistence_concurrency": True,
+            "event_chain_integrity": True,
+            "agent_wallet_and_session_scoping": True,
+            "key_governance_pause_custody_recovery_and_cancellation": True,
+            "reconciliation": True,
+            "evidence_forgery": True,
+            "source_deployment_consistency": True,
+            "upgrade_or_immutability_assumptions": True,
             "denial_of_service": True,
         },
         "contracts_reviewed": [
@@ -64,17 +94,17 @@ def valid_security_audit(tmp_path: Path) -> tuple[dict, AttestationFixture, dict
             for contract in release_binding["contracts"]
         ],
         "findings": [],
+        "security_owner": security_owner,
+        "residual_risk_acceptance": fixture.artifact(
+            "security-owner-residual-risk-acceptance", created_at_utc="2026-07-08T19:40:00Z"
+        ),
     }
-    signers = [(AUDITOR_ROLE, auditor, auditor["signed_at_utc"])]
-    attach_signatures(
-        report,
-        schema_version=SECURITY_AUDIT_SCHEMA_VERSION,
-        hash_field="audit_hash",
-        signatures_field="auditor_signature",
-        signers=signers,
-        singular=True,
-    )
-    registry = fixture.trust_registry(SECURITY_AUDIT_SCHEMA_VERSION, signers)
+    signers = [
+        (AUDITOR_ROLE, auditor, auditor["signed_at_utc"]),
+        (SECURITY_OWNER_ROLE, security_owner, security_owner["signed_at_utc"]),
+    ]
+    resign(report)
+    registry = fixture.trust_registry(SECURITY_AUDIT_ATTESTATION_CLASS, signers)
     return report, fixture, registry
 
 
@@ -89,13 +119,25 @@ def normalize(report: dict, fixture: AttestationFixture, registry: dict) -> dict
 
 def resign(report: dict) -> None:
     auditor = report["auditor"]
-    attach_signatures(
-        report,
-        schema_version=SECURITY_AUDIT_SCHEMA_VERSION,
-        hash_field="audit_hash",
-        signatures_field="auditor_signature",
-        signers=[(AUDITOR_ROLE, auditor, auditor["signed_at_utc"])],
-        singular=True,
+    security_owner = report["security_owner"]
+    unsigned = dict(report)
+    for field in ("audit_hash", "auditor_signature", "security_owner_signature"):
+        unsigned.pop(field, None)
+    audit_hash = sha256_bytes(canonical_json(unsigned).encode("utf-8"))
+    report["audit_hash"] = audit_hash
+    report["auditor_signature"] = _sign(
+        auditor,
+        AUDITOR_ROLE,
+        SECURITY_AUDIT_ATTESTATION_CLASS,
+        audit_hash,
+        auditor["signed_at_utc"],
+    )
+    report["security_owner_signature"] = _sign(
+        security_owner,
+        SECURITY_OWNER_ROLE,
+        SECURITY_AUDIT_ATTESTATION_CLASS,
+        audit_hash,
+        security_owner["signed_at_utc"],
     )
 
 
@@ -105,9 +147,10 @@ def test_security_audit_normalizes_and_matches_schema(tmp_path: Path) -> None:
     normalized = normalize(report, fixture, registry)
 
     cli._enforce_gate_schema(normalized, "security-audit.schema.json")
-    assert normalized["audit_hash"] == unsigned_hash(
-        normalized, "audit_hash", "auditor_signature"
-    )
+    unsigned = dict(normalized)
+    for field in ("audit_hash", "auditor_signature", "security_owner_signature"):
+        unsigned.pop(field)
+    assert normalized["audit_hash"] == sha256_bytes(canonical_json(unsigned).encode("utf-8"))
 
 
 def test_security_audit_rejects_resigned_canonical_topology_as_reviewed_source(tmp_path: Path) -> None:
@@ -131,6 +174,41 @@ def test_security_audit_rejects_untrusted_auditor(tmp_path: Path) -> None:
         normalize(report, fixture, registry)
 
 
+def test_security_audit_rejects_v1_authority_substitution_for_v2_report(
+    tmp_path: Path,
+) -> None:
+    report, fixture, _ = valid_security_audit(tmp_path)
+    auditor = report["auditor"]
+    security_owner = report["security_owner"]
+    report["auditor_signature"] = _sign(
+        auditor,
+        AUDITOR_ROLE,
+        LEGACY_SECURITY_AUDIT_ATTESTATION_CLASS,
+        report["audit_hash"],
+        auditor["signed_at_utc"],
+    )
+    report["security_owner_signature"] = _sign(
+        security_owner,
+        SECURITY_OWNER_ROLE,
+        LEGACY_SECURITY_AUDIT_ATTESTATION_CLASS,
+        report["audit_hash"],
+        security_owner["signed_at_utc"],
+    )
+    registry = fixture.trust_registry(
+        LEGACY_SECURITY_AUDIT_ATTESTATION_CLASS,
+        [
+            (AUDITOR_ROLE, auditor, auditor["signed_at_utc"]),
+            (SECURITY_OWNER_ROLE, security_owner, security_owner["signed_at_utc"]),
+        ],
+    )
+
+    with pytest.raises(
+        SecurityAuditError,
+        match="not pre-registered for p42-security-audit/v2",
+    ):
+        normalize(report, fixture, registry)
+
+
 def test_security_audit_rejects_tampered_signature(tmp_path: Path) -> None:
     report, fixture, registry = valid_security_audit(tmp_path)
     report["auditor_signature"]["signature"] = "ed25519:" + "0" * 128
@@ -148,12 +226,7 @@ def test_security_audit_requires_critical_and_high_findings_to_be_resolved(
 ) -> None:
     report, fixture, registry = valid_security_audit(tmp_path)
     report["findings"] = [
-        {
-            "finding_id": "P42-H-01",
-            "title": "Privilege boundary can be bypassed",
-            "severity": severity,
-            "disposition": disposition,
-        }
+        finding("P42-H-01", "Privilege boundary can be bypassed", severity, disposition)
     ]
     resign(report)
 
@@ -164,12 +237,9 @@ def test_security_audit_requires_critical_and_high_findings_to_be_resolved(
 def test_security_audit_accepts_resolved_high_with_remediation_and_retest(tmp_path: Path) -> None:
     report, fixture, registry = valid_security_audit(tmp_path)
     report["findings"] = [
-        {
-            "finding_id": "P42-H-02",
-            "title": "Privilege boundary bypass remediated",
-            "severity": "high",
-            "disposition": "resolved",
-            "remediation_artifact": fixture.artifact("finding-h-02-remediation"),
+        finding("P42-H-02", "Privilege boundary bypass remediated", "high", "resolved")
+        | {
+            "remediation_commits": ["0123456789abcdef0123456789abcdef01234567"],
             "retest_artifact": fixture.artifact("finding-h-02-retest"),
         }
     ]
@@ -180,24 +250,22 @@ def test_security_audit_accepts_resolved_high_with_remediation_and_retest(tmp_pa
     cli._enforce_gate_schema(normalized, "security-audit.schema.json")
 
 
-@pytest.mark.parametrize("missing_field", ["remediation_artifact", "retest_artifact"])
+@pytest.mark.parametrize("missing_field", ["remediation_commits", "retest_artifact"])
 def test_security_audit_rejects_resolved_noninformational_without_required_evidence(
     tmp_path: Path, missing_field: str
 ) -> None:
     report, fixture, registry = valid_security_audit(tmp_path)
-    finding = {
-        "finding_id": "P42-M-01",
-        "title": "Accounting edge case remediated",
-        "severity": "medium",
-        "disposition": "resolved",
-        "remediation_artifact": fixture.artifact("finding-m-01-remediation"),
+    finding_value = finding(
+        "P42-M-01", "Accounting edge case remediated", "medium", "resolved"
+    ) | {
+        "remediation_commits": ["123456789abcdef0123456789abcdef012345678"],
         "retest_artifact": fixture.artifact("finding-m-01-retest"),
     }
-    del finding[missing_field]
-    report["findings"] = [finding]
+    del finding_value[missing_field]
+    report["findings"] = [finding_value]
     resign(report)
 
-    with pytest.raises(SecurityAuditError, match="require exactly remediation_artifact and retest_artifact"):
+    with pytest.raises(SecurityAuditError, match="require exactly remediation_commits and retest_artifact"):
         normalize(report, fixture, registry)
 
 
@@ -207,13 +275,12 @@ def test_security_audit_accepts_risk_accepted_finding(
 ) -> None:
     report, fixture, registry = valid_security_audit(tmp_path)
     report["findings"] = [
-        {
-            "finding_id": f"P42-{severity}-accepted",
-            "title": f"Accepted {severity} residual risk",
-            "severity": severity,
-            "disposition": "accepted",
-            "risk_acceptance_artifact": fixture.artifact(f"finding-{severity}-risk-acceptance"),
-        }
+        finding(
+            f"P42-{severity}-accepted",
+            f"Accepted {severity} residual risk",
+            severity,
+            "accepted",
+        )
     ]
     resign(report)
 
@@ -222,37 +289,27 @@ def test_security_audit_accepts_risk_accepted_finding(
     cli._enforce_gate_schema(normalized, "security-audit.schema.json")
 
 
-def test_security_audit_rejects_accepted_finding_without_risk_acceptance(tmp_path: Path) -> None:
+def test_security_audit_rejects_unregistered_security_owner(tmp_path: Path) -> None:
     report, fixture, registry = valid_security_audit(tmp_path)
-    report["findings"] = [
-        {
-            "finding_id": "P42-L-01",
-            "title": "Low residual risk",
-            "severity": "low",
-            "disposition": "accepted",
-        }
+    registry["registrations"] = [
+        item for item in registry["registrations"] if item["signer_role"] != SECURITY_OWNER_ROLE
     ]
-    resign(report)
 
-    with pytest.raises(SecurityAuditError, match="require exactly risk_acceptance_artifact"):
+    with pytest.raises(SecurityAuditError, match="not pre-registered"):
         normalize(report, fixture, registry)
 
 
 def test_security_audit_rejects_evidence_for_the_wrong_finding_state(tmp_path: Path) -> None:
     report, fixture, registry = valid_security_audit(tmp_path)
     report["findings"] = [
-        {
-            "finding_id": "P42-L-02",
-            "title": "Accepted low residual risk",
-            "severity": "low",
-            "disposition": "accepted",
-            "risk_acceptance_artifact": fixture.artifact("finding-l-02-risk-acceptance"),
-            "remediation_artifact": fixture.artifact("finding-l-02-remediation"),
+        finding("P42-L-02", "Accepted low residual risk", "low", "accepted")
+        | {
+            "remediation_commits": ["23456789abcdef0123456789abcdef0123456789"],
         }
     ]
     resign(report)
 
-    with pytest.raises(SecurityAuditError, match="require exactly risk_acceptance_artifact"):
+    with pytest.raises(SecurityAuditError, match="covered only by the signed residual-risk acceptance"):
         normalize(report, fixture, registry)
     with pytest.raises(jsonschema.ValidationError):
         cli._enforce_gate_schema(report, "security-audit.schema.json")
@@ -261,12 +318,7 @@ def test_security_audit_rejects_evidence_for_the_wrong_finding_state(tmp_path: P
 def test_security_audit_rejects_open_noninformational_finding(tmp_path: Path) -> None:
     report, fixture, registry = valid_security_audit(tmp_path)
     report["findings"] = [
-        {
-            "finding_id": "P42-M-02",
-            "title": "Medium issue remains open",
-            "severity": "medium",
-            "disposition": "open",
-        }
+        finding("P42-M-02", "Medium issue remains open", "medium", "open")
     ]
     resign(report)
 
@@ -277,12 +329,7 @@ def test_security_audit_rejects_open_noninformational_finding(tmp_path: Path) ->
 def test_security_audit_accepts_open_informational_finding(tmp_path: Path) -> None:
     report, fixture, registry = valid_security_audit(tmp_path)
     report["findings"] = [
-        {
-            "finding_id": "P42-I-01",
-            "title": "Informational documentation note",
-            "severity": "informational",
-            "disposition": "open",
-        }
+        finding("P42-I-01", "Informational documentation note", "informational", "open")
     ]
     resign(report)
 
@@ -332,4 +379,53 @@ def test_security_audit_rejects_mismatched_hash(tmp_path: Path) -> None:
     report["audit_hash"] = "sha256:" + "0" * 64
 
     with pytest.raises(SecurityAuditError, match="audit_hash does not match"):
+        normalize(report, fixture, registry)
+
+
+def test_security_audit_rejects_legacy_packet_for_launch(tmp_path: Path) -> None:
+    report, fixture, registry = valid_security_audit(tmp_path)
+    report["schema_version"] = "p42-security-audit/v1"
+
+    with pytest.raises(SecurityAuditError, match="p42-security-audit/v2"):
+        normalize(report, fixture, registry)
+
+
+def test_security_audit_rejects_missing_security_md_surface(tmp_path: Path) -> None:
+    report, fixture, registry = valid_security_audit(tmp_path)
+    del report["scope"]["agent_wallet_and_session_scoping"]
+    resign(report)
+
+    with pytest.raises(SecurityAuditError, match="every mandatory SECURITY.md audit surface"):
+        normalize(report, fixture, registry)
+
+
+def test_security_audit_rejects_dummy_remediation_commit(tmp_path: Path) -> None:
+    report, fixture, registry = valid_security_audit(tmp_path)
+    report["findings"] = [
+        finding("P42-H-03", "Resolved authority bypass", "high", "resolved")
+        | {
+            "remediation_commits": ["a" * 40],
+            "retest_artifact": fixture.artifact("finding-h-03-retest"),
+        }
+    ]
+    resign(report)
+
+    with pytest.raises(SecurityAuditError, match="non-dummy 40-character"):
+        normalize(report, fixture, registry)
+
+
+def test_security_audit_rejects_owner_reusing_auditor_key(tmp_path: Path) -> None:
+    report, fixture, registry = valid_security_audit(tmp_path)
+    report["security_owner"]["public_key"] = report["auditor"]["public_key"]
+    resign(report)
+
+    with pytest.raises(SecurityAuditError, match="distinct identities and keys"):
+        normalize(report, fixture, registry)
+
+
+def test_security_audit_rejects_tampered_owner_acceptance_signature(tmp_path: Path) -> None:
+    report, fixture, registry = valid_security_audit(tmp_path)
+    report["security_owner_signature"]["signature"] = "ed25519:" + "0" * 128
+
+    with pytest.raises(SecurityAuditError, match="signature is not valid"):
         normalize(report, fixture, registry)

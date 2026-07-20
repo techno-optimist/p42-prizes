@@ -1,0 +1,46 @@
+[Unit]
+Description=P42 independent resolver rerun for registry problem %i
+Requires=p42-verifier-executor.service
+After=p42-verifier-executor.service network-online.target
+OnFailure=p42-runtime-failure@%n.service
+
+[Service]
+Type=oneshot
+User=p42-resolver-rerun-%i
+Group=p42-verifier-submitters
+LoadCredential=resolver-rerun-rpc-url:/etc/p42/resolver-rerun/%i/rpc-url
+LoadCredential=resolver-rerun-request-trust:/etc/p42/resolver-rerun/request-trust.json
+ExecStart=/usr/bin/node /opt/p42/agent/resolver-rerun-executor.mjs \
+  --request /var/lib/p42/resolver-rerun-requests/%i/request.json \
+  --rpc-url-file ${CREDENTIALS_DIRECTORY}/resolver-rerun-rpc-url \
+  --request-trust-file ${CREDENTIALS_DIRECTORY}/resolver-rerun-request-trust \
+  --staging-root /var/lib/p42/resolver-rerun/%i/staging \
+  --result-root /var/lib/p42/resolver-rerun-results/%i
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+UMask=0027
+StateDirectory=p42/resolver-rerun/%i p42/resolver-rerun-results/%i
+StateDirectoryMode=0750
+ReadOnlyPaths=/opt/p42 /etc/p42/resolver-rerun /var/lib/p42/resolver-rerun-requests/%i
+ReadWritePaths=/var/lib/p42/resolver-rerun/%i /var/lib/p42/resolver-rerun-results/%i
+InaccessiblePaths=/var/lib/p42/resolver /var/lib/p42/operator /var/lib/p42/resolver-rerun-dispatcher /etc/p42/resolver
+MemoryHigh=1G
+MemoryMax=2G
+MemorySwapMax=0
+TasksMax=128
+TimeoutStartSec=6h
+
+[Install]
+WantedBy=multi-user.target

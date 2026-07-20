@@ -9,6 +9,7 @@ import {
 } from "./deployment-ceremony-helper.js";
 import {
   buildGovernanceOperationJournal,
+  governanceOperationJournalFileDigest,
   observeGovernanceOperation,
   recordGovernanceObservation,
   reserveGovernanceOperationJournal,
@@ -364,6 +365,8 @@ export async function verifyMultiBoardPredeploymentGovernancePhase({
   timelockAddress,
   expectedTimelockCodeHash,
   deploymentConfigHash,
+  deploymentCommit,
+  governance,
   releaseBindingDigest,
   fromBlock,
   toBlock,
@@ -372,6 +375,8 @@ export async function verifyMultiBoardPredeploymentGovernancePhase({
   const expectedJournal = buildGovernanceOperationJournal({
     chainId,
     timelock: timelockAddress,
+    deploymentCommit,
+    governance,
     deploymentConfigHash,
     releaseBindingDigest,
     expectedTimelockCodeHash,
@@ -423,13 +428,15 @@ export async function verifyMultiBoardPredeploymentGovernancePhase({
     });
   }
   if (incomplete.length > 0) {
+    const journalSha256 = governanceOperationJournalFileDigest(journalPath);
     throw new Error(`pre-challenge governance phase is incomplete\n${JSON.stringify({
       journalPath,
+      journalSha256,
       requiredOperationCount: operations.length,
       incomplete,
     })}`);
   }
-  return reserveGovernanceOperationJournal(journalPath, expectedJournal);
+  return { journal: reserveGovernanceOperationJournal(journalPath, expectedJournal), journalSha256: governanceOperationJournalFileDigest(journalPath) };
 }
 
 export async function runPhasedDeploymentSteps({

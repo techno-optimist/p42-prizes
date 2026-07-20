@@ -16,6 +16,7 @@ export const DEPLOY_RELEVANT_PATHS = Object.freeze(["web", "render.yaml"]);
 
 const DEFAULTS = Object.freeze({
   branch: "main",
+  expectedLiveCommit: null,
   gitRemote: "origin",
   publicOrigin: "https://projectforty2.ai",
   renderOrigin: "https://p42-prizes.onrender.com",
@@ -153,6 +154,7 @@ export function parseArgs(argv) {
   const options = { ...DEFAULTS };
   const aliases = new Map([
     ["--branch", "branch"],
+    ["--expected-live-commit", "expectedLiveCommit"],
     ["--git-remote", "gitRemote"],
     ["--public-origin", "publicOrigin"],
     ["--render-origin", "renderOrigin"],
@@ -551,6 +553,22 @@ export async function assertReleaseAncestry(
   }
 }
 
+export async function assertRollbackRelease(
+  { expectedLiveCommit, liveCommit, branchHead, remoteRef },
+  ancestorCheck = isAncestor,
+) {
+  if (liveCommit !== expectedLiveCommit) {
+    throw new Error(
+      `Render live commit ${liveCommit} does not equal the pinned rollback commit ${expectedLiveCommit}.`,
+    );
+  }
+  if (!(await ancestorCheck(expectedLiveCommit, branchHead))) {
+    throw new Error(
+      `Pinned rollback commit ${expectedLiveCommit} is not on the exact fetched ${remoteRef} history ending at ${branchHead}.`,
+    );
+  }
+}
+
 async function commandJson(file, args) {
   const stdout = await command(file, args);
   try {
@@ -587,9 +605,10 @@ export function usage() {
   return `Usage: node scripts/verify-render-release.mjs [options]
 
 Read-only release guard. It verifies that Render is configured for the expected
-branch, its single live deployment is on that exact branch history and contains
-the latest portal/config change,
-and the Render origin plus the ProjectForty2 proxy return the expected portal,
+branch and its single live deployment is on that exact branch history. Normal
+mode requires the latest portal/config change; rollback mode requires the exact
+pinned ancestor. The Render origin plus the ProjectForty2 proxy must return the
+expected portal,
 versioned board projection, fail-closed capabilities, exact null funding targets
 for all ten boards, and equivalent paired responses.
 
@@ -600,6 +619,7 @@ latest first-parent commit touching either one.
 
 Options:
   --branch <name>             Expected GitHub/Render branch (default: main)
+  --expected-live-commit <sha> Verify an intentional rollback to this full commit
   --git-remote <name>         Git remote used for the branch-head lookup (default: origin)
   --service-id <id>           Render service ID
   --render-origin <url>       Render origin
@@ -614,6 +634,9 @@ export async function main(argv = process.argv.slice(2)) {
     process.stdout.write(usage());
     return;
   }
+  const expectedLiveCommit = options.expectedLiveCommit === null
+    ? null
+    : parseCommitId(options.expectedLiveCommit, "expected live commit");
 
   const remoteHeadOutput = await command("git", [
     "ls-remote",
@@ -650,7 +673,11 @@ export async function main(argv = process.argv.slice(2)) {
 
   const liveDeploy = findLiveDeploy(deployments);
   const liveCommit = liveDeploy.commit.id.toLowerCase();
-  await assertReleaseAncestry({ runtimeCommit, liveCommit, branchHead, remoteRef });
+  if (expectedLiveCommit === null) {
+    await assertReleaseAncestry({ runtimeCommit, liveCommit, branchHead, remoteRef });
+  } else {
+    await assertRollbackRelease({ expectedLiveCommit, liveCommit, branchHead, remoteRef });
+  }
 
   const configured = configuredProbes(options.renderOrigin, options.publicOrigin);
   const probeResults = await Promise.all(configured.map(probe));
@@ -664,6 +691,7 @@ export async function main(argv = process.argv.slice(2)) {
       `  branch head: ${branchHead}`,
       `  runtime commit: ${runtimeCommit}`,
       `  live commit: ${liveCommit}`,
+      `  mode: ${expectedLiveCommit === null ? "current release" : "pinned rollback"}`,
       `  board projection: ${EXPECTED_BOARD_MANIFEST.projection_sha256}`,
       `  routes: ${urls.length}/${urls.length} healthy`,
     ].join("\n") + "\n",

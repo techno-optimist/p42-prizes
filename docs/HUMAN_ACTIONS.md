@@ -23,8 +23,8 @@ signature.
 | Gate 2 | Obtain independent mathematical review for every funded problem. | The packet described below binds the statement, reduction, verifier, image, fixtures, literature, and release; a conflict-disclosed external reviewer signs the canonical hash. |
 | Gate 2 | Obtain the legal/compliance memo. | `legal-memo-validate` passes offline against the production trust registry and resolved local evidence with a real memo, the signed capsule-build-authority artifact, exact capsule/manifest/chain release binding, independently verified counsel identity/engagement/jurisdiction/license, all findings, and counsel's pre-registered valid signature after evidence creation. Legal validation performs no Git checkout, build, repository code execution, or network request. |
 | Gate 2 | Review wallet/session, custody, Onramp, sanctions/KYC, tax, Terms/Privacy, and disclosure policy. | Security owner and counsel review the exact hashed policies and release; no approval is inferred from source code. |
-| Gate 2 | Publish immutable verifier images for the frozen cohort in `protocol/production-board-set-v1.json`, then collect N-host evidence for every funded problem. The reviewed local ceremony is `scripts/release_verifier_images.py`; the signed exact-ten collector is `scripts/collect_verifier_host_set.py`. Both are source-complete, but no image has been pushed and no production host set has been collected. | A registry owner provisions immutable retention/access policy and a narrowly scoped write credential outside the repository, runs the exact-commit all-ten ceremony, and independently checks its self-hashed dossier and OCI digest chain. Then collect at least four independently operated source-bound `trusted_hosts` profiles with distinct operator IDs and keys; x86_64 plus ARM/aarch64 and at least two glibc versions; identical canonical reports from each exact immutable image; out-of-band profile verification; and independently checked artifact hashes. `hadamard-mini` and current signed C3 remain non-fundable fixtures outside the cohort. |
-| Gate 2 | Name governance/custody roles and run the production rehearsal. | Target: `governance-signoff-validate` passes, and every timelock signer, guardian, treasury, and resolver-quorum signer supplies an EIP-712 possession plus explicit risk/role acceptance. The packet schema binds chain ID, exact release/capsule/slate/config/deployment commit, deployed timelock, and the canonical digest of all 47 contracts. Completion records the finalized completion block/timestamp as `acceptanceValidatedAt`; later validation replays signatures at that durable instant rather than wall-clock time. Funding activation independently rejects noncanonical topology. |
+| Gate 2 | Publish immutable verifier images for the frozen cohort in `protocol/production-board-set-v1.json`, then collect N-host evidence for every funded problem. Historical v1 images were published and reinspected for source `1b65b84`; they do not identify the current source and cannot satisfy release admission. The reviewed current ceremony is `scripts/release_verifier_images.py`; the signed exact-ten collector is `scripts/collect_verifier_host_set.py`. No current S/R-bound v3 release or v4 production host set exists. | Add a distinct authorized GitHub collaborator who reviews and approves the exact final PR head. After merge and successful exact seven-job `main` CI, retain and replay the v3 current-main receipt, close the externally ratified v3 source-release authority, and retain the live-matched job/artifact authority snapshot. A registry owner provisions public immutable retention/access policy and a narrowly scoped write credential outside the repository, runs the exact-commit all-ten ceremony, and independently checks its authority-bound v3 journal, self-hashed dossier, and raw OCI descriptor chain. Then collect at least four independently operated source-bound `trusted_hosts` profiles with distinct operator IDs and keys; x86_64 plus ARM/aarch64 and at least two glibc versions; identical canonical reports from each exact immutable image; out-of-band profile verification; and independently checked artifact hashes. Signed operator IDs bind registrations but code alone does not prove operator independence. `hadamard-mini` and current signed C3 remain non-fundable fixtures outside the cohort. |
+| Gate 2 | Name governance/custody roles and run the production rehearsal. | Target: `governance-signoff-validate` passes, and the canonical 15-role roster for the five-signer policy supplies detached EIP-712 possession plus explicit risk/role acceptance. The packet binds exact pending-manifest bytes, a stable manifest identity, exact capsule bytes and canonical capsule digest, expected explorer dossier digest, chain/release/slate/config/deployment identity, deployed timelock, and all 47 contracts. Completion pins the packet's exact bytes independently and validates expiry at the finalized completion timestamp. Funding activation independently rejects noncanonical topology. |
 | Gate 2 | Activate disclosure and complete the incident drill. | Counsel-reviewed policy is actually live, private route/mailbox are externally tested, activation and regression bytes resolve locally with creation/execution times, the exact Git/chain release is drilled, and `incident-drill-validate` passes against the production registry with three required signatures. |
 
 ## Implemented But Not Attested
@@ -91,21 +91,25 @@ problem requirement.
 
 ## Exact Blockers At This Snapshot
 
-- Portal checkpoint database upgrade: source now requires a durably pinned
+- Portal checkpoint database upgrade: the live unfunded Render portal completed
+  the PostgreSQL 18.4 schema/runtime-role cutover recorded in
+  `docs/evidence/portal-db-cutover-2026-07-18.json`. Source requires a durably pinned
   schema, migration-owner-controlled exact-read and transition functions, and a
   runtime role with no direct authority writes, `TRUNCATE`, or dangerous
   `SET ROLE` path. Local PostgreSQL 18.4 evidence includes 26 migration/tamper
   cases plus a 10,000-row, six-reader exact-read rehearsal with zero blocking
   PIDs observed while all readers are in flight, a serialized transition
   observably blocked only by held-reader PIDs, and a 2,000 ms post-barrier
-  completion ceiling; this is not production evidence. An operator must
-  run the reviewed fail-closed Render schema/runtime-role provisioning ceremony,
+  completion ceiling, and the retained live receipt binds the completed cutover
+  for that exact deploy. After any relevant source, provider, role, schema, or
+  restore change, an operator must rerun the reviewed fail-closed Render
+  schema/runtime-role provisioning ceremony,
   retain its non-secret self-hashed JSON receipt, inspect the complete
   membership graph,
   apply migration 002, run the production OID/function/ACL/privilege and
   concurrent-lock rehearsal, retain the redacted evidence tail, and confirm the
-  web child cannot read `P42_PORTAL_MIGRATION_DATABASE_URL`. This has not been
-  performed live; local PostgreSQL evidence authorizes no funding activation.
+  web child cannot read `P42_PORTAL_MIGRATION_DATABASE_URL`. The completed
+  unfunded cutover authorizes no funding activation.
 
 - Source control: the CI workflow is published, and the checked-in
   [`source-release receipt`](evidence/source-release-current.json) remains valid
@@ -117,8 +121,9 @@ problem requirement.
   reporting is also still unverified.
 - External audit: no commissioned auditor identity/engagement, signed report,
   remediation retest, or residual-risk acceptance for the frozen current source.
-- SP1 external runtime: the read-only source verifier and current 24-hour evidence
-  bind the pinned Succinct v6.1 descriptors and finalized runtime observations,
+- SP1 external runtime: the read-only source verifier and expired 24-hour evidence
+  bind a historical observation of the pinned Succinct v6.1 descriptors and
+  finalized runtime,
   but no independent audit has reviewed that upstream runtime or its deployment
   assumptions. A fresh dual-operator recapture must be bound at activation time;
   the checked-in observation cannot authorize future activation after expiry.
@@ -134,8 +139,9 @@ problem requirement.
   unverified; no activation evidence, completed drill, or required signatures.
 - Verifier images: the exact-commit, all-ten OCI release ceremony is implemented,
   schema-bound, restart-safe, locally tested, and plan-rehearsed on DGX for all
-  ten boards and both target platforms, but no image has been pushed and no
-  production release dossier exists. Publication requires a provisioned
+  ten boards and both target platforms. Historical v1 images for source
+  `1b65b84` were published and reinspected, but no current S/R-bound v3 image
+  release or admissible production dossier exists. Publication requires a provisioned
   immutable registry policy and a narrowly scoped registry write credential;
   independent four-host profiles and matrices remain separately uncollected.
   The 2026-07-12 credential check found no registry environment-variable names

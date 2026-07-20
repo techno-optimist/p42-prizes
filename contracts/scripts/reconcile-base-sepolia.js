@@ -1,8 +1,12 @@
 import { resolve } from "node:path";
 
-import { network } from "hardhat";
-
 import { stableStringify } from "../../agent/indexer.mjs";
+import {
+  bindActivationRpcAuthority,
+  constructActivationRpcProviders,
+  loadPinnedActivationRpcRegistryDigest,
+  loadActivationRpcOperatorRegistry,
+} from "../../agent/activation-rpc-endpoints.mjs";
 import {
   loadManifestFromPath,
   reconcileWithProvider,
@@ -31,17 +35,39 @@ function reportPath() {
 requiredEnv("BASE_SEPOLIA_RPC_URL");
 requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL");
 const manifest = await loadManifestFromPath(manifestPath());
-const connection = await network.create("baseSepolia");
+const pinnedRpcRegistryDigest = loadPinnedActivationRpcRegistryDigest();
+const rpcRegistry = loadActivationRpcOperatorRegistry(
+  requiredEnv("P42_ACTIVATION_RPC_OPERATOR_REGISTRY_PATH"),
+  pinnedRpcRegistryDigest,
+  requiredEnv("P42_ACTIVATION_RPC_REGISTRY_TRUSTED_ROOT"),
+);
+const rpcAuthority = bindActivationRpcAuthority(
+  rpcRegistry,
+  requiredEnv("BASE_SEPOLIA_RPC_URL"),
+  requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL"),
+  requiredEnv("P42_PRIMARY_RPC_OPERATOR_ID"),
+  requiredEnv("P42_SECONDARY_RPC_OPERATOR_ID"),
+);
+const providers = await constructActivationRpcProviders(
+  rpcRegistry,
+  rpcAuthority,
+  requiredEnv("BASE_SEPOLIA_RPC_URL"),
+  requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL"),
+  84532,
+);
 
 try {
   const output = reportPath();
   const report = await reconcileWithProvider({
-    ethers: connection.ethers,
+    ethers: { provider: providers.primary },
     manifest,
     outputPath: output,
+    rpcAuthority,
+    rpcRegistry,
+    pinnedRpcRegistryDigest,
     finalityEndpoints: [
-      { operatorId: requiredEnv("P42_PRIMARY_RPC_OPERATOR_ID"), url: requiredEnv("BASE_SEPOLIA_RPC_URL"), provider: connection.ethers.provider },
-      { operatorId: requiredEnv("P42_SECONDARY_RPC_OPERATOR_ID"), url: requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL"), provider: new connection.ethers.JsonRpcProvider(requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL"), 84532, { staticNetwork: true }) },
+      { operatorId: rpcAuthority.primary.operatorId, url: rpcAuthority.primary.endpointOrigin, provider: providers.primary },
+      { operatorId: rpcAuthority.secondary.operatorId, url: rpcAuthority.secondary.endpointOrigin, provider: providers.secondary },
     ],
   });
   console.log(`Wrote reconciliation report: ${output}`);
@@ -82,5 +108,6 @@ try {
     process.exitCode = 1;
   }
 } finally {
-  await connection.close();
+  providers.primary.destroy();
+  providers.secondary.destroy();
 }

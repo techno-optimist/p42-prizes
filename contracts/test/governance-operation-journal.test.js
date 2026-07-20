@@ -21,6 +21,8 @@ function plan(withFallback = false, label = "board/1.pool.setLedger") {
   return buildGovernanceOperationJournal({
     chainId: 84532,
     timelock: hex("1", 20),
+    deploymentCommit: "a".repeat(40),
+    governance: { signers: [hex("4", 20), hex("5", 20), hex("6", 20)], threshold: "2", overrideThreshold: "3", delaySeconds: "172800", overrideDelaySeconds: "345600", guardian: hex("7", 20) },
     deploymentConfigHash: hex("a", 32),
     releaseBindingDigest: `sha256:${"b".repeat(64)}`,
     expectedTimelockCodeHash: hex("c", 32),
@@ -29,7 +31,7 @@ function plan(withFallback = false, label = "board/1.pool.setLedger") {
       target: hex("2", 20), value: "0", data: "0x1234", salt: hex("3", 32), operationId: OP_ID,
       dependsOn: [], requiredConfirmations: "2", delaySeconds: "172800",
       transactionBuilder: { schedule: { to: hex("1", 20), value: "0", data: "0xabcd" } },
-      overrideFallback: withFallback ? { operationId: FALLBACK_ID, salt: hex("8", 32), transactionBuilder: { schedule: { to: hex("1", 20), value: "0", data: "0xdcba" } } } : null,
+      overrideFallback: withFallback ? { operationId: FALLBACK_ID, salt: hex("8", 32), requiredConfirmations: "3", delaySeconds: "345600", transactionBuilder: { schedule: { to: hex("1", 20), value: "0", data: "0xdcba" } } } : null,
     }],
   });
 }

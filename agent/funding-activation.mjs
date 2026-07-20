@@ -311,8 +311,6 @@ export function runProductionAuthorizationValidator({
   trustRegistryPath,
   artifactRoot,
   sp1SecurityReportPath,
-  chainRpcUrl,
-  nowUtc = null,
   spawn = spawnSync,
 }) {
   const executable = exactPath(python, "python interpreter");
@@ -321,9 +319,6 @@ export function runProductionAuthorizationValidator({
   const registry = exactPath(trustRegistryPath, "trust registry");
   const artifacts = exactPath(artifactRoot, "artifact root");
   const securityReport = exactPath(sp1SecurityReportPath, "SP1 dependency security report");
-  if (typeof chainRpcUrl !== "string" || !/^https:\/\//.test(chainRpcUrl)) {
-    throw new Error("production authorization validation requires an explicit HTTPS chain RPC URL");
-  }
   const validatorEnv = Object.fromEntries(
     ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR"]
       .filter((name) => typeof process.env[name] === "string")
@@ -370,9 +365,7 @@ export function runProductionAuthorizationValidator({
     "--authorization", authorization,
     "--trust-registry", registry,
     "--artifact-root", artifacts,
-    "--chain-rpc-url", chainRpcUrl,
   ];
-  if (nowUtc !== null) args.push("--now-utc", nowUtc);
   const result = spawn(executable, args, {
     cwd: root,
     env: validatorEnv,
@@ -644,7 +637,7 @@ export function writePrivateActivationPlan(path, plan) {
 }
 
 export function fundingActivationPlanMain() {
-  const required = ["manifest", "authorization", "activation-signatures", "trust-registry", "artifact-root", "sp1-security-report", "chain-rpc-url", "rpc-operator-registry", "rpc-registry-trusted-root", "primary-rpc", "secondary-rpc", "primary-rpc-operator-id", "secondary-rpc-operator-id", "python", "repo-root", "output"];
+  const required = ["manifest", "authorization", "activation-signatures", "trust-registry", "artifact-root", "sp1-security-report", "rpc-operator-registry", "rpc-registry-trusted-root", "primary-rpc", "secondary-rpc", "primary-rpc-operator-id", "secondary-rpc-operator-id", "python", "repo-root", "output"];
   const values = Object.fromEntries(required.map((name) => [name, arg(name)]));
   const missing = required.filter((name) => values[name] === null);
   if (missing.length > 0) throw new Error(`missing required activation arguments: ${missing.join(", ")}`);
@@ -656,7 +649,6 @@ export function fundingActivationPlanMain() {
     trustRegistryPath: values["trust-registry"],
     artifactRoot: values["artifact-root"],
     sp1SecurityReportPath: values["sp1-security-report"],
-    chainRpcUrl: values["chain-rpc-url"],
   });
   const registryDigest = validatedAuthorization.value.artifacts?.activation_rpc_operator_registry?.sha256;
   const rpcRegistry = loadActivationRpcOperatorRegistry(

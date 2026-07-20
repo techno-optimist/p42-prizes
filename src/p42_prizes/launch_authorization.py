@@ -1,17 +1,24 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
 import subprocess
+import sys
 import tempfile
 from typing import Any, Callable, Mapping
 
 import jsonschema
 
+from p42_prizes.admission import (
+    AdmissionError,
+    SOURCE_HASH_ALGORITHM,
+    validate_image_release_checkout,
+)
 from p42_prizes.adversarial import normalize_adversarial_campaign_report
 from p42_prizes.bounded_process import OutputLimitExceeded, run_bounded_process
 from p42_prizes.governance import normalize_governance_signoff
@@ -24,17 +31,38 @@ from p42_prizes.legal import (
     _validate_identity,
     _validate_signature,
     build_attestation_context,
+    ethereum_keccak256,
+    _verify_ed25519,
     normalize_legal_memo,
     PRODUCTION_LEGAL_MEMO_SCHEMA_VERSION,
 )
-from p42_prizes.operational_controls import normalize_operational_controls
+from p42_prizes.operational_controls import (
+    OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+    DISTRIBUTED_SERVICE_CONTROLS,
+    SERVICE_CONTROLS,
+    SESSION_CONTROLS,
+    _service_probe_plan,
+    normalize_operational_controls,
+)
 from p42_prizes.security_audit import normalize_security_audit
 from p42_prizes.secure_json import loads_strict_json
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 SCHEMA_VERSION = "p42-production-launch-authorization/v1"
-MATH_REVIEW_SCHEMA_VERSION = "p42-math-review/v2"
+OPERATIONAL_WALLET_RECHECK_SCHEMA_VERSION = "p42-operational-wallet-recheck/v1"
+OPERATIONAL_SERVICE_PROBE_RECHECK_SCHEMA_VERSION = "p42-operational-service-probe-recheck/v1"
+MAX_OPERATIONAL_PACKET_AGE = timedelta(minutes=15)
+MAX_AUTHORIZATION_RECHECK_AGE = timedelta(minutes=5)
+MAX_LAUNCH_AUTHORIZATION_LIFETIME = timedelta(minutes=5)
+MATH_REVIEW_SCHEMA_VERSION = "p42-math-review/v4"
+SOURCE_ONLY_ACCEPTANCE_LIMITATION = (
+    "No canonical fixture exercises verifier acceptance; acceptance-path review is limited to source inspection."
+)
+FIXTURE_REPLAY_ACCEPTANCE_LIMITATION = (
+    "Canonical accepted fixtures exercise the verifier acceptance path; this does not prove complete "
+    "acceptance-boundary coverage."
+)
 NETWORK_CHAIN_IDS = {"base-sepolia": 84532, "base-mainnet": 8453}
 AUTHORIZER_ROLES = {
     "production-launch-authority",
@@ -82,6 +110,504 @@ class LaunchAuthorizationError(ValueError):
     """Raised when the composed production funding authorization is incomplete."""
 
 
+def _release_binding_hash(release_binding: Mapping[str, Any]) -> str:
+    return sha256_bytes(canonical_json(dict(release_binding)).encode("utf-8"))
+
+
+def _canonical_service_probe_url(value: Any) -> str:
+    if not isinstance(value, str) or value != value.strip() or "%" in value:
+        raise LaunchAuthorizationError("service probe endpoint URL must be exact ASCII without escapes")
+    try:
+        value.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise LaunchAuthorizationError("service probe endpoint URL must be ASCII") from exc
+    match = re.fullmatch(r"https://([^/:?#]+)(?::([1-9][0-9]{0,4}))?(/[A-Za-z0-9._~!$&'()*+,;=:@/-]+)", value)
+    if match is None:
+        raise LaunchAuthorizationError("service probe endpoint must be one canonical HTTPS URL")
+    hostname, port_text, path = match.groups()
+    labels = hostname.split(".")
+    label_pattern = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+    if len(labels) < 2 or len(hostname) > 253 or any(label_pattern.fullmatch(label) is None for label in labels):
+        raise LaunchAuthorizationError("service probe endpoint hostname is not canonical DNS")
+    if re.fullmatch(r"(?:0x[0-9a-f]+|[0-9]+)(?:\.(?:0x[0-9a-f]+|[0-9]+)){0,3}", hostname):
+        raise LaunchAuthorizationError("service probe endpoint cannot use a numeric host alias")
+    port = 443 if port_text is None else int(port_text)
+    if port < 1 or port > 65535 or (port_text is not None and port == 443) or "//" in path:
+        raise LaunchAuthorizationError("service probe endpoint port or path is noncanonical")
+    return value
+
+
+def _validate_service_probe_registry(
+    registry: Mapping[str, Any], release_binding: Mapping[str, Any],
+    operational_report: Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    try:
+        schema = json.loads((_SCHEMA_DIR / "service-probe-endpoint-registry.schema.json").read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator(schema).validate(registry)
+    except (OSError, ValueError, jsonschema.ValidationError) as exc:
+        raise LaunchAuthorizationError(f"service probe endpoint registry failed schema validation: {exc}") from exc
+    if (
+        registry.get("network") != release_binding.get("network")
+        or registry.get("chain_id") != release_binding.get("chain_id")
+        or registry.get("release_binding_hash") != _release_binding_hash(release_binding)
+    ):
+        raise LaunchAuthorizationError("service probe endpoint registry release binding mismatch")
+    controls = operational_report.get("controls", [])
+    service_environments = {
+        item["control"]: item["environment"]["service_probe"]
+        for item in controls if isinstance(item, Mapping) and item.get("control") in SERVICE_CONTROLS
+    }
+    builds = {value.get("build_digest") for value in service_environments.values()}
+    if set(service_environments) != SERVICE_CONTROLS or builds != {registry.get("expected_build_digest")}:
+        raise LaunchAuthorizationError("service probe registry does not bind the exact operational service build")
+    endpoints = registry.get("endpoints", [])
+    ids: set[str] = set()
+    urls: set[str] = set()
+    for endpoint in endpoints:
+        endpoint_id = endpoint["endpoint_id"]
+        url = _canonical_service_probe_url(endpoint["endpoint_url"])
+        if endpoint_id in ids or url in urls:
+            raise LaunchAuthorizationError("service probe registry endpoint IDs and URLs must be unique")
+        if (
+            endpoint["expected_release_digest"] != registry["release_binding_hash"]
+            or endpoint["expected_build_digest"] != registry["expected_build_digest"]
+        ):
+            raise LaunchAuthorizationError("service probe endpoint profile release or build drifted")
+        ids.add(endpoint_id); urls.add(url)
+    distributed_keys = sorted({
+        item["public_key"] for item in endpoints
+        if set(item["controls"]) & DISTRIBUTED_SERVICE_CONTROLS
+    })
+    if registry.get("distributed_public_keys") != distributed_keys:
+        raise LaunchAuthorizationError(
+            "service probe registry distributed_public_keys must be the exact sorted endpoint-key roster"
+        )
+    ownership_keys: dict[str, str] = {}
+    key_owners: dict[str, str] = {}
+    for item in endpoints:
+        prior_key = ownership_keys.setdefault(item["ownership_group"], item["public_key"])
+        if prior_key != item["public_key"]:
+            raise LaunchAuthorizationError("ownership group cannot present multiple endpoint keys")
+        prior_owner = key_owners.setdefault(item["public_key"], item["ownership_group"])
+        if prior_owner != item["ownership_group"]:
+            raise LaunchAuthorizationError("endpoint key cannot represent multiple ownership groups")
+    for control in SERVICE_CONTROLS:
+        selected = [item for item in endpoints if control in item["controls"]]
+        required = 2 if control in DISTRIBUTED_SERVICE_CONTROLS else 1
+        if len(selected) < required:
+            raise LaunchAuthorizationError(f"service probe registry lacks endpoints for {control}")
+        if control in DISTRIBUTED_SERVICE_CONTROLS and (
+            len({item["endpoint_url"] for item in selected}) < 2
+            or len({item["instance_id"] for item in selected}) < 2
+            or len({item["ownership_group"] for item in selected}) < 2
+            or len({item["public_key"] for item in selected}) < 2
+        ):
+            raise LaunchAuthorizationError(
+                f"{control} service probes require distinct endpoints, instances, ownership, and Ed25519 keys"
+            )
+    return list(endpoints)
+
+
+def _service_controls_by_name(report: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    return {
+        item["control"]: item for item in report["controls"]
+        if item["control"] in SERVICE_CONTROLS
+    }
+
+
+def _probe_response_message(response: Mapping[str, Any]) -> bytes:
+    unsigned = {key: value for key, value in response.items() if key != "signature"}
+    return b"p42-service-probe-response/v1\n" + canonical_json(unsigned).encode("ascii")
+
+
+def collect_operational_service_probe_recheck(
+    operational_report: Mapping[str, Any], release_binding: Mapping[str, Any],
+    collected_at: datetime, registry: Mapping[str, Any], probe_reader: Any,
+    *, challenge_nonce_factory: Any = None,
+) -> dict[str, Any]:
+    endpoints = _validate_service_probe_registry(registry, release_binding, operational_report)
+    nonce_factory = challenge_nonce_factory or (lambda: "0x" + secrets.token_hex(32))
+    challenge_nonce = nonce_factory()
+    if not isinstance(challenge_nonce, str) or re.fullmatch(r"0x[0-9a-f]{64}", challenge_nonce) is None:
+        raise LaunchAuthorizationError("service probe challenge nonce must contain 256 unpredictable bits")
+    issued_text = collected_at.isoformat().replace("+00:00", "Z")
+    challenge = {
+        "challenge_nonce": challenge_nonce,
+        "challenge_issued_at_utc": issued_text,
+        "operational_controls_hash": operational_report["operational_controls_hash"],
+        "release_binding_hash": _release_binding_hash(release_binding),
+    }
+    challenge_digest = sha256_bytes(canonical_json(challenge).encode("ascii"))
+    controls = _service_controls_by_name(operational_report)
+    evidence_rows = []
+    for control in sorted(SERVICE_CONTROLS):
+        deployment = controls[control]["environment"]["service_probe"]
+        selected = [item for item in endpoints if control in item["controls"]]
+        plan = _service_probe_plan(
+            control, deployment, collected_at,
+            endpoint_ids=[item["endpoint_id"] for item in selected],
+            challenge_nonce=challenge_nonce,
+        )
+        request = {
+            "schema_version": "p42-service-probe-request/v1",
+            **challenge,
+            "challenge_digest": challenge_digest,
+            "control": control,
+            "network": release_binding["network"],
+            "chain_id": release_binding["chain_id"],
+            "service_id": deployment["service_id"],
+            "deployment_id": deployment["deployment_id"],
+            "build_digest": deployment["build_digest"],
+            "request_sequence": plan["request_sequence"],
+        }
+        request_digest = sha256_bytes(canonical_json(request).encode("ascii"))
+        responses = []
+        for endpoint in selected:
+            method = getattr(probe_reader, "post_service_probe", None)
+            if not callable(method):
+                raise LaunchAuthorizationError("authorization requires direct protected HTTPS service probes")
+            try:
+                response = method(endpoint["endpoint_url"], request, registry["max_response_bytes"])
+            except Exception as exc:
+                raise LaunchAuthorizationError(f"service probe POST failed for {endpoint['endpoint_id']}") from exc
+            expected_keys = {
+                "schema_version", "challenge_digest", "request_digest", "control",
+                "release_binding_hash", "build_digest", "endpoint_url", "endpoint_id",
+                "instance_id", "ownership_group", "responded_at_utc", "raw_outcomes",
+                "derived_invariant", "signature",
+            }
+            if not isinstance(response, Mapping) or set(response) != expected_keys:
+                raise LaunchAuthorizationError("service probe response shape is invalid")
+            responded = _require_utc(response.get("responded_at_utc"), "service_probe.responded_at_utc", LaunchAuthorizationError)
+            if responded < collected_at - timedelta(seconds=registry["max_response_age_seconds"]) or responded > collected_at + timedelta(seconds=registry["max_response_age_seconds"]):
+                raise LaunchAuthorizationError("service probe response is outside the freshness window")
+            expected_identity = {
+                "challenge_digest": challenge_digest, "request_digest": request_digest,
+                "control": control, "release_binding_hash": challenge["release_binding_hash"],
+                "build_digest": registry["expected_build_digest"], "endpoint_url": endpoint["endpoint_url"],
+                "endpoint_id": endpoint["endpoint_id"], "instance_id": endpoint["instance_id"],
+                "ownership_group": endpoint["ownership_group"],
+            }
+            if any(response.get(key) != value for key, value in expected_identity.items()):
+                raise LaunchAuthorizationError("service probe response identity or release binding drifted")
+            if response.get("raw_outcomes") != plan["raw_outcomes"] or response.get("derived_invariant") != plan["derived_invariant"]:
+                raise LaunchAuthorizationError("service probe response semantics drifted")
+            signature = response.get("signature")
+            if not isinstance(signature, str) or not _verify_ed25519(endpoint["public_key"], signature, _probe_response_message(response)):
+                raise LaunchAuthorizationError("service probe endpoint signature is invalid")
+            responses.append(dict(response))
+        evidence_rows.append({"control": control, "request": request, "responses": responses})
+    return {
+        "schema_version": OPERATIONAL_SERVICE_PROBE_RECHECK_SCHEMA_VERSION,
+        **challenge,
+        "challenge_digest": challenge_digest,
+        "registry_hash": sha256_bytes(canonical_json(dict(registry)).encode("ascii")),
+        "controls": evidence_rows,
+    }
+
+
+def _service_probe_stable_projection(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    rows = []
+    for row in evidence["controls"]:
+        request = row["request"]
+        rows.append({
+            "control": row["control"],
+            "request": {
+                key: value for key, value in request.items()
+                if key not in {
+                    "challenge_nonce", "challenge_issued_at_utc", "challenge_digest",
+                }
+            } | {
+                "request_sequence": [
+                    {key: value for key, value in item.items() if key not in {"nonce", "timestamp_utc"}}
+                    for item in request["request_sequence"]
+                ]
+            },
+            "responses": [{
+                key: value for key, value in response.items()
+                if key not in {
+                    "challenge_digest", "request_digest", "responded_at_utc", "signature",
+                    "raw_outcomes",
+                }
+            } | {
+                "raw_outcomes": [
+                    {key: value for key, value in outcome.items() if key != "nonce"}
+                    for outcome in response["raw_outcomes"]
+                ]
+            } for response in row["responses"]],
+        })
+    return {
+        "operational_controls_hash": evidence["operational_controls_hash"],
+        "release_binding_hash": evidence["release_binding_hash"],
+        "registry_hash": evidence["registry_hash"],
+        "controls": rows,
+    }
+
+
+def _validate_archived_service_probe_evidence(
+    evidence: Any, operational_report: Mapping[str, Any], release_binding: Mapping[str, Any],
+    reference_time: datetime, registry: Mapping[str, Any],
+) -> None:
+    if not isinstance(evidence, Mapping):
+        raise LaunchAuthorizationError("operational_service_probe_recheck is required")
+    try:
+        schema = json.loads((_SCHEMA_DIR / "production-launch-authorization.schema.json").read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator(schema).evolve(
+            schema=schema["$defs"]["operationalServiceProbeRecheck"]
+        ).validate(evidence)
+    except (OSError, ValueError, jsonschema.ValidationError) as exc:
+        raise LaunchAuthorizationError(f"archived service probe evidence is malformed: {exc}") from exc
+    endpoints = _validate_service_probe_registry(registry, release_binding, operational_report)
+    challenge_time = _require_utc(
+        evidence.get("challenge_issued_at_utc"), "service_probe.challenge_issued_at_utc",
+        LaunchAuthorizationError,
+    )
+    if challenge_time != reference_time:
+        raise LaunchAuthorizationError("archived service probe challenge is not issuance-bound")
+    challenge = {
+        "challenge_nonce": evidence["challenge_nonce"],
+        "challenge_issued_at_utc": evidence["challenge_issued_at_utc"],
+        "operational_controls_hash": operational_report["operational_controls_hash"],
+        "release_binding_hash": _release_binding_hash(release_binding),
+    }
+    challenge_digest = sha256_bytes(canonical_json(challenge).encode("ascii"))
+    if (
+        evidence.get("challenge_digest") != challenge_digest
+        or evidence.get("operational_controls_hash") != challenge["operational_controls_hash"]
+        or evidence.get("release_binding_hash") != challenge["release_binding_hash"]
+        or evidence.get("registry_hash") != sha256_bytes(canonical_json(dict(registry)).encode("ascii"))
+    ):
+        raise LaunchAuthorizationError("archived service probe challenge binding is invalid")
+    controls = _service_controls_by_name(operational_report)
+    if [row.get("control") for row in evidence["controls"]] != sorted(SERVICE_CONTROLS):
+        raise LaunchAuthorizationError("archived service probe controls are not exact and ordered")
+    for row in evidence["controls"]:
+        control = row["control"]
+        selected = [item for item in endpoints if control in item["controls"]]
+        deployment = controls[control]["environment"]["service_probe"]
+        plan = _service_probe_plan(
+            control, deployment, reference_time,
+            endpoint_ids=[item["endpoint_id"] for item in selected],
+            challenge_nonce=evidence["challenge_nonce"],
+        )
+        expected_request = {
+            "schema_version": "p42-service-probe-request/v1", **challenge,
+            "challenge_digest": challenge_digest, "control": control,
+            "network": release_binding["network"], "chain_id": release_binding["chain_id"],
+            "service_id": deployment["service_id"], "deployment_id": deployment["deployment_id"],
+            "build_digest": deployment["build_digest"], "request_sequence": plan["request_sequence"],
+        }
+        if row.get("request") != expected_request or len(row.get("responses", [])) != len(selected):
+            raise LaunchAuthorizationError("archived service probe request or endpoint set is invalid")
+        request_digest = sha256_bytes(canonical_json(expected_request).encode("ascii"))
+        for response, endpoint in zip(row["responses"], selected, strict=True):
+            responded = _require_utc(
+                response.get("responded_at_utc"), "service_probe.responded_at_utc",
+                LaunchAuthorizationError,
+            )
+            max_age = timedelta(seconds=registry["max_response_age_seconds"])
+            if responded < reference_time - max_age or responded > reference_time + max_age:
+                raise LaunchAuthorizationError("archived service probe response is backdated or stale")
+            expected_identity = {
+                "challenge_digest": challenge_digest, "request_digest": request_digest,
+                "control": control, "release_binding_hash": challenge["release_binding_hash"],
+                "build_digest": registry["expected_build_digest"], "endpoint_url": endpoint["endpoint_url"],
+                "endpoint_id": endpoint["endpoint_id"], "instance_id": endpoint["instance_id"],
+                "ownership_group": endpoint["ownership_group"],
+            }
+            if any(response.get(key) != value for key, value in expected_identity.items()):
+                raise LaunchAuthorizationError("archived service probe identity drifted")
+            if response.get("raw_outcomes") != plan["raw_outcomes"] or response.get("derived_invariant") != plan["derived_invariant"]:
+                raise LaunchAuthorizationError("archived service probe semantics drifted")
+            if not _verify_ed25519(endpoint["public_key"], response["signature"], _probe_response_message(response)):
+                raise LaunchAuthorizationError("archived service probe signature is invalid")
+
+
+def _validate_authorization_service_probe_recheck(
+    supplied: Any, operational_report: Mapping[str, Any], release_binding: Mapping[str, Any],
+    issued: datetime, validation_time: datetime, registry: Mapping[str, Any], probe_reader: Any,
+    *, challenge_nonce_factory: Any = None,
+) -> None:
+    _validate_archived_service_probe_evidence(
+        supplied, operational_report, release_binding, issued, registry,
+    )
+    fresh = collect_operational_service_probe_recheck(
+        operational_report, release_binding, validation_time, registry, probe_reader,
+        challenge_nonce_factory=challenge_nonce_factory,
+    )
+    if fresh["challenge_nonce"] == supplied["challenge_nonce"]:
+        raise LaunchAuthorizationError("validation-time service probe challenge reused the archived nonce")
+    if _service_probe_stable_projection(fresh) != _service_probe_stable_projection(supplied):
+        raise LaunchAuthorizationError(
+            "validation-time service probes disagree with the signed authorization snapshot"
+        )
+
+
+def _require_current_operational_controls_schema(report: Mapping[str, Any]) -> None:
+    if report.get("schema_version") != OPERATIONAL_CONTROLS_SCHEMA_VERSION:
+        raise LaunchAuthorizationError(
+            "operational_controls must use the current exact-ten production schema "
+            f"{OPERATIONAL_CONTROLS_SCHEMA_VERSION}"
+        )
+
+
+def _require_fresh_operational_packet(
+    report: Mapping[str, Any], issued: datetime
+) -> datetime:
+    completed = _require_utc(
+        report.get("window_completed_at_utc"),
+        "operational_controls.window_completed_at_utc", LaunchAuthorizationError,
+    )
+    if completed > issued or issued - completed > MAX_OPERATIONAL_PACKET_AGE:
+        raise LaunchAuthorizationError(
+            "operational_controls packet is stale at authorization issuance"
+        )
+    return completed
+
+
+def _operational_session_domains(report: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    controls = report.get("controls")
+    if not isinstance(controls, list):
+        raise LaunchAuthorizationError("operational_controls has no controls array")
+    candidates = [
+        item.get("environment", {}).get("session_domains")
+        for item in controls
+        if isinstance(item, Mapping) and item.get("control") in SESSION_CONTROLS
+    ]
+    if len(candidates) != len(SESSION_CONTROLS) or any(
+        not isinstance(item, list) or len(item) != 10 for item in candidates
+    ) or any(item != candidates[0] for item in candidates[1:]):
+        raise LaunchAuthorizationError(
+            "operational_controls does not carry one identical exact-ten wallet claim"
+        )
+    return candidates[0]
+
+
+def _validate_authorization_wallet_recheck(
+    supplied: Any,
+    operational_report: Mapping[str, Any],
+    release_binding: Mapping[str, Any],
+    issued: datetime,
+    context: AttestationValidationContext,
+) -> None:
+    domains = _operational_session_domains(operational_report)
+    queries = [
+        {
+            "board_number": domain["board_number"],
+            "problem_id": domain["problem_id"],
+            "wallet_address": domain["wallet_address"],
+            "install_transaction_hash": domain["state_snapshot"]["install_receipt"]["transaction_hash"],
+            "permissions": domain["permissions"],
+        }
+        for domain in domains
+    ]
+    reader = getattr(context.chain_reader, "recheck_operational_wallets", None)
+    if not callable(reader):
+        raise LaunchAuthorizationError(
+            "authorization requires an independent exact-ten current wallet recheck reader"
+        )
+    try:
+        observed = reader(
+            release_binding["network"], release_binding["chain_id"],
+            issued.isoformat().replace("+00:00", "Z"), queries,
+        )
+    except Exception as exc:
+        raise LaunchAuthorizationError(
+            "authorization exact-ten current wallet recheck failed"
+        ) from exc
+    if not isinstance(observed, Mapping) or set(observed) != {
+        "finalized_block", "wallets", "rpc_quorum"
+    }:
+        raise LaunchAuthorizationError("authorization wallet recheck result is malformed")
+    finalized = observed["finalized_block"]
+    if not isinstance(finalized, Mapping) or set(finalized) != {
+        "block_number", "block_hash", "block_timestamp"
+    }:
+        raise LaunchAuthorizationError("authorization wallet recheck finalized block is malformed")
+    try:
+        block_time = datetime.fromtimestamp(finalized["block_timestamp"], timezone.utc)
+    except (TypeError, ValueError, OSError) as exc:
+        raise LaunchAuthorizationError("authorization wallet recheck timestamp is invalid") from exc
+    if block_time > issued or issued - block_time > MAX_AUTHORIZATION_RECHECK_AGE:
+        raise LaunchAuthorizationError(
+            "authorization wallet recheck block is not fresh at issuance"
+        )
+    if (
+        not isinstance(finalized.get("block_number"), int)
+        or isinstance(finalized.get("block_number"), bool)
+        or finalized["block_number"] <= 0
+        or not isinstance(finalized.get("block_hash"), str)
+        or re.fullmatch(r"0x[0-9a-f]{64}", finalized["block_hash"]) is None
+    ):
+        raise LaunchAuthorizationError("authorization wallet recheck block identity is invalid")
+    quorum = observed["rpc_quorum"]
+    if not isinstance(quorum, Mapping) or set(quorum) != {
+        "required", "provider_ids", "ownership_groups"
+    } or quorum.get("required") != 2 or any(
+        not isinstance(quorum.get(field), list)
+        or len(quorum[field]) < 2
+        or len(set(quorum[field])) != len(quorum[field])
+        for field in ("provider_ids", "ownership_groups")
+    ):
+        raise LaunchAuthorizationError(
+            "authorization wallet recheck lacks an operator-distinct RPC quorum"
+        )
+    wallets = observed["wallets"]
+    if not isinstance(wallets, list) or len(wallets) != 10:
+        raise LaunchAuthorizationError("authorization wallet recheck must cover exact-ten wallets")
+    expected_wallets = []
+    for domain, observed_wallet in zip(domains, wallets, strict=True):
+        owner = str(domain["wallet_provenance"]["owner_address"]).casefold()
+        runtime = observed_wallet.get("runtime_bytecode") if isinstance(observed_wallet, Mapping) else None
+        if (
+            not isinstance(runtime, str)
+            or re.fullmatch(r"0x(?:[0-9a-f]{2})+", runtime) is None
+            or ethereum_keccak256(bytes.fromhex(runtime[2:]))
+            != domain["wallet_provenance"]["runtime_code_hash"]
+        ):
+            raise LaunchAuthorizationError(
+                "authorization wallet recheck runtime disagrees with the capsule-bound packet hash"
+            )
+        expected_wallets.append({
+            "board_number": domain["board_number"],
+            "problem_id": domain["problem_id"],
+            "wallet_address": str(domain["wallet_address"]).casefold(),
+            "runtime_bytecode": runtime,
+            "runtime_code_hash": domain["wallet_provenance"]["runtime_code_hash"],
+            "owner_address": owner,
+            "allowlisted_policy_count": len(domain["permissions"]),
+            "policy_mutation_epoch_baseline": domain["policy_mutation_epoch_baseline"],
+            "policy_mutation_epoch": domain["policy_mutation_epoch"],
+            "session_key": str(domain["session_key"]).casefold(),
+            "session_chain_id": domain["chain_id"],
+            "session_expires_at_utc": domain["session_expires_at_utc"],
+            "revoked": False,
+            "per_call_value_cap_wei": domain["per_call_value_cap_wei"],
+            "total_spend_cap_wei": domain["cumulative_spend_cap_wei"],
+            "spent_wei": domain["spent_wei"],
+            "policies": domain["permissions"],
+        })
+    if wallets != expected_wallets:
+        raise LaunchAuthorizationError(
+            "authorization wallet recheck disagrees with the operational packet"
+        )
+    expected = {
+        "schema_version": OPERATIONAL_WALLET_RECHECK_SCHEMA_VERSION,
+        "operational_controls_hash": operational_report["operational_controls_hash"],
+        "operational_window_completed_at_utc": operational_report["window_completed_at_utc"],
+        "authorization_issued_at_utc": issued.isoformat().replace("+00:00", "Z"),
+        "network": release_binding["network"],
+        "chain_id": release_binding["chain_id"],
+        "finalized_block": dict(finalized),
+        "wallets": expected_wallets,
+        "rpc_quorum": dict(quorum),
+    }
+    if supplied != expected:
+        raise LaunchAuthorizationError(
+            "operational_wallet_recheck does not bind the independently queried current state"
+        )
+
+
 def normalize_launch_authorization(
     authorization: Mapping[str, Any],
     *,
@@ -93,7 +619,9 @@ def normalize_launch_authorization(
     expected_keys = {
         "schema_version", "status", "issued_at_utc", "expires_at_utc", "network",
         "chain_id", "funding_mode", "release_binding", "artifacts", "problem_reviews",
-        "authorizers", "authorization_digest", "authorization_signatures",
+        "operational_wallet_recheck", "operational_service_probe_recheck",
+        "authorizers", "authorization_digest",
+        "authorization_signatures",
     }
     if set(authorization) != expected_keys:
         missing = sorted(expected_keys - set(authorization))
@@ -113,6 +641,8 @@ def normalize_launch_authorization(
     expires = _require_utc(authorization.get("expires_at_utc"), "authorization.expires_at_utc", LaunchAuthorizationError)
     if issued >= expires:
         raise LaunchAuthorizationError("issued_at_utc must be before expires_at_utc")
+    if expires - issued > MAX_LAUNCH_AUTHORIZATION_LIFETIME:
+        raise LaunchAuthorizationError("production launch authorization lifetime exceeds five minutes")
     current = now_utc or datetime.now(timezone.utc)
     if current.tzinfo is None:
         raise LaunchAuthorizationError("now_utc must be timezone-aware")
@@ -137,11 +667,19 @@ def normalize_launch_authorization(
         raise LaunchAuthorizationError("release_binding network does not match authorization")
 
     artifacts = authorization.get("artifacts")
-    expected_artifacts = {*GATE_NORMALIZERS, "production_release_verification", "production_release_slate", "production_board_bindings", "release_capsule", "deployment_manifest", "reconciliation_report", "explorer_dossier", "explorer_operator_policy", "activation_rpc_operator_registry"}
+    expected_artifacts = {
+        *GATE_NORMALIZERS,
+        "production_release_verification", "production_release_slate", "production_board_bindings",
+        "verifier_image_release", "verifier_image_publication_journal", "release_capsule",
+        "deployment_manifest", "reconciliation_report", "explorer_dossier",
+        "explorer_operator_policy", "activation_rpc_operator_registry", "production_timestamp_dossier",
+        "service_probe_endpoint_registry",
+    }
     if not isinstance(artifacts, Mapping) or set(artifacts) != expected_artifacts:
         raise LaunchAuthorizationError("artifacts must contain the exact launch evidence set")
     normalized_gate_hashes: dict[str, str] = {}
     latest_gate_time: datetime | None = None
+    operational_report: Mapping[str, Any] | None = None
     for name, normalizer in GATE_NORMALIZERS.items():
         report = _read_json_artifact(artifacts[name], f"authorization.artifacts.{name}", context)
         try:
@@ -155,6 +693,9 @@ def normalize_launch_authorization(
             raise LaunchAuthorizationError(f"{name} failed independent validation: {exc}") from exc
         if name == "legal_memo":
             _require_production_legal_memo(normalized)
+        if name == "operational_controls":
+            _require_current_operational_controls_schema(normalized)
+            operational_report = normalized
         if normalized.get("release_binding") != release_binding:
             raise LaunchAuthorizationError(f"{name} release_binding does not exactly match authorization")
         normalized_gate_hashes[name] = normalized[GATE_HASH_FIELDS[name]]
@@ -163,6 +704,9 @@ def normalize_launch_authorization(
         latest_gate_time = max(latest_gate_time or completed, completed)
     if latest_gate_time is not None and latest_gate_time > issued:
         raise LaunchAuthorizationError("issued_at_utc must be on/after every gate completion time")
+    if operational_report is None:
+        raise LaunchAuthorizationError("operational_controls packet is missing")
+    _require_fresh_operational_packet(operational_report, issued)
 
     release_report = _read_json_artifact(
         artifacts["production_release_verification"],
@@ -176,10 +720,48 @@ def normalize_launch_authorization(
         context,
     )
     _validate_release_slate_for_launch(release_slate, release_report)
+    service_probe_registry = _read_protected_activation_rpc_registry(
+        artifacts["service_probe_endpoint_registry"],
+        "authorization.artifacts.service_probe_endpoint_registry", context, require_root=True,
+    )
+    _validate_authorization_service_probe_recheck(
+        authorization.get("operational_service_probe_recheck"), operational_report,
+        release_binding, issued, current, service_probe_registry, context.chain_reader,
+    )
+    _validate_authorization_wallet_recheck(
+        authorization.get("operational_wallet_recheck"), operational_report,
+        release_binding, issued, context,
+    )
     board_bindings = _read_json_artifact(
         artifacts["production_board_bindings"],
         "authorization.artifacts.production_board_bindings",
         context,
+    )
+    image_release_ref = _validate_artifact_reference(
+        artifacts["verifier_image_release"],
+        "authorization.artifacts.verifier_image_release",
+        LaunchAuthorizationError,
+        context,
+    )
+    image_release = _read_json_artifact(
+        artifacts["verifier_image_release"],
+        "authorization.artifacts.verifier_image_release",
+        context,
+    )
+    journal_ref = _validate_artifact_reference(
+        artifacts["verifier_image_publication_journal"],
+        "authorization.artifacts.verifier_image_publication_journal",
+        LaunchAuthorizationError,
+        context,
+    )
+    _validate_frozen_board_release(
+        image_release=image_release,
+        image_release_ref=image_release_ref,
+        publication_journal_ref=journal_ref,
+        board_bindings=board_bindings,
+        release_report=release_report,
+        release_slate=release_slate,
+        context=context,
     )
     manifest = _read_json_artifact(artifacts["deployment_manifest"], "authorization.artifacts.deployment_manifest", context)
     _validate_deployment_manifest(manifest, release_report, network)
@@ -198,7 +780,16 @@ def normalize_launch_authorization(
         context,
     )
     _validate_activation_rpc_operator_registry(rpc_operator_registry)
-    _validate_explorer_dossier(dossier, manifest, expires)
+    timestamp_dossier = _read_json_artifact(
+        artifacts["production_timestamp_dossier"],
+        "authorization.artifacts.production_timestamp_dossier",
+        context,
+    )
+    completion_timestamp = _validated_production_completion_timestamp(
+        timestamp_dossier, manifest, rpc_operator_registry,
+    )
+    explorer_validation_time = datetime.fromtimestamp(completion_timestamp, timezone.utc)
+    _validate_explorer_dossier(dossier, manifest, explorer_validation_time)
     _validate_explorer_with_node(
         artifact_root=Path(artifact_root),
         context=context,
@@ -206,7 +797,7 @@ def normalize_launch_authorization(
         capsule_ref=artifacts["release_capsule"],
         dossier_ref=artifacts["explorer_dossier"],
         operator_policy=operator_policy,
-        validation_time=issued,
+        validation_time=explorer_validation_time,
     )
     _validate_problem_reviews(
         authorization.get("problem_reviews"),
@@ -214,6 +805,7 @@ def normalize_launch_authorization(
         release_slate=release_slate,
         deployment_manifest=manifest,
         board_bindings=board_bindings,
+        image_release=image_release,
         trust_registry=trust_registry,
         context=context,
         issued=issued,
@@ -282,7 +874,7 @@ def _read_json_artifact(value: Any, prefix: str, context: AttestationValidationC
 
 
 def _read_protected_activation_rpc_registry(
-    value: Any, prefix: str, context: AttestationValidationContext
+    value: Any, prefix: str, context: AttestationValidationContext, *, require_root: bool = False,
 ) -> dict[str, Any]:
     ref = _validate_artifact_reference(value, prefix, LaunchAuthorizationError, context)
     if context.artifact_root is None:
@@ -292,6 +884,7 @@ def _read_protected_activation_rpc_registry(
     if not nofollow or not odirectory:
         raise LaunchAuthorizationError(f"{prefix} requires O_NOFOLLOW and O_DIRECTORY")
     root = Path(context.artifact_root).absolute()
+    trusted_uid = 0 if require_root else os.geteuid()
     relative = Path(ref["local_path"])
     if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
         raise LaunchAuthorizationError(f"{prefix}.local_path is outside its trusted root")
@@ -303,13 +896,13 @@ def _read_protected_activation_rpc_registry(
             held.append(os.open(component, os.O_RDONLY | odirectory | nofollow, dir_fd=held[-1]))
         for directory in held:
             metadata = os.fstat(directory)
-            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != trusted_uid or metadata.st_mode & 0o022:
                 raise LaunchAuthorizationError(f"{prefix} trusted path ancestor is unsafe")
         descriptor = os.open(relative.parts[-1], os.O_RDONLY | nofollow, dir_fd=held[-1])
         before = os.fstat(descriptor)
         if (
             not stat.S_ISREG(before.st_mode)
-            or before.st_uid != os.geteuid()
+            or before.st_uid != trusted_uid
             or before.st_nlink != 1
             or before.st_mode & 0o222
             or before.st_size > 1024 * 1024
@@ -372,6 +965,60 @@ def _validate_activation_rpc_operator_registry(registry: Mapping[str, Any]) -> N
             raise LaunchAuthorizationError("activation RPC operator profiles require unique stable IDs and origins")
         operator_ids.add(operator_id)
         origins.add(origin)
+
+
+def _validated_production_completion_timestamp(
+    dossier: Mapping[str, Any], manifest: Mapping[str, Any], rpc_registry: Mapping[str, Any],
+) -> int:
+    expected_keys = {
+        "schema", "manifestDigest", "deploymentConfigHash", "deploymentCommit",
+        "slateDigest", "capsuleDigest", "blocks",
+    }
+    if set(dossier) != expected_keys or dossier.get("schema") != "p42-prizes/production-timestamp-dossier/v1":
+        raise LaunchAuthorizationError("production timestamp dossier shape is invalid")
+    release_evidence = manifest.get("releaseEvidence", {})
+    if (
+        dossier.get("manifestDigest") != sha256_bytes(canonical_json(manifest).encode("utf-8"))
+        or dossier.get("deploymentConfigHash") != manifest.get("deploymentConfigHash")
+        or dossier.get("deploymentCommit") != manifest.get("deploymentCommit")
+        or dossier.get("slateDigest") != release_evidence.get("slateDigest")
+        or dossier.get("capsuleDigest") != release_evidence.get("capsuleDigest")
+    ):
+        raise LaunchAuthorizationError("production timestamp dossier release binding mismatch")
+    allowed_operators = {profile.get("operatorId") for profile in rpc_registry.get("profiles", [])}
+    rows = dossier.get("blocks")
+    if not isinstance(rows, list) or not rows:
+        raise LaunchAuthorizationError("production timestamp dossier has no block evidence")
+    by_block: dict[int, Mapping[str, Any]] = {}
+    row_keys = {"blockNumber", "blockHash", "timestamp", "primaryOperatorId", "secondaryOperatorId"}
+    for row in rows:
+        if (
+            not isinstance(row, Mapping) or set(row) != row_keys
+            or type(row.get("blockNumber")) is not int or row["blockNumber"] < 0
+            or type(row.get("timestamp")) is not int or row["timestamp"] <= 0
+            or not isinstance(row.get("blockHash"), str)
+            or re.fullmatch(r"0x[0-9a-fA-F]{64}", row["blockHash"]) is None
+            or row.get("primaryOperatorId") == row.get("secondaryOperatorId")
+            or row.get("primaryOperatorId") not in allowed_operators
+            or row.get("secondaryOperatorId") not in allowed_operators
+            or row["blockNumber"] in by_block
+        ):
+            raise LaunchAuthorizationError("production timestamp dossier block evidence is invalid")
+        by_block[row["blockNumber"]] = row
+    governance = manifest.get("governanceSetup", {})
+    completion = governance.get("completionBlockEvidence", {})
+    row = by_block.get(governance.get("completionBlock"))
+    if (
+        row is None
+        or row.get("timestamp") != governance.get("completionBlockTimestamp")
+        or row.get("timestamp") != completion.get("timestamp")
+        or str(row.get("blockHash", "")).casefold() != str(governance.get("completionBlockHash", "")).casefold()
+        or str(row.get("blockHash", "")).casefold() != str(completion.get("blockHash", "")).casefold()
+        or row.get("primaryOperatorId") != completion.get("primaryOperatorId")
+        or row.get("secondaryOperatorId") != completion.get("secondaryOperatorId")
+    ):
+        raise LaunchAuthorizationError("production timestamp dossier does not independently bind governance completion")
+    return row["timestamp"]
 
 
 def _canonical_activation_rpc_origin(value: Any) -> str:
@@ -460,7 +1107,49 @@ def _validate_deployment_manifest(manifest: Mapping[str, Any], release_report: M
             raise LaunchAuthorizationError(f"deployment {manifest_key} does not match verified release")
     if release_evidence.get("contractCount") != 47 or release_evidence.get("boardCount") != 10:
         raise LaunchAuthorizationError("deployment release evidence must bind canonical 47-contract topology")
-    _canonical_contract_entries(manifest)
+    entries = _canonical_contract_entries(manifest)
+    governance = manifest.get("governanceSetup")
+    if not isinstance(governance, Mapping) or governance.get("status") != "complete":
+        raise LaunchAuthorizationError("deployment manifest lacks completed governance setup evidence")
+    completion_block = governance.get("completionBlock")
+    completion_timestamp = governance.get("completionBlockTimestamp")
+    completion_hash = governance.get("completionBlockHash")
+    completion_evidence = governance.get("completionBlockEvidence")
+    anchor = governance.get("finalityAnchor")
+    if (
+        type(completion_block) is not int or completion_block < 0
+        or type(completion_timestamp) is not int or completion_timestamp <= 0
+        or not isinstance(completion_hash, str) or re.fullmatch(r"0x[0-9a-fA-F]{64}", completion_hash) is None
+        or not isinstance(completion_evidence, Mapping)
+        or not isinstance(anchor, Mapping)
+    ):
+        raise LaunchAuthorizationError("deployment governance completion evidence is incomplete")
+    evidence_hash = str(completion_evidence.get("blockHash", ""))
+    primary_hash = str(completion_evidence.get("primaryBlockHash", ""))
+    secondary_hash = str(completion_evidence.get("secondaryBlockHash", ""))
+    finalized = anchor.get("l2", {}).get("finalized", {}) if isinstance(anchor.get("l2"), Mapping) else {}
+    primary_operator = completion_evidence.get("primaryOperatorId")
+    secondary_operator = completion_evidence.get("secondaryOperatorId")
+    rpc_evidence = anchor.get("rpcEvidence", {}) if isinstance(anchor.get("rpcEvidence"), Mapping) else {}
+    if (
+        type(completion_evidence.get("blockNumber")) is not int
+        or type(completion_evidence.get("timestamp")) is not int
+        or completion_evidence.get("blockNumber") != completion_block
+        or completion_evidence.get("timestamp") != completion_timestamp
+        or evidence_hash.casefold() != completion_hash.casefold()
+        or primary_hash.casefold() != completion_hash.casefold()
+        or secondary_hash.casefold() != completion_hash.casefold()
+        or not isinstance(primary_operator, str) or not isinstance(secondary_operator, str)
+        or primary_operator == secondary_operator
+        or anchor.get("schema") != "p42-prizes/base-sepolia-finality-anchor/v1"
+        or anchor.get("operators") != [primary_operator, secondary_operator]
+        or rpc_evidence.get("primaryOperatorId") != primary_operator
+        or rpc_evidence.get("secondaryOperatorId") != secondary_operator
+        or finalized.get("number") != completion_block
+        or str(finalized.get("hash", "")).casefold() != completion_hash.casefold()
+        or any(type(entry.get("blockNumber")) is not int or entry["blockNumber"] > completion_block for _path, entry, _factory in entries)
+    ):
+        raise LaunchAuthorizationError("deployment governance completion timestamp is not bound to canonical finalized evidence")
 
 
 def _flatten_contract_addresses(value: Any) -> set[str]:
@@ -672,29 +1361,45 @@ def _validate_contract_entry(value: Any, expected_name: str, factory_created: bo
     return value
 
 
-def _validate_explorer_dossier(dossier: Mapping[str, Any], manifest: Mapping[str, Any], expires: datetime) -> None:
-    expected_keys = {"schema", "chainId", "releaseBindingDigest", "capsuleDigest", "deploymentCommit", "finalizedAt", "expiresAt", "contracts", "evidenceDigest", "operatorRoster", "attestations", "dossierDigest"}
+def _validate_explorer_dossier(dossier: Mapping[str, Any], manifest: Mapping[str, Any], validation_time: datetime) -> None:
+    expected_keys = {"schema", "request", "attestations", "dossierDigest"}
     if set(dossier) != expected_keys:
         raise LaunchAuthorizationError("explorer dossier has unexpected or missing fields")
-    if dossier.get("schema") != "p42-prizes/explorer-verification-dossier/v2":
-        raise LaunchAuthorizationError("explorer dossier must be v2")
+    if dossier.get("schema") != "p42-prizes/explorer-verification-dossier/v3":
+        raise LaunchAuthorizationError("explorer dossier must be v3")
     signed_body = {key: value for key, value in dossier.items() if key != "dossierDigest"}
     if dossier.get("dossierDigest") != sha256_bytes(canonical_json(signed_body).encode("utf-8")):
         raise LaunchAuthorizationError("explorer dossier digest is not canonical")
-    core = {key: value for key, value in signed_body.items() if key not in {"evidenceDigest", "operatorRoster", "attestations"}}
-    if dossier.get("evidenceDigest") != sha256_bytes(canonical_json(core).encode("utf-8")):
+    request = dossier.get("request")
+    request_keys = {"schema", "evidence", "operatorRoster", "operatorNonces", "createdAt", "expiresAt", "requestDigest"}
+    if not isinstance(request, Mapping) or set(request) != request_keys or request.get("schema") != "p42-prizes/explorer-verification-request/v1":
+        raise LaunchAuthorizationError("explorer dossier request shape is invalid")
+    request_body = {key: value for key, value in request.items() if key != "requestDigest"}
+    if request.get("requestDigest") != sha256_bytes(canonical_json(request_body).encode("utf-8")):
+        raise LaunchAuthorizationError("explorer request digest is not canonical")
+    evidence = request.get("evidence")
+    evidence_keys = {"schema", "chainId", "releaseBindingDigest", "capsuleDigest", "deploymentCommit", "collectedAt", "finalityAnchor", "blockEvidence", "contracts", "evidenceDigest"}
+    if not isinstance(evidence, Mapping) or set(evidence) != evidence_keys or evidence.get("schema") != "p42-prizes/explorer-verification-evidence/v1":
+        raise LaunchAuthorizationError("explorer evidence shape is invalid")
+    evidence_body = {key: value for key, value in evidence.items() if key != "evidenceDigest"}
+    if evidence.get("evidenceDigest") != sha256_bytes(canonical_json(evidence_body).encode("utf-8")):
         raise LaunchAuthorizationError("explorer dossier evidence digest is not canonical")
-    if dossier.get("chainId") != manifest.get("network", {}).get("chainId"):
+    if evidence.get("chainId") != manifest.get("network", {}).get("chainId"):
         raise LaunchAuthorizationError("explorer dossier chain does not match deployment")
-    if dossier.get("deploymentCommit") != manifest.get("deploymentCommit"):
+    if evidence.get("deploymentCommit") != manifest.get("deploymentCommit"):
         raise LaunchAuthorizationError("explorer dossier commit does not match deployment")
     if dossier.get("dossierDigest") != manifest.get("sourceVerification", {}).get("dossierDigest"):
         raise LaunchAuthorizationError("explorer dossier digest does not match deployment manifest")
     release_evidence = manifest.get("releaseEvidence", {})
-    if dossier.get("releaseBindingDigest") != release_evidence.get("releaseBindingDigest") or dossier.get("capsuleDigest") != release_evidence.get("capsuleDigest"):
+    if evidence.get("releaseBindingDigest") != release_evidence.get("releaseBindingDigest") or evidence.get("capsuleDigest") != release_evidence.get("capsuleDigest"):
         raise LaunchAuthorizationError("explorer dossier does not match deployment release evidence")
+    roster = request.get("operatorRoster")
+    nonces = request.get("operatorNonces")
+    attestations = dossier.get("attestations")
+    if not isinstance(roster, list) or len(roster) != 2 or len({str(item).casefold() for item in roster}) != 2 or not isinstance(nonces, list) or len(nonces) != 2 or not isinstance(attestations, list) or len(attestations) != 2:
+        raise LaunchAuthorizationError("explorer dossier must bind exactly two operators, nonces, and attestations")
     deployed = _canonical_contract_entries(manifest)
-    dossier_contracts = dossier.get("contracts")
+    dossier_contracts = evidence.get("contracts")
     if not isinstance(dossier_contracts, list) or len(dossier_contracts) != 47:
         raise LaunchAuthorizationError("explorer dossier must cover canonical ordered 47 contracts")
     for index, ((path, contract, _factory_key), row) in enumerate(zip(deployed, dossier_contracts, strict=True)):
@@ -728,14 +1433,29 @@ def _validate_explorer_dossier(dossier: Mapping[str, Any], manifest: Mapping[str
                 or str(receipt.get("logAddress", "")).casefold() != str(provenance["factoryAddress"]).casefold()
                 or [str(topic).casefold() for topic in receipt.get("topics", [])] != [topic.casefold() for topic in expected_topics]
                 or receipt.get("data") != "0x"
-                or str(receipt.get("configurationResult", "")).casefold() != str(provenance["configurationHash"]).casefold()
             ):
-                raise LaunchAuthorizationError(f"explorer dossier contract {index} receipt/event/configuration mismatch")
+                raise LaunchAuthorizationError(f"explorer dossier contract {index} receipt/event mismatch")
+            snapshot = deployment.get("snapshotConfiguration")
+            block_evidence = evidence.get("blockEvidence")
+            if (
+                not isinstance(snapshot, Mapping)
+                or not isinstance(block_evidence, Mapping)
+                or snapshot.get("blockNumber") != block_evidence.get("blockNumber")
+                or str(snapshot.get("blockHash", "")).casefold() != str(block_evidence.get("blockHash", "")).casefold()
+                or str(snapshot.get("primaryResult", "")).casefold() != str(provenance["configurationHash"]).casefold()
+                or str(snapshot.get("secondaryResult", "")).casefold() != str(provenance["configurationHash"]).casefold()
+            ):
+                raise LaunchAuthorizationError(f"explorer dossier contract {index} finalized configuration mismatch")
         elif set(deployment) != {"kind"}:
             raise LaunchAuthorizationError(f"explorer dossier direct contract {index} has unexpected provenance")
-    dossier_expiry = datetime.fromtimestamp(dossier.get("expiresAt", 0), timezone.utc)
-    if dossier_expiry < expires:
-        raise LaunchAuthorizationError("authorization cannot outlive explorer verification evidence")
+    try:
+        created = datetime.fromisoformat(str(request.get("createdAt", "")).replace("Z", "+00:00"))
+        collected = datetime.fromisoformat(str(evidence.get("collectedAt", "")).replace("Z", "+00:00"))
+        dossier_expiry = datetime.fromtimestamp(request.get("expiresAt", 0), timezone.utc)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise LaunchAuthorizationError("explorer verification timestamps are invalid") from exc
+    if created.tzinfo is None or collected.tzinfo is None or created > validation_time or collected > validation_time or dossier_expiry < validation_time:
+        raise LaunchAuthorizationError("explorer verification was not valid at governance completion")
 
 
 def _validate_explorer_with_node(
@@ -777,6 +1497,78 @@ def _validate_explorer_with_node(
         raise LaunchAuthorizationError(f"explorer dossier failed independent static validation: {detail}")
 
 
+def _validate_frozen_board_release(
+    *,
+    image_release: Mapping[str, Any],
+    image_release_ref: Mapping[str, Any],
+    publication_journal_ref: Mapping[str, Any],
+    board_bindings: Mapping[str, Any],
+    release_report: Mapping[str, Any],
+    release_slate: Mapping[str, Any],
+    context: AttestationValidationContext,
+) -> None:
+    release_commit = image_release.get("release_config_commit")
+    if release_commit != release_report.get("sourceCommit"):
+        raise LaunchAuthorizationError(
+            "verifier image release config commit does not match deployment release commit"
+        )
+    image_registry = release_slate.get("imageRegistry")
+    if (
+        not isinstance(image_registry, Mapping)
+        or image_registry.get("path") != image_release_ref["local_path"]
+        or image_registry.get("digest") != image_release_ref["sha256"]
+    ):
+        raise LaunchAuthorizationError("release slate image registry does not bind the exact image release dossier")
+
+    validator_root = _SCHEMA_DIR.parent
+
+    def verify_snapshot(snapshot: Path) -> None:
+        script = validator_root / "scripts" / "verify_production_board_bindings.py"
+        try:
+            result = run_bounded_process(
+                [sys.executable, str(script), "--repo-root", str(snapshot)],
+                cwd=validator_root,
+                env={
+                    "PATH": os.environ.get("PATH", os.defpath),
+                    "PYTHONPATH": str(snapshot / "src"),
+                },
+                timeout=300,
+            )
+        except (OSError, subprocess.SubprocessError, OutputLimitExceeded) as exc:
+            raise AdmissionError(f"exact-ten frozen board replay could not run: {exc}") from exc
+        if result.returncode != 0:
+            raise AdmissionError("exact-ten frozen board replay failed")
+        try:
+            frozen_bindings = loads_strict_json(
+                (snapshot / "protocol" / "production-board-bindings-v1.json").read_bytes()
+            )
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            raise AdmissionError("frozen canonical board bindings are unreadable") from exc
+        if frozen_bindings != board_bindings:
+            raise AdmissionError("supplied board bindings do not equal the frozen canonical checkout")
+
+    journal_payload = context.resolved_artifacts.get(
+        (publication_journal_ref["local_path"], publication_journal_ref["sha256"])
+    )
+    if not isinstance(journal_payload, bytes):
+        raise LaunchAuthorizationError("verifier image publication journal was not resolved exactly")
+    try:
+        with tempfile.TemporaryDirectory(prefix="p42-launch-journal-") as temporary:
+            journal_path = Path(temporary) / "publication-journal.json"
+            journal_path.write_bytes(journal_payload)
+            validate_image_release_checkout(
+                validator_root,
+                image_release,
+                publication_journal_path=journal_path,
+                publication_journal_file_sha256=publication_journal_ref["sha256"],
+                board_binding_verifier=verify_snapshot,
+            )
+    except (AdmissionError, OSError, subprocess.SubprocessError) as exc:
+        raise LaunchAuthorizationError(
+            f"verifier image source/release checkout failed independent exact replay: {exc}"
+        ) from exc
+
+
 def _validate_problem_reviews(
     reviews: Any,
     *,
@@ -784,6 +1576,7 @@ def _validate_problem_reviews(
     release_slate: Mapping[str, Any],
     deployment_manifest: Mapping[str, Any],
     board_bindings: Mapping[str, Any],
+    image_release: Mapping[str, Any],
     trust_registry: Mapping[str, Any],
     context: AttestationValidationContext,
     issued: datetime,
@@ -815,9 +1608,28 @@ def _validate_problem_reviews(
         raise LaunchAuthorizationError("production board bindings release source does not match verified release")
     if not isinstance(slate_boards, list) or len(slate_boards) != 10:
         raise LaunchAuthorizationError("production release slate must contain exactly ten ordered boards")
-    for position, (binding_record, slate_board) in enumerate(zip(binding_records, slate_boards), start=1):
+    image_boards = image_release.get("boards")
+    if (
+        image_release.get("release_config_commit") != release_report.get("sourceCommit")
+        or not isinstance(image_boards, list)
+        or len(image_boards) != 10
+    ):
+        raise LaunchAuthorizationError("verifier image release does not match the exact deployment release")
+    for position, (binding_record, slate_board, image_board) in enumerate(
+        zip(binding_records, slate_boards, image_boards, strict=True), start=1
+    ):
         if not isinstance(slate_board, Mapping):
             raise LaunchAuthorizationError("production release slate contains an invalid board")
+        if (
+            not isinstance(image_board, Mapping)
+            or image_board.get("slug") != binding_record["slug"]
+            or image_board.get("source_hash") != binding_record["verifier"]["source_tree_sha256"]
+            or image_board.get("version") != binding_record["verifier"]["version"]
+            or image_board.get("index_digest") != slate_board.get("verifierImageDigest")
+        ):
+            raise LaunchAuthorizationError(
+                f"production board binding {position} does not match verifier image source evidence"
+            )
         expected_slate_binding = {
             "problemId": str(position),
             "problemSlug": binding_record["slug"],
@@ -837,6 +1649,11 @@ def _validate_problem_reviews(
         for row in deployment_manifest.get("problems", [])
         if isinstance(row, Mapping)
     }
+    image_by_slug = {
+        row.get("slug"): row
+        for row in image_boards
+        if isinstance(row, Mapping) and isinstance(row.get("slug"), str)
+    }
     seen_ids: set[str] = set()
     seen_slugs: set[str] = set()
     for index, review in enumerate(reviews):
@@ -851,7 +1668,11 @@ def _validate_problem_reviews(
             binding_position = int(problem_id)
         except (TypeError, ValueError) as exc:
             raise LaunchAuthorizationError("problem review id must be an exact canonical board position") from exc
-        if not 1 <= binding_position <= 10 or binding_records[binding_position - 1].get("slug") != slug:
+        if (
+            binding_position != index + 1
+            or not 1 <= binding_position <= 10
+            or binding_records[binding_position - 1].get("slug") != slug
+        ):
             raise LaunchAuthorizationError("problem review does not match its ordered canonical board binding")
         board = admitted.get(problem_id)
         if board is None or board.get("problemSlug") != slug or board.get("matrixDigest") != review.get("admission_matrix_digest"):
@@ -867,6 +1688,8 @@ def _validate_problem_reviews(
         binding_record = binding_by_slug.get(slug)
         if binding_record is None:
             raise LaunchAuthorizationError(f"problem review {problem_id} has no production board binding")
+        if image_by_slug.get(slug, {}).get("index_digest") != review.get("verifier_image_digest"):
+            raise LaunchAuthorizationError(f"problem review {problem_id} does not match exact verifier image release")
         board_binding_hash = sha256_bytes(canonical_json(binding_record).encode("utf-8"))
         if review.get("board_bindings_digest") != board_bindings_digest:
             raise LaunchAuthorizationError(f"problem review {problem_id} board bindings digest mismatch")
@@ -882,24 +1705,244 @@ def _validate_problem_reviews(
             chain_reader=context.chain_reader,
             error_type=LaunchAuthorizationError,
         )
-        _validate_math_review(packet, review, trust_registry, review_context, issued)
+        release_evidence = deployment_manifest.get("releaseEvidence")
+        if not isinstance(release_evidence, Mapping):
+            raise LaunchAuthorizationError("deployment manifest has no production release evidence")
+        deployed_release_binding = {
+            "board_position": binding_position,
+            "verifier_source_commit": image_release.get("verifier_source_commit"),
+            "verifier_source_archive_digest": image_release.get("verifier_source_archive_digest"),
+            "release_config_commit": image_release.get("release_config_commit"),
+            "release_config_archive_digest": image_release.get("release_config_archive_digest"),
+            "deployment_commit": release_report.get("sourceCommit"),
+            "release_capsule_digest": release_report.get("capsuleDigest"),
+            "release_slate_digest": release_report.get("slateDigest"),
+            "release_index_digest": release_report.get("releaseIndexDigest"),
+            "release_verification_digest": release_report.get("verificationReportDigest"),
+            "ceremony_config_digest": release_report.get("ceremonyConfigDigest"),
+            "release_binding_digest": release_evidence.get("releaseBindingDigest"),
+            "board_set_digest": release_evidence.get("boardSetDigest"),
+        }
+        _validate_math_review(
+            packet,
+            review,
+            trust_registry,
+            review_context,
+            issued,
+            deployed_release_binding=deployed_release_binding,
+            board_binding=binding_record,
+        )
         if review.get("review_hash") != packet.get("review_hash"):
             raise LaunchAuthorizationError(f"problem review {problem_id} hash mismatch")
 
 
-def _validate_math_review(packet: Mapping[str, Any], row: Mapping[str, Any], trust_registry: Mapping[str, Any], context: AttestationValidationContext, issued: datetime) -> None:
-    expected = {"schema_version", "problem_id", "problem_slug", "board_bindings_digest", "board_binding_hash", "verifier_image_digest", "admission_matrix_digest", "status", "completed_at_utc", "reviewer", "review_hash", "signature"}
-    if set(packet) != expected or packet.get("schema_version") != MATH_REVIEW_SCHEMA_VERSION or packet.get("status") != "approved":
-        raise LaunchAuthorizationError("math review packet has invalid shape or status")
+def _validate_math_review(
+    packet: Mapping[str, Any],
+    row: Mapping[str, Any],
+    trust_registry: Mapping[str, Any],
+    context: AttestationValidationContext,
+    issued: datetime,
+    *,
+    deployed_release_binding: Mapping[str, Any],
+    board_binding: Mapping[str, Any],
+) -> None:
+    del trust_registry
+    try:
+        schema = json.loads((_SCHEMA_DIR / "math-review.schema.json").read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator.check_schema(schema)
+        jsonschema.Draft202012Validator(
+            schema, format_checker=jsonschema.FormatChecker()
+        ).validate(packet)
+    except (OSError, ValueError, jsonschema.SchemaError, jsonschema.ValidationError) as exc:
+        raise LaunchAuthorizationError(f"math review packet failed v4 schema validation: {exc}") from exc
     for packet_key, row_key in (("problem_id", "problem_id"), ("problem_slug", "problem_slug"), ("board_bindings_digest", "board_bindings_digest"), ("board_binding_hash", "board_binding_hash"), ("verifier_image_digest", "verifier_image_digest"), ("admission_matrix_digest", "admission_matrix_digest")):
         if packet.get(packet_key) != row.get(row_key):
             raise LaunchAuthorizationError(f"math review {packet_key} does not match authorization")
+    if packet.get("deployed_release_binding") != dict(deployed_release_binding):
+        raise LaunchAuthorizationError("math review deployed_release_binding does not match exact deployed release")
+    if deployed_release_binding.get("release_config_commit") != deployed_release_binding.get("deployment_commit"):
+        raise LaunchAuthorizationError("math review release config commit R does not match deployment commit R")
+    _validate_math_review_evidence_bindings(
+        packet,
+        board_binding=board_binding,
+        deployed_release_binding=deployed_release_binding,
+    )
     completed = _require_utc(packet.get("completed_at_utc"), "math_review.completed_at_utc", LaunchAuthorizationError)
     if completed > issued:
         raise LaunchAuthorizationError("math review completion must not follow authorization issuance")
-    reviewer = _validate_identity(packet.get("reviewer"), "math_review.reviewer", expected_role="independent-math-reviewer", require_independent=True, error_type=LaunchAuthorizationError, context=context)
-    unsigned = {key: value for key, value in packet.items() if key not in {"review_hash", "signature"}}
+    literature_completed = _require_utc(
+        packet["literature_review"].get("completed_at_utc"),
+        "math_review.literature_review.completed_at_utc",
+        LaunchAuthorizationError,
+    )
+    if literature_completed > completed:
+        raise LaunchAuthorizationError("math review literature review must complete before packet completion")
+
+    reviewer = _validate_identity(
+        packet.get("reviewer"), "math_review.reviewer",
+        expected_role="independent-math-reviewer", require_independent=True,
+        error_type=LaunchAuthorizationError, context=context,
+    )
+    acceptance = packet["problem_owner_acceptance"]
+    owner = _validate_identity(
+        acceptance.get("owner"), "math_review.problem_owner_acceptance.owner",
+        expected_role="problem-owner", error_type=LaunchAuthorizationError, context=context,
+    )
+    if reviewer["public_key"] == owner["public_key"]:
+        raise LaunchAuthorizationError("math reviewer and problem owner must use distinct registered keys")
+    accepted_at = _require_utc(
+        acceptance.get("accepted_at_utc"),
+        "math_review.problem_owner_acceptance.accepted_at_utc",
+        LaunchAuthorizationError,
+    )
+    if accepted_at > completed:
+        raise LaunchAuthorizationError("problem-owner acceptance must not follow math review completion")
+
+    for prefix, artifact in _math_review_artifacts(packet):
+        _validate_artifact_reference(artifact, prefix, LaunchAuthorizationError, context)
+
+    findings = packet["findings"]
+    finding_ids = [finding["finding_id"] for finding in findings]
+    if len(finding_ids) != len(set(finding_ids)):
+        raise LaunchAuthorizationError("math review finding_id values must be unique")
+    remediated = {finding["finding_id"] for finding in findings if finding["disposition"] == "resolved"}
+    remediation = packet["remediation_and_retest"]
+    if set(remediation["finding_ids"]) != remediated:
+        raise LaunchAuthorizationError("math review remediation finding_ids must cover every resolved finding exactly")
+    expected_remediation_status = "completed" if remediated else "not-required"
+    if remediation["status"] != expected_remediation_status:
+        raise LaunchAuthorizationError(
+            f"math review remediation status must be {expected_remediation_status} for its finding dispositions"
+        )
+
+    unsigned = {
+        key: value for key, value in packet.items()
+        if key not in {"review_hash", "reviewer_signature", "problem_owner_signature"}
+    }
     review_hash = sha256_bytes(canonical_json(unsigned).encode("utf-8"))
     if packet.get("review_hash") != review_hash:
         raise LaunchAuthorizationError("math review hash is not canonical")
-    _validate_signature(packet.get("signature"), "math_review.signature", schema_version=MATH_REVIEW_SCHEMA_VERSION, artifact_hash=review_hash, identity=reviewer, expected_role="independent-math-reviewer", error_type=LaunchAuthorizationError, context=context, not_after=completed)
+    _validate_signature(
+        packet.get("reviewer_signature"), "math_review.reviewer_signature",
+        schema_version=MATH_REVIEW_SCHEMA_VERSION, artifact_hash=review_hash,
+        identity=reviewer, expected_role="independent-math-reviewer",
+        error_type=LaunchAuthorizationError, context=context, not_after=completed,
+    )
+    _validate_signature(
+        packet.get("problem_owner_signature"), "math_review.problem_owner_signature",
+        schema_version=MATH_REVIEW_SCHEMA_VERSION, artifact_hash=review_hash,
+        identity=owner, expected_role="problem-owner",
+        error_type=LaunchAuthorizationError, context=context, not_after=completed,
+    )
+
+
+def _math_review_artifacts(packet: Mapping[str, Any]) -> list[tuple[str, Any]]:
+    expertise = packet["expertise_and_conflicts"]
+    verifier = packet["verifier_schema_and_fixtures"]
+    literature = packet["literature_review"]
+    artifacts = [
+        ("math_review.expertise_and_conflicts.expertise_evidence", expertise["expertise_evidence"]),
+        ("math_review.verifier_schema_and_fixtures.replay_result", verifier["replay_result"]),
+        ("math_review.literature_review.search_record", literature["search_record"]),
+    ]
+    remediation = packet["remediation_and_retest"]
+    if remediation["status"] == "completed":
+        artifacts.extend([
+            ("math_review.remediation_and_retest.remediation_artifact", remediation["remediation_artifact"]),
+            ("math_review.remediation_and_retest.retest_artifact", remediation["retest_artifact"]),
+        ])
+    return artifacts
+
+
+def _validate_math_review_evidence_bindings(
+    packet: Mapping[str, Any],
+    *,
+    board_binding: Mapping[str, Any],
+    deployed_release_binding: Mapping[str, Any],
+) -> None:
+    slug = packet["problem_slug"]
+    if board_binding.get("slug") != slug:
+        raise LaunchAuthorizationError("math review evidence board binding does not match problem slug")
+    verifier_binding = board_binding.get("verifier")
+    if not isinstance(verifier_binding, Mapping):
+        raise LaunchAuthorizationError("math review evidence has no canonical verifier binding")
+    source_identity = {
+        "verifier_source_commit": deployed_release_binding.get("verifier_source_commit"),
+        "release_config_commit": deployed_release_binding.get("release_config_commit"),
+        "problem_slug": slug,
+        "tree_hash_algorithm": SOURCE_HASH_ALGORITHM,
+        "tree_hash": verifier_binding.get("source_tree_sha256"),
+    }
+
+    statement = packet["literal_statement_and_reduction"]
+    verifier = packet["verifier_schema_and_fixtures"]
+    expected_board_artifacts = (
+        ("statement_artifact", statement["statement_artifact"], board_binding.get("specification")),
+        ("solution_schema", verifier["solution_schema"], board_binding.get("solution_schema")),
+    )
+    bound_refs: list[tuple[str, str]] = []
+    for role, observed, canonical in expected_board_artifacts:
+        expected = dict(canonical) | {"source_identity": source_identity} if isinstance(canonical, Mapping) else None
+        if observed != expected:
+            raise LaunchAuthorizationError(
+                f"math review {role} does not match its canonical board artifact and source identity"
+            )
+        bound_refs.append((observed["path"], observed["sha256"]))
+    if statement["canonical_claim_scope"] != board_binding.get("claim_scope"):
+        raise LaunchAuthorizationError("math review canonical_claim_scope does not match the board claim boundary")
+    if statement["canonical_objective"] != board_binding.get("objective"):
+        raise LaunchAuthorizationError("math review canonical_objective does not match the board objective")
+
+    expected_verifier_source = {
+        "problem_path": f"problems/{slug}",
+        "version": verifier_binding.get("version"),
+        "command": verifier_binding.get("command"),
+        "source_identity": source_identity,
+    }
+    if verifier["verifier_source"] != expected_verifier_source:
+        raise LaunchAuthorizationError(
+            "math review verifier_source does not match the canonical verifier and source identity"
+        )
+
+    fixture_verdicts = verifier["fixture_verdicts"]
+    canonical_fixtures = board_binding.get("math_review_fixtures")
+    if not isinstance(canonical_fixtures, list):
+        raise LaunchAuthorizationError("math review evidence has no canonical board fixture corpus")
+    expected_fixtures = []
+    for fixture in canonical_fixtures:
+        if not isinstance(fixture, Mapping) or not isinstance(fixture.get("expected_verdict"), Mapping):
+            raise LaunchAuthorizationError("math review evidence has an invalid canonical board fixture corpus")
+        expected_fixtures.append({
+            "path": fixture.get("path"),
+            "sha256": fixture.get("sha256"),
+            "expected_verdict": fixture["expected_verdict"],
+            "source_identity": source_identity,
+        })
+    if fixture_verdicts != expected_fixtures:
+        raise LaunchAuthorizationError("math review fixture_verdicts do not exactly match canonical verifier results")
+    accepted_count = sum(
+        fixture["expected_verdict"]["status"] == "accepted" for fixture in expected_fixtures
+    )
+    expected_counts = {
+        "accepted": accepted_count,
+        "rejected": len(expected_fixtures) - accepted_count,
+        "total": len(expected_fixtures),
+    }
+    if verifier["fixture_verdict_counts"] != expected_counts:
+        raise LaunchAuthorizationError("math review fixture_verdict_counts do not match canonical verifier results")
+    expected_acceptance_review = {
+        "method": "canonical-fixture-replay" if accepted_count else "source-inspection-only",
+        "limitation": (
+            FIXTURE_REPLAY_ACCEPTANCE_LIMITATION
+            if accepted_count
+            else SOURCE_ONLY_ACCEPTANCE_LIMITATION
+        ),
+    }
+    if verifier["acceptance_path_review"] != expected_acceptance_review:
+        raise LaunchAuthorizationError(
+            "math review acceptance_path_review overclaims canonical acceptance-path evidence"
+        )
+    for fixture in fixture_verdicts:
+        bound_refs.append((fixture["path"], fixture["sha256"]))
+    if len(bound_refs) != len(set(bound_refs)):
+        raise LaunchAuthorizationError("math review evidence roles must use distinct canonical source references")

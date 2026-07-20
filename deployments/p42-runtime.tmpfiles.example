@@ -1,0 +1,14 @@
+d /var/lib/p42/operator/coordination 0770 root p42-verifier-submitters -
+d /var/lib/p42/resolver-rerun-requests 0750 root p42-resolver-rerun-requests -
+d /var/lib/p42/resolver-rerun-requests/2 0750 root p42-resolver-rerun-requests -
+d /var/lib/p42/resolver-rerun-requests/3 0750 root p42-resolver-rerun-requests -
+d /var/lib/p42/resolver-rerun-requests/4 0750 root p42-resolver-rerun-requests -
+d /var/lib/p42/resolver-rerun-requests/5 0750 root p42-resolver-rerun-requests -
+d /var/lib/p42/resolver-rerun-requests/6 0750 root p42-resolver-rerun-requests -
+d /var/lib/p42/resolver-rerun-requests/8 0750 root p42-resolver-rerun-requests -
+d /var/lib/p42/resolver-rerun-requests/9 0750 root p42-resolver-rerun-requests -
+d /var/lib/p42/resolver-rerun-requests/10 0750 root p42-resolver-rerun-requests -
+d /var/lib/p42/resolver-rerun-requests/11 0750 root p42-resolver-rerun-requests -
+d /var/lib/p42/resolver-rerun-requests/12 0750 root p42-resolver-rerun-requests -
+d /var/lib/p42/resolver-rerun-dispatcher 0700 root root -
+d /var/lib/p42/resolver-rerun-dispatcher/slots 0700 root root -

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { generateKeyPairSync, sign as signEd25519 } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,15 @@ import { ethers } from "ethers";
 import { canonicalJson, sha256Canonical, verifierImageHashForDigest, verifierSourceHashForDigest } from "./lib.mjs";
 import { buildResolverVerdictHash } from "./resolver.mjs";
 import { buildResolverQuorumDecisionPacket } from "./resolver-quorum.mjs";
+import { buildResolverRerunRequest } from "./resolver-rerun-executor.mjs";
+import {
+  bindResolverRerunReceipt,
+  issueResolverRerunChallenge,
+  markResolverRerunAuthorization,
+  markResolverRerunSignature,
+  persistResolverRerunRequest,
+  resolverRerunReceiptSigningMessage,
+} from "./resolver-rerun-attestation.mjs";
 import { persistSignerAuthorization, verifyIndependentResolverDecision } from "./resolver-signer.mjs";
 
 const ADDR = {
@@ -23,6 +33,18 @@ const HASH = (digit) => `0x${digit.repeat(64)}`;
 const SHA = (digit) => `sha256:${digit.repeat(64)}`;
 const IMAGE = SHA("e");
 const SOURCE = SHA("f");
+const BOARD_MEMORY_MB = 128;
+const BOARD_WALL_SECONDS = 60;
+const VERIFY_NOW = Date.parse("2026-07-10T00:05:00Z");
+const EXECUTOR_KEYS = generateKeyPairSync("ed25519");
+const EXECUTOR_PUBLIC = `ed25519:${EXECUTOR_KEYS.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex")}`;
+const EXECUTOR_TRUST = Object.freeze({
+  schema_version: "p42-resolver-rerun-executor-trust/v1",
+  key_id: "resolver-executor-fixture",
+  purpose: "resolver-rerun",
+  algorithm: "ed25519",
+  public_key: EXECUTOR_PUBLIC,
+});
 
 function registryBinding() {
   return {
@@ -93,13 +115,23 @@ function candidate(overrides = {}) {
   return value;
 }
 
-function transcript({ generated = "2026-07-10T00:00:00Z", candidateValue = candidate(), reportValue = report() } = {}) {
+function transcript({ generated = "2026-07-10T00:00:00Z", elapsedMs = 15, candidateValue = candidate(), reportValue = report() } = {}) {
+  const boardResources = { memory_mb: BOARD_MEMORY_MB, wall_seconds: BOARD_WALL_SECONDS };
   const value = {
     schema_version: "p42-runner-transcript/v1",
     job_id: `independent-${generated}`,
     generated_at_utc: generated,
     started_at_utc: generated,
     problem: "/repo/problems/hadamard-mini",
+    board_identity: {
+      problem_slug: "hadamard-mini",
+      problem_path: "/repo/problems/hadamard-mini",
+      verifier_command: "python3 verifier/verify.py --solution {solution}",
+      verifier_image: `ghcr.io/p42/hadamard-mini@${IMAGE}`,
+      verifier_source_sha256: SOURCE,
+      resource_identity: sha256Canonical(boardResources),
+      ...boardResources,
+    },
     solution: "/runtime/inputs/fixture.json",
     da: {
       ok: true,
@@ -109,7 +141,7 @@ function transcript({ generated = "2026-07-10T00:00:00Z", candidateValue = candi
       challengeable: false,
     },
     resource_limits: {
-      required_memory_mb: 128,
+      required_memory_mb: BOARD_MEMORY_MB,
       memory_safety_factor: 2,
       child_address_space_limit_mb: 256,
       address_space_limit_supported: true,
@@ -117,7 +149,7 @@ function transcript({ generated = "2026-07-10T00:00:00Z", candidateValue = candi
     verifier: {
       ok: true,
       valid: true,
-      elapsed_ms: 15,
+      elapsed_ms: elapsedMs,
       sandbox: "docker",
       report: reportValue,
       report_hash: sha256Canonical(reportValue),
@@ -140,9 +172,56 @@ function transcript({ generated = "2026-07-10T00:00:00Z", candidateValue = candi
   return { ...value, transcript_hash: sha256Canonical(value) };
 }
 
-function fixture() {
+function rerunChallenge(packet, overrides = {}) {
+  return {
+    schema_version: "p42-resolver-rerun-challenge/v1",
+    packet_hash: packet.packet_hash,
+    decision_digest: packet.decision_digest,
+    challenge_instance_hash: packet.decision.challengeInstanceHash,
+    orchestrator_nonce: HASH("6"),
+    issued_at_utc: "2026-07-10T00:00:00Z",
+    expires_at_utc: "2026-07-10T00:15:00Z",
+    ...overrides,
+  };
+}
+
+function signedRerunReceipt({ packet, publishedTranscript, localTranscript, challenge, keys = EXECUTOR_KEYS, trust = EXECUTOR_TRUST }) {
+  const unsigned = {
+    schema_version: "p42-resolver-rerun/v1",
+    executor_key_id: trust.key_id,
+    algorithm: "ed25519",
+    packet_hash: packet.packet_hash,
+    decision_digest: packet.decision_digest,
+    chain_id: packet.decision.chainId,
+    quorum: packet.decision.adapter,
+    manager: packet.decision.manager,
+    submission_id: packet.decision.submissionId,
+    challenge_instance_hash: packet.decision.challengeInstanceHash,
+    reveal_instance_hash: localTranscript.verifier.chain_claim.reveal_instance_hash,
+    published_transcript_hash: publishedTranscript.transcript_hash,
+    solution_hash: localTranscript.verifier.report.solution_hash,
+    da_expected_hash: localTranscript.da.expected_hash,
+    da_observed_hash: localTranscript.da.observed_hash,
+    verifier_image: localTranscript.verifier.chain_claim.registry_binding.verifier_image,
+    verifier_source_digest: localTranscript.verifier.chain_claim.registry_binding.verifier_source_digest,
+    resource_identity: localTranscript.board_identity.resource_identity,
+    orchestrator_nonce: challenge.orchestrator_nonce,
+    local_transcript_hash: localTranscript.transcript_hash,
+  };
+  const receiptHash = sha256Canonical(unsigned);
+  return {
+    ...unsigned,
+    receipt_hash: receiptHash,
+    signature: {
+      algorithm: "ed25519",
+      key_id: trust.key_id,
+      signature: `ed25519:${signEd25519(null, resolverRerunReceiptSigningMessage(receiptHash), keys.privateKey).toString("hex")}`,
+    },
+  };
+}
+
+function fixture({ challengeInstanceHash = HASH("9"), localTranscript = null } = {}) {
   const publishedTranscript = transcript();
-  const challengeInstanceHash = HASH("9");
   const verdictHash = buildResolverVerdictHash({
     transcriptHash: publishedTranscript.transcript_hash,
     candidateHash: publishedTranscript.verifier.challenge_candidate.candidate_hash,
@@ -188,7 +267,24 @@ function fixture() {
     resolverDecisionBondWei: "5000000000000000",
     quorumBalanceWei: "10000000000000000",
   };
-  return { packet, publishedTranscript, localTranscript: transcript({ generated: "2026-07-10T00:00:01Z" }), live };
+  const rerunTranscript = localTranscript ?? transcript({ generated: "2026-07-10T00:00:01Z", elapsedMs: 16 });
+  const rerunChallengeValue = rerunChallenge(packet);
+  const rerunReceipt = signedRerunReceipt({
+    packet,
+    publishedTranscript,
+    localTranscript: rerunTranscript,
+    challenge: rerunChallengeValue,
+  });
+  return {
+    packet,
+    publishedTranscript,
+    localTranscript: rerunTranscript,
+    live,
+    rerunReceipt,
+    rerunChallenge: rerunChallengeValue,
+    executorTrust: EXECUTOR_TRUST,
+    now: VERIFY_NOW,
+  };
 }
 
 function verify(overrides = {}) {
@@ -201,10 +297,205 @@ function verify(overrides = {}) {
   });
 }
 
-test("independent signer accepts distinct transcript envelopes with identical exact evidence", () => {
+test("independent signer accepts a valid independently attested rerun", () => {
   const checked = verify();
   assert.notEqual(checked.local.transcript.transcript_hash, checked.published.transcript.transcript_hash);
+  assert.equal(checked.rerunReceipt.executor_key_id, EXECUTOR_TRUST.key_id);
   assert.equal(checked.packet.decision.challengerWins, true);
+});
+
+test("independent signer rejects exact copies and timestamp-only transcript rewraps", () => {
+  const exact = fixture();
+  const exactCopy = structuredClone(exact.publishedTranscript);
+  const exactReceipt = signedRerunReceipt({
+    packet: exact.packet,
+    publishedTranscript: exact.publishedTranscript,
+    localTranscript: exactCopy,
+    challenge: exact.rerunChallenge,
+  });
+  assert.throws(
+    () => verify({ localTranscript: exactCopy, rerunReceipt: exactReceipt }),
+    /exact copy of the published transcript/,
+  );
+
+  const rewrapped = transcript({ generated: "2026-07-10T00:00:02Z", elapsedMs: 15 });
+  const rewrappedReceipt = signedRerunReceipt({
+    packet: exact.packet,
+    publishedTranscript: exact.publishedTranscript,
+    localTranscript: rewrapped,
+    challenge: exact.rerunChallenge,
+  });
+  assert.throws(
+    () => verify({ localTranscript: rewrapped, rerunReceipt: rewrappedReceipt }),
+    /timestamp-only transcript rewrap/,
+  );
+});
+
+test("independent signer rejects a forged executor key", () => {
+  const base = fixture();
+  const forgedKeys = generateKeyPairSync("ed25519");
+  const forged = signedRerunReceipt({
+    packet: base.packet,
+    publishedTranscript: base.publishedTranscript,
+    localTranscript: base.localTranscript,
+    challenge: base.rerunChallenge,
+    keys: forgedKeys,
+  });
+  assert.throws(() => verify({ rerunReceipt: forged }), /executor signature is invalid/);
+});
+
+test("independent signer rejects stale nonces and cross-packet receipt replay", () => {
+  const base = fixture();
+  const staleChallenge = { ...base.rerunChallenge, expires_at_utc: "2026-07-10T00:04:59Z" };
+  const staleReceipt = signedRerunReceipt({
+    packet: base.packet,
+    publishedTranscript: base.publishedTranscript,
+    localTranscript: base.localTranscript,
+    challenge: staleChallenge,
+  });
+  assert.throws(
+    () => verify({ rerunChallenge: staleChallenge, rerunReceipt: staleReceipt }),
+    /challenge nonce is stale/,
+  );
+  assert.equal(
+    verify({ rerunChallenge: staleChallenge, rerunReceipt: staleReceipt, allowExpiredRerunReceipt: true }).rerunReceipt.receipt_hash,
+    staleReceipt.receipt_hash,
+  );
+
+  const other = fixture({ challengeInstanceHash: HASH("7") });
+  assert.throws(
+    () => verify({ ...other, rerunReceipt: base.rerunReceipt }),
+    /receipt packet_hash binding mismatch/,
+  );
+});
+
+test("signer-issued attempts resume identical receipts and reject substitutions", () => {
+  const root = mkdtempSync(join(tmpdir(), "p42-resolver-rerun-"));
+  try {
+    const base = fixture();
+    const issued = issueResolverRerunChallenge(root, base.packet, {
+      now: VERIFY_NOW - 1_000,
+      ttlMs: 60_000,
+      randomBytes: () => Buffer.alloc(32, 0x66),
+    });
+    assert.equal(issued.challenge.orchestrator_nonce, HASH("6"));
+    assert.throws(
+      () => issueResolverRerunChallenge(root, base.packet, {
+        now: VERIFY_NOW,
+        randomBytes: () => Buffer.alloc(32, 0x77),
+      }),
+      /already active for this packet/,
+    );
+    const receipt = signedRerunReceipt({
+      packet: base.packet,
+      publishedTranscript: base.publishedTranscript,
+      localTranscript: base.localTranscript,
+      challenge: issued.challenge,
+    });
+    const receiptPath = bindResolverRerunReceipt(root, base.packet, receipt);
+    assert.equal(bindResolverRerunReceipt(root, base.packet, receipt), receiptPath);
+    const changed = { ...receipt, receipt_hash: SHA("1") };
+    assert.throws(
+      () => bindResolverRerunReceipt(root, base.packet, changed),
+      /different receipt content/,
+    );
+    const authorization = markResolverRerunAuthorization(root, base.packet, receipt, "/private/authorization.json");
+    assert.equal(markResolverRerunAuthorization(root, base.packet, receipt, "/private/authorization.json"), authorization);
+    const artifact = { signer: ADDR.pool, decision_digest: base.packet.decision_digest };
+    const signature = markResolverRerunSignature(root, base.packet, receipt, "/private/signature.json", artifact);
+    assert.equal(markResolverRerunSignature(root, base.packet, receipt, "/private/signature.json", artifact), signature);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("expired empty attempts renew with tombstones but accepted attempts cannot renew", () => {
+  const root = mkdtempSync(join(tmpdir(), "p42-resolver-renew-"));
+  try {
+    const base = fixture();
+    const first = issueResolverRerunChallenge(root, base.packet, {
+      now: VERIFY_NOW - 120_000, ttlMs: 60_000, randomBytes: () => Buffer.alloc(32, 0x11),
+    });
+    const renewed = issueResolverRerunChallenge(root, base.packet, {
+      now: VERIFY_NOW, ttlMs: 60_000, randomBytes: () => Buffer.alloc(32, 0x22),
+    });
+    assert.notEqual(renewed.challenge.orchestrator_nonce, first.challenge.orchestrator_nonce);
+    assert.equal(
+      readFileSync(join(root, "rerun-tombstones", `${base.packet.packet_hash.slice(7)}-${first.challenge.orchestrator_nonce.slice(2)}.json`), "utf8").includes("expired-without-receipt"),
+      true,
+    );
+    const receipt = signedRerunReceipt({
+      packet: base.packet, publishedTranscript: base.publishedTranscript,
+      localTranscript: base.localTranscript, challenge: renewed.challenge,
+    });
+    bindResolverRerunReceipt(root, base.packet, receipt);
+    assert.throws(
+      () => issueResolverRerunChallenge(root, base.packet, {
+        now: VERIFY_NOW + 120_000, randomBytes: () => Buffer.alloc(32, 0x33),
+      }),
+      /cannot renew after receipt/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("active preparation resumes the exact nonce and durable request after crashes", () => {
+  const root = mkdtempSync(join(tmpdir(), "p42-resolver-prepare-resume-"));
+  try {
+    const base = fixture();
+    const first = issueResolverRerunChallenge(root, base.packet, {
+      now: VERIFY_NOW, ttlMs: 60_000, randomBytes: () => Buffer.alloc(32, 0x44),
+      resumeActive: true,
+    });
+    const resumed = issueResolverRerunChallenge(root, base.packet, {
+      now: VERIFY_NOW + 1_000, randomBytes: () => Buffer.alloc(32, 0x55),
+      resumeActive: true,
+    });
+    assert.equal(resumed.resumed, true);
+    assert.deepEqual(resumed.challenge, first.challenge);
+
+    const requestValues = {
+      packet: base.packet, challenge: first.challenge,
+      boardId: "84532:1:hadamard-mini", manifestPath: "/opt/p42/release.json",
+      publishedTranscript: base.publishedTranscript, manifestRoot: "/opt/p42",
+      requestSignerPrivateKey: `0x${"42".repeat(32)}`,
+    };
+    const request = buildResolverRerunRequest({ ...requestValues, manifestBytes: Buffer.from("release-a") });
+    const requestPath = persistResolverRerunRequest(root, base.packet, first.challenge, request);
+    assert.equal(persistResolverRerunRequest(root, base.packet, resumed.challenge, request), requestPath);
+    const substituted = buildResolverRerunRequest({ ...requestValues, manifestBytes: Buffer.from("release-b") });
+    assert.throws(
+      () => persistResolverRerunRequest(root, base.packet, resumed.challenge, substituted),
+      /different content/,
+    );
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("renewal resumes after a tombstone crash with one deterministic replacement intent", () => {
+  const root = mkdtempSync(join(tmpdir(), "p42-resolver-renew-crash-"));
+  try {
+    const base = fixture();
+    const first = issueResolverRerunChallenge(root, base.packet, {
+      now: VERIFY_NOW - 120_000, ttlMs: 60_000, randomBytes: () => Buffer.alloc(32, 0x11),
+    });
+    assert.throws(() => issueResolverRerunChallenge(root, base.packet, {
+      now: VERIFY_NOW, ttlMs: 60_000, randomBytes: () => Buffer.alloc(32, 0x22),
+      crash(point) { if (point === "after-renewal-tombstone") throw new Error("injected tombstone crash"); },
+    }), /injected tombstone crash/);
+    const suffix = `${base.packet.packet_hash.slice(7)}-${first.challenge.orchestrator_nonce.slice(2)}.json`;
+    const tombstonePath = join(root, "rerun-tombstones", suffix);
+    const intentPath = join(root, "rerun-renewals", suffix);
+    const tombstone = readFileSync(tombstonePath, "utf8");
+    const intent = JSON.parse(readFileSync(intentPath, "utf8"));
+    const resumed = issueResolverRerunChallenge(root, base.packet, {
+      now: VERIFY_NOW + 30_000, ttlMs: 60_000, randomBytes: () => Buffer.alloc(32, 0x33),
+    });
+    assert.equal(resumed.challenge.orchestrator_nonce, intent.replacement_nonce);
+    assert.equal(resumed.challenge.issued_at_utc, intent.replacement_issued_at_utc);
+    assert.equal(readFileSync(tombstonePath, "utf8"), tombstone);
+    assert.equal(JSON.parse(tombstone).superseded_at_utc, intent.superseded_at_utc);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("independent signer rejects a copied outcome whose local rerun report differs", () => {
@@ -259,14 +550,14 @@ test("independent signer comparison is stable under canonical serialization", ()
 test("anti-equivocation journal permits identical retries and rejects changed semantics", () => {
   const root = mkdtempSync(join(tmpdir(), "p42-resolver-signer-"));
   try {
-    const { packet, live } = fixture();
-    const path = persistSignerAuthorization(root, packet, live);
+    const { packet, live, rerunReceipt } = fixture();
+    const path = persistSignerAuthorization(root, packet, live, rerunReceipt);
     const original = readFileSync(path, "utf8");
     persistSignerAuthorization(root, packet, {
       ...live,
       finalizedBlockNumber: live.finalizedBlockNumber + 1,
       finalizedBlockHash: HASH("7"),
-    });
+    }, rerunReceipt);
     assert.equal(readFileSync(path, "utf8"), original);
 
     const conflicting = buildResolverQuorumDecisionPacket({
@@ -282,7 +573,7 @@ test("anti-equivocation journal permits identical retries and rejects changed se
       expiry: packet.decision.expiry,
       signerEpoch: packet.decision.signerEpoch,
     });
-    assert.throws(() => persistSignerAuthorization(root, conflicting, live), /different decision content/);
+    assert.throws(() => persistSignerAuthorization(root, conflicting, live, rerunReceipt), /different decision content/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -291,7 +582,7 @@ test("anti-equivocation journal permits identical retries and rejects changed se
 test("anti-equivocation journal atomically chooses one semantic decision across processes", async () => {
   const root = mkdtempSync(join(tmpdir(), "p42-resolver-signer-race-"));
   try {
-    const { packet, live } = fixture();
+    const { packet, live, rerunReceipt } = fixture();
     const conflicting = buildResolverQuorumDecisionPacket({
       chainId: packet.decision.chainId,
       adapter: packet.decision.adapter,
@@ -309,7 +600,7 @@ test("anti-equivocation journal atomically chooses one semantic decision across 
     const script = `
       const { persistSignerAuthorization } = await import(${JSON.stringify(moduleUrl)});
       try {
-        persistSignerAuthorization(process.argv[1], JSON.parse(Buffer.from(process.argv[2], "base64url")), JSON.parse(Buffer.from(process.argv[3], "base64url")));
+        persistSignerAuthorization(process.argv[1], JSON.parse(Buffer.from(process.argv[2], "base64url")), JSON.parse(Buffer.from(process.argv[3], "base64url")), JSON.parse(Buffer.from(process.argv[4], "base64url")));
       } catch (error) {
         console.error(error.message);
         process.exitCode = 2;
@@ -317,7 +608,7 @@ test("anti-equivocation journal atomically chooses one semantic decision across 
     `;
     const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
     const run = (value) => new Promise((done) => {
-      const child = spawn(process.execPath, ["--input-type=module", "-e", script, root, encode(value), encode(live)], {
+      const child = spawn(process.execPath, ["--input-type=module", "-e", script, root, encode(value), encode(live), encode(rerunReceipt)], {
         stdio: ["ignore", "ignore", "pipe"],
       });
       let stderr = "";

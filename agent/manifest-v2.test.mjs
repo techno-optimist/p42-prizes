@@ -19,8 +19,20 @@ import {
   validatePreBroadcastManifestPlan,
 } from "./indexer.mjs";
 import { validateSolverManifest } from "./solver-manifest.mjs";
+import { validateExplorerDossier as validatePackagedExplorerDossier } from "./production-validation-context.mjs";
 import { canonicalDigest, createReleaseCapsule, immutableValuesFromConstructor, reconstructExpectedRuntime } from "../contracts/scripts/release-capsule-helper.js";
-import { createExplorerVerificationDossier, explorerContractEntries, liveRequeryExplorerVerification, parseEtherscanV2Raw, parseSourcifyV2Raw, readExplorerDossierExact, validateExplorerVerificationDossier } from "../contracts/scripts/explorer-verification-helper.js";
+import {
+  EXPLORER_ATTESTATION_SCHEMA,
+  assembleExplorerVerificationDossier,
+  buildUnsignedExplorerVerificationRequest,
+  collectExplorerVerificationEvidence,
+  explorerContractEntries,
+  explorerOperatorTypedData,
+  parseEtherscanV2Raw,
+  parseSourcifyV2Raw,
+  readExplorerDossierExact,
+  validateExplorerVerificationDossier,
+} from "../contracts/scripts/explorer-verification-helper.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
@@ -537,49 +549,132 @@ test("explorer dossier verifies the canonical ordered 47 with factory-child prov
   const byTransaction = new Map(factoryDescriptors.map((descriptor) => [descriptor.entry.txHash.toLowerCase(), descriptor]));
   const byConfigurationCall = new Map(factoryDescriptors.map(({ entry }) => [`${entry.factoryCreation.factoryAddress.toLowerCase()}:${entry.factoryCreation.configurationReadCalldata.toLowerCase()}`, entry.factoryCreation.configurationHash]));
   const receiptBlockHash = ethers.id("factory-receipt-block");
-  const provider = {
-    getCode: async (contractAddress) => runtimes.get(contractAddress.toLowerCase()),
+  const finalizedBlockHash = ethers.id("explorer-finalized-block");
+  const safeBlockHash = ethers.id("explorer-safe-block");
+  const finalizedL1Hash = ethers.id("explorer-finalized-l1");
+  const originHash = ethers.id("explorer-l1-origin");
+  const finalizedBlockNumber = 1000;
+  const rpcProvider = (operatorId, overrides = {}) => ({
+    send: async (method, params) => {
+      if (method === "eth_chainId") return "0x14a34";
+      if (method === "eth_getBlockByNumber") {
+        if (params[0] === "finalized" || params[0] === `0x${finalizedBlockNumber.toString(16)}`) return { number: `0x${finalizedBlockNumber.toString(16)}`, hash: finalizedBlockHash, timestamp: `0x${Math.floor(instant / 1000).toString(16)}` };
+        if (params[0] === "safe" || params[0] === "0x3ed") return { number: "0x3ed", hash: safeBlockHash, timestamp: `0x${Math.floor(instant / 1000).toString(16)}` };
+      }
+      if (method === "optimism_syncStatus") return {
+        finalized_l2: { number: `0x${finalizedBlockNumber.toString(16)}`, hash: finalizedBlockHash, l1origin: { number: "0x320", hash: originHash } },
+        finalized_l1: { number: "0x384", hash: finalizedL1Hash },
+      };
+      throw new Error(`${operatorId} unexpected RPC ${method}`);
+    },
+    getCode: async (contractAddress, blockTag) => {
+      assert.equal(blockTag, finalizedBlockNumber);
+      return overrides.getCode?.(contractAddress, blockTag) ?? runtimes.get(contractAddress.toLowerCase());
+    },
     getTransactionReceipt: async (transactionHash) => {
       const descriptor = byTransaction.get(transactionHash.toLowerCase()); const { entry } = descriptor;
       return { status: 1, blockNumber: entry.blockNumber, blockHash: receiptBlockHash, index: 0, logs: [{ address: entry.factoryCreation.factoryAddress, topics: [entry.factoryCreation.eventTopic, ethers.zeroPadValue(entry.address, 32), entry.factoryCreation.salt], data: "0x", index: 0 }] };
     },
     getBlock: async () => ({ hash: receiptBlockHash }),
-    call: async ({ to, data }) => byConfigurationCall.get(`${to.toLowerCase()}:${data.toLowerCase()}`),
-  };
-  const dossier = await createExplorerVerificationDossier({ manifest, capsule, provider, fetchImpl, apiKey: "fixture-key", operatorSigners: operators, operatorNonces: [`0x${"1".repeat(64)}`, `0x${"2".repeat(64)}`], finalizedAt: instant / 1000, expiresAt: instant / 1000 + 3600, now });
-  assert.equal(dossier.contracts.length, 47); assert.equal(new Set(dossier.contracts.map(({ address }) => address.toLowerCase())).size, 47);
-  assert.deepEqual(dossier.contracts.slice(0, 7).map(({ path }) => path), ["contracts.timelock", "contracts.registry", "contracts.rolloverVault", "contracts.submissionManagerFactory", "contracts.challengeManagerFactory", "contracts.objectiveVerifier", "contracts.resolverQuorum"]);
-  assert.equal(dossier.contracts.filter(({ deployment }) => deployment.kind === "factory-call-create2").length, 20);
-  const child = dossier.contracts.find(({ deployment }) => deployment.kind === "factory-call-create2");
+    call: async ({ to, data }, blockTag) => {
+      assert.equal(blockTag, finalizedBlockNumber);
+      return overrides.call?.({ to, data }, blockTag) ?? byConfigurationCall.get(`${to.toLowerCase()}:${data.toLowerCase()}`);
+    },
+  });
+  const endpoints = [
+    { operatorId: "rpc-operator-a", url: "https://rpc-a.example/v1", provider: rpcProvider("rpc-operator-a") },
+    { operatorId: "rpc-operator-b", url: "https://rpc-b.example/v1", provider: rpcProvider("rpc-operator-b") },
+  ];
+  const evidence = await collectExplorerVerificationEvidence({ manifest, capsule, endpoints, fetchImpl, apiKey: "fixture-key", now });
+  const roster = trustedOperators.map((value) => value.toLowerCase()).sort();
+  const nonceByOperator = new Map([[operators[0].address.toLowerCase(), `0x${"1".repeat(64)}`], [operators[1].address.toLowerCase(), `0x${"2".repeat(64)}`]]);
+  const request = buildUnsignedExplorerVerificationRequest({ evidence, manifest, capsule, operatorRoster: roster, operatorNonces: roster.map((operator) => ({ operator, nonce: nonceByOperator.get(operator) })), createdAt: now(), expiresAt: instant / 1000 + 3600, now: instant });
+  const attestations = await Promise.all(operators.map(async (wallet) => {
+    const operator = wallet.address.toLowerCase(), typed = explorerOperatorTypedData(request, operator);
+    return { schema: EXPLORER_ATTESTATION_SCHEMA, requestDigest: request.requestDigest, operator, nonce: nonceByOperator.get(operator), signature: await wallet.signTypedData(typed.domain, typed.types, typed.value) };
+  }));
+  const dossier = assembleExplorerVerificationDossier({ request, attestations, manifest, capsule, trustedOperators, now: instant });
+  assert.equal(evidence.contracts.length, 47); assert.equal(new Set(evidence.contracts.map(({ address }) => address.toLowerCase())).size, 47);
+  assert.deepEqual(evidence.contracts.slice(0, 7).map(({ path }) => path), ["contracts.timelock", "contracts.registry", "contracts.rolloverVault", "contracts.submissionManagerFactory", "contracts.challengeManagerFactory", "contracts.objectiveVerifier", "contracts.resolverQuorum"]);
+  assert.equal(evidence.contracts.filter(({ deployment }) => deployment.kind === "factory-call-create2").length, 20);
+  const child = evidence.contracts.find(({ deployment }) => deployment.kind === "factory-call-create2");
   assert.equal(child.deployment.createdAddress.toLowerCase(), child.address.toLowerCase());
   assert.equal(validateExplorerVerificationDossier(dossier, { manifest, capsule, trustedOperators, now: instant + 60_000 }), dossier);
-  assert.equal(await liveRequeryExplorerVerification({ dossier, manifest, capsule, provider, fetchImpl, apiKey: "fixture-key", trustedOperators, now: instant }), true);
-  const driftedProvider = { ...provider, call: async ({ to, data }, blockTag) => data.toLowerCase() === child.deployment.configurationReadCalldata.toLowerCase() ? ethers.ZeroHash : provider.call({ to, data }, blockTag) };
-  await assert.rejects(liveRequeryExplorerVerification({ dossier, manifest, capsule, provider: driftedProvider, fetchImpl, apiKey: "fixture-key", trustedOperators, now: instant }), /receipt\/configuration evidence changed|configuration binding mismatch/);
+  assert.equal(validateExplorerVerificationDossier(dossier, { manifest, capsule, trustedOperators, now: instant + 10 * 60_000 }), dossier, "detached signers retain the documented request window beyond five minutes");
+  const packagedManifest = structuredClone(manifest);
+  packagedManifest.sourceVerification = { ...(packagedManifest.sourceVerification ?? {}), dossierDigest: dossier.dossierDigest };
+  assert.equal(validatePackagedExplorerDossier(dossier, packagedManifest, capsule, { P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES: roster.join(",") }, instant + 60_000), dossier);
+  const resealSignedDossier = async (mutateEvidence) => {
+    const changedEvidence = structuredClone(dossier.request.evidence);
+    mutateEvidence(changedEvidence);
+    { const { evidenceDigest: _, ...body } = changedEvidence; changedEvidence.evidenceDigest = canonicalDigest(body); }
+    const requestBody = { ...structuredClone(dossier.request), evidence: changedEvidence };
+    delete requestBody.requestDigest;
+    const changedRequest = { ...requestBody, requestDigest: canonicalDigest(requestBody) };
+    const changedAttestations = await Promise.all(operators.map(async (wallet) => {
+      const operator = wallet.address.toLowerCase(), typed = explorerOperatorTypedData(changedRequest, operator);
+      return { schema: EXPLORER_ATTESTATION_SCHEMA, requestDigest: changedRequest.requestDigest, operator, nonce: nonceByOperator.get(operator), signature: await wallet.signTypedData(typed.domain, typed.types, typed.value) };
+    }));
+    const body = { schema: dossier.schema, request: changedRequest, attestations: changedAttestations };
+    return { ...body, dossierDigest: canonicalDigest(body) };
+  };
+  const assertValidatorParityRejects = (candidate, candidateManifest, pattern) => {
+    assert.throws(() => validateExplorerVerificationDossier(candidate, { manifest: candidateManifest, capsule, trustedOperators, now: instant + 60_000 }), pattern);
+    const packagedCandidateManifest = structuredClone(candidateManifest);
+    packagedCandidateManifest.sourceVerification = { ...(packagedCandidateManifest.sourceVerification ?? {}), dossierDigest: candidate.dossierDigest };
+    assert.throws(() => validatePackagedExplorerDossier(candidate, packagedCandidateManifest, capsule, { P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES: roster.join(",") }, instant + 60_000), pattern);
+  };
+  const wrongMethod = await resealSignedDossier((changedEvidence) => {
+    const chainCode = changedEvidence.contracts[0].chainCode;
+    const frame = JSON.parse(Buffer.from(chainCode.responseBase64, "base64").toString("utf8"));
+    frame.method = "eth_getStorageAt";
+    const bytes = Buffer.from(JSON.stringify(frame));
+    chainCode.responseBase64 = bytes.toString("base64"); chainCode.responseDigest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  });
+  assertValidatorParityRejects(wrongMethod, manifest, /chain frame|chain code/);
+  const wrongChainOperator = await resealSignedDossier((changedEvidence) => {
+    const chainCode = changedEvidence.contracts[0].chainCode;
+    const frame = JSON.parse(Buffer.from(chainCode.responseBase64, "base64").toString("utf8"));
+    frame.primaryOperatorId = "invented-operator";
+    const bytes = Buffer.from(JSON.stringify(frame));
+    chainCode.responseBase64 = bytes.toString("base64"); chainCode.responseDigest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  });
+  assertValidatorParityRejects(wrongChainOperator, manifest, /chain frame|chain code/);
+  const wrongReceiptOperator = await resealSignedDossier((changedEvidence) => {
+    changedEvidence.contracts.find(({ deployment }) => deployment.kind === "factory-call-create2").deployment.receipt.primaryOperatorId = "invented-operator";
+  });
+  assertValidatorParityRejects(wrongReceiptOperator, manifest, /receipt/);
+  const futureDeployment = structuredClone(manifest);
+  explorerContractEntries(futureDeployment)[0].entry.blockNumber = finalizedBlockNumber + 1;
+  assertValidatorParityRejects(dossier, futureDeployment, /causality/);
+  assert.throws(() => validateExplorerVerificationDossier(dossier, { manifest, capsule, trustedOperators, now: (request.expiresAt + 1) * 1000 }), /expired/);
+  const driftedEndpoints = [endpoints[0], { ...endpoints[1], provider: rpcProvider("rpc-operator-b", { call: ({ data }) => data.toLowerCase() === child.deployment.configurationReadCalldata.toLowerCase() ? ethers.ZeroHash : undefined }) }];
+  await assert.rejects(collectExplorerVerificationEvidence({ manifest, capsule, endpoints: driftedEndpoints, fetchImpl, apiKey: "fixture-key", now }), /configuration differs/);
+  const forgedRpcAuthority = structuredClone(evidence);
+  forgedRpcAuthority.finalityAnchor.rpcEvidence.primaryOperatorId = "invented-operator";
+  { const { evidenceDigest: _, ...body } = forgedRpcAuthority; forgedRpcAuthority.evidenceDigest = canonicalDigest(body); }
+  assert.throws(() => buildUnsignedExplorerVerificationRequest({ evidence: forgedRpcAuthority, manifest, capsule, operatorRoster: roster, operatorNonces: roster.map((operator) => ({ operator, nonce: nonceByOperator.get(operator) })), createdAt: now(), expiresAt: instant / 1000 + 3600, now: instant }), /RPC authority binding/);
   const forged = structuredClone(dossier); forged.attestations[0].signature = forged.attestations[1].signature; { const { dossierDigest: _, ...body } = forged; forged.dossierDigest = canonicalDigest(body); } assert.throws(() => validateExplorerVerificationDossier(forged, { manifest, capsule, trustedOperators, now: instant + 60_000 }), /forged/);
   const missing = structuredClone(dossier); missing.attestations.pop(); { const { dossierDigest: _, ...body } = missing; missing.dossierDigest = canonicalDigest(body); } assert.throws(() => validateExplorerVerificationDossier(missing, { manifest, capsule, trustedOperators, now: instant + 60_000 }), /two unique/);
-  const domain = { name: "P42 Explorer Verification", version: "2", chainId: 84532 }; const types = { Verification: [{ name: "evidenceDigest", type: "bytes32" }, { name: "releaseBindingDigest", type: "bytes32" }, { name: "nonce", type: "bytes32" }, { name: "expiresAt", type: "uint64" }, { name: "finalizedAt", type: "uint64" }] };
-  const sign = (wallet, nonce) => wallet.signTypedData(domain, types, { evidenceDigest: `0x${dossier.evidenceDigest.slice(7)}`, releaseBindingDigest: `0x${dossier.releaseBindingDigest.slice(7)}`, nonce, expiresAt: dossier.expiresAt, finalizedAt: dossier.finalizedAt });
+  const sign = (wallet, operator) => { const typed = explorerOperatorTypedData(request, operator); return wallet.signTypedData(typed.domain, typed.types, typed.value); };
   const twiceA = structuredClone(dossier);
-  const duplicateSignerNonces = [`0x${"3".repeat(64)}`, `0x${"4".repeat(64)}`];
-  twiceA.attestations = await Promise.all(duplicateSignerNonces.map(async (nonce) => ({
-    operator: operators[0].address.toLowerCase(),
-    nonce,
-    signature: await sign(operators[0], nonce),
-  })));
+  twiceA.attestations[1] = { ...twiceA.attestations[0], signature: await sign(operators[0], operators[0].address.toLowerCase()) };
   { const { dossierDigest: _, ...body } = twiceA; twiceA.dossierDigest = canonicalDigest(body); }
-  assert.throws(() => validateExplorerVerificationDossier(twiceA, { manifest, capsule, trustedOperators, now: instant + 60_000 }), /signer set/);
-  const operatorC = ethers.Wallet.createRandom(); const extra = structuredClone(dossier); extra.attestations[1] = { operator: operatorC.address.toLowerCase(), nonce: `0x${"3".repeat(64)}`, signature: await sign(operatorC, `0x${"3".repeat(64)}`) }; { const { dossierDigest: _, ...body } = extra; extra.dossierDigest = canonicalDigest(body); } assert.throws(() => validateExplorerVerificationDossier(extra, { manifest, capsule, trustedOperators, now: instant + 60_000 }), /forged/);
-  const reordered = structuredClone(dossier); reordered.operatorRoster.reverse(); { const { dossierDigest: _, ...body } = reordered; reordered.dossierDigest = canonicalDigest(body); } assert.throws(() => validateExplorerVerificationDossier(reordered, { manifest, capsule, trustedOperators, now: instant + 60_000 }), /allowlist mismatch/);
+  assert.throws(() => validateExplorerVerificationDossier(twiceA, { manifest, capsule, trustedOperators, now: instant + 60_000 }), /two unique|signer set/);
+  const operatorC = ethers.Wallet.createRandom(); const extra = structuredClone(dossier); extra.attestations[1].signature = await sign(operatorC, extra.attestations[1].operator); { const { dossierDigest: _, ...body } = extra; extra.dossierDigest = canonicalDigest(body); } assert.throws(() => validateExplorerVerificationDossier(extra, { manifest, capsule, trustedOperators, now: instant + 60_000 }), /forged/);
+  const reordered = structuredClone(dossier); reordered.request.operatorRoster.reverse(); { const { requestDigest: _, ...requestBody } = reordered.request; reordered.request.requestDigest = canonicalDigest(requestBody); const { dossierDigest: _d, ...body } = reordered; reordered.dossierDigest = canonicalDigest(body); } assert.throws(() => validateExplorerVerificationDossier(reordered, { manifest, capsule, trustedOperators, now: instant + 60_000 }), /request|allowlist|roster/);
   const reorderedManifest = structuredClone(manifest); [reorderedManifest.problems[0], reorderedManifest.problems[1]] = [reorderedManifest.problems[1], reorderedManifest.problems[0]]; assert.throws(() => validateExplorerVerificationDossier(dossier, { manifest: reorderedManifest, capsule, trustedOperators, now: instant + 60_000 }), /relabel|binding/);
   const forgedFactoryManifest = structuredClone(manifest); forgedFactoryManifest.problems[0].contracts.submissions.factoryCreation.configurationHash = ethers.ZeroHash; assert.throws(() => validateExplorerVerificationDossier(dossier, { manifest: forgedFactoryManifest, capsule, trustedOperators, now: instant + 60_000 }), /deployment binding|CREATE2 binding/);
-  const forgedReceipt = structuredClone(dossier); forgedReceipt.contracts.find(({ deployment }) => deployment.kind === "factory-call-create2").deployment.receipt.blockHash = ethers.ZeroHash; assert.throws(() => validateExplorerVerificationDossier(forgedReceipt, { manifest, capsule, trustedOperators, now: instant + 60_000 }), /receipt|digest/);
+  const forgedReceipt = structuredClone(dossier); forgedReceipt.request.evidence.contracts.find(({ deployment }) => deployment.kind === "factory-call-create2").deployment.receipt.blockHash = ethers.ZeroHash; assert.throws(() => validateExplorerVerificationDossier(forgedReceipt, { manifest, capsule, trustedOperators, now: instant + 60_000 }), /request|receipt|digest/);
   assert.throws(() => validateExplorerVerificationDossier(dossier, { manifest, capsule, trustedOperators, now: instant - 60_000, futureSkewMs: 0 }), /future/);
-  const raw = dossier.contracts[0].providers[0]; const arbitrary = { ...raw, responseBase64: Buffer.from(`response:${dossier.contracts[0].address}`).toString("base64") }; arbitrary.responseDigest = `sha256:${createHash("sha256").update(Buffer.from(arbitrary.responseBase64, "base64")).digest("hex")}`; assert.throws(() => parseEtherscanV2Raw(arbitrary, { now: instant, maxAgeMs: 0, futureSkewMs: 0 }), /JSON|verified/);
+  const raw = evidence.contracts[0].providers[0]; const arbitrary = { ...raw, responseBase64: Buffer.from(`response:${evidence.contracts[0].address}`).toString("base64") }; arbitrary.responseDigest = `sha256:${createHash("sha256").update(Buffer.from(arbitrary.responseBase64, "base64")).digest("hex")}`; assert.throws(() => parseEtherscanV2Raw(arbitrary, { now: instant, maxAgeMs: 0, futureSkewMs: 0 }), /JSON|verified/);
   const selfAuthored = { ...raw, metadata: { status: "verified" } }; assert.throws(() => parseEtherscanV2Raw(selfAuthored, { now: instant, maxAgeMs: 0, futureSkewMs: 0 }), /keys mismatch/);
   assert.throws(() => parseEtherscanV2Raw({ ...raw, url: raw.url.replace("api.etherscan.io", "example.com"), host: "example.com" }, { now: instant, maxAgeMs: 0, futureSkewMs: 0 }), /endpoint shape/);
-  const sourcifyRaw = dossier.contracts[0].providers[1]; const badNested = structuredClone(fixtures.get(dossier.contracts[0].address.toLowerCase()).sourcify); badNested.runtimeBytecode = runtimes.get(dossier.contracts[0].address.toLowerCase()); const badBytes = Buffer.from(JSON.stringify(badNested)); assert.throws(() => parseSourcifyV2Raw({ ...sourcifyRaw, responseBase64: badBytes.toString("base64"), responseDigest: `sha256:${createHash("sha256").update(badBytes).digest("hex")}` }, { now: instant, maxAgeMs: 0, futureSkewMs: 0 }), /shape/);
-  const invented = structuredClone(fixtures.get(dossier.contracts[0].address.toLowerCase()).sourcify); delete invented.sources; delete invented.stdJsonInput; invented.compilation.sources = { "Invented.sol": { content: "contract Invented {}" } }; const inventedBytes = Buffer.from(JSON.stringify(invented)); assert.throws(() => parseSourcifyV2Raw({ ...sourcifyRaw, responseBase64: inventedBytes.toString("base64"), responseDigest: `sha256:${createHash("sha256").update(inventedBytes).digest("hex")}` }, { now: instant, maxAgeMs: 0, futureSkewMs: 0 }), /shape/);
+  const otherAddress = evidence.contracts[1].address;
+  assert.throws(() => parseEtherscanV2Raw({ ...raw, url: raw.url.replace(evidence.contracts[0].address, otherAddress) }, { now: instant, maxAgeMs: 0, futureSkewMs: 0, expectedAddress: evidence.contracts[0].address }), /address binding/);
+  const sourcifyRaw = evidence.contracts[0].providers[1]; const badNested = structuredClone(fixtures.get(evidence.contracts[0].address.toLowerCase()).sourcify); badNested.runtimeBytecode = runtimes.get(evidence.contracts[0].address.toLowerCase()); const badBytes = Buffer.from(JSON.stringify(badNested)); assert.throws(() => parseSourcifyV2Raw({ ...sourcifyRaw, responseBase64: badBytes.toString("base64"), responseDigest: `sha256:${createHash("sha256").update(badBytes).digest("hex")}` }, { now: instant, maxAgeMs: 0, futureSkewMs: 0 }), /shape/);
+  assert.throws(() => parseSourcifyV2Raw({ ...sourcifyRaw, url: sourcifyRaw.url.replace(evidence.contracts[0].address, otherAddress) }, { now: instant, maxAgeMs: 0, futureSkewMs: 0, expectedAddress: evidence.contracts[0].address }), /address binding/);
+  const invented = structuredClone(fixtures.get(evidence.contracts[0].address.toLowerCase()).sourcify); delete invented.sources; delete invented.stdJsonInput; invented.compilation.sources = { "Invented.sol": { content: "contract Invented {}" } }; const inventedBytes = Buffer.from(JSON.stringify(invented)); assert.throws(() => parseSourcifyV2Raw({ ...sourcifyRaw, responseBase64: inventedBytes.toString("base64"), responseDigest: `sha256:${createHash("sha256").update(inventedBytes).digest("hex")}` }, { now: instant, maxAgeMs: 0, futureSkewMs: 0 }), /shape/);
 
   const directory = mkdtempSync(resolve(tmpdir(), "p42-explorer-")); const path = resolve(directory, "dossier.json"); const bytes = Buffer.from(`${JSON.stringify(dossier)}\n`); writeFileSync(path, bytes); const exactDigest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
   assert.equal(readExplorerDossierExact(path, exactDigest).dossierDigest, dossier.dossierDigest);

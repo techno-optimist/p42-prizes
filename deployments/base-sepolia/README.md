@@ -4,9 +4,11 @@ This directory is the Gate 1 evidence target for Base Sepolia contract
 deployments. A real deployment must commit `p42-prizes.json` with:
 
 - chain id, deploy commit, and deployment timestamp
-- role assignments for deployer, owner, treasury, and resolver
+- role assignments for deployer, timelock, guardian, treasury, resolver quorum,
+  and the three funding authorities
 - every contract address, constructor arg, deployment tx hash, and block number
-- setup tx hashes for ledger/recorder/challenge-manager wiring
+- all 110 governance operation identities, schedule/execute receipts, and
+  finalized dual-RPC observations
 - registered problem ids, hashes, metadata URI, component addresses, and register tx
 - indexer start block and latest reconciliation report pointer
 - source verification status and explorer links

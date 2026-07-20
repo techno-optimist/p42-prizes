@@ -136,7 +136,7 @@ export function validateVerifierImageReleaseDossier(dossier, {
   now = Date.now(),
 } = {}) {
   const root = exactObject(dossier, IMAGE_RELEASE_KEYS, "verifier image release dossier");
-  if (root.schema_version !== "p42-verifier-image-release/v2" || root.identity_model !== "p42-verifier-source-release-config/v1") throw new Error("verifier image release dossier schema is invalid");
+  if (root.schema_version !== "p42-verifier-image-release/v3" || root.identity_model !== "p42-verifier-source-release-config/v2") throw new Error("verifier image release dossier schema is invalid");
   const publishedAt = Date.parse(root.published_at_utc);
   const canonicalPublishedAt = Number.isFinite(publishedAt) ? new Date(publishedAt).toISOString().replace(".000Z", "Z") : null;
   if (!Number.isFinite(now) || !Number.isFinite(publishedAt) || canonicalPublishedAt !== root.published_at_utc || publishedAt > now) throw new Error("verifier image release timestamp is invalid or future-dated");

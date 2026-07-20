@@ -21,7 +21,9 @@ from p42_prizes.legal import (
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
-INCIDENT_DRILL_SCHEMA_VERSION = "p42-incident-drill/v1"
+INCIDENT_DRILL_SCHEMA_VERSION = "p42-incident-drill/v2"
+INCIDENT_DRILL_ATTESTATION_CLASS = "p42-incident-drill/v2"
+DISCLOSURE_PROBE_ROLE = "external-disclosure-probe-operator"
 
 SEVERITIES = {"critical", "high", "medium", "low"}
 ENVIRONMENTS = {"tabletop", "base-sepolia", "production"}
@@ -36,6 +38,11 @@ SCENARIOS = {
 }
 FOLLOWUP_SEVERITIES = {"critical", "high", "medium", "low"}
 INCIDENT_ROLES = {"facilitator", "incident-lead", "communications-owner", "security-owner"}
+PROBE_RECEIPT_TYPES = {
+    "public_disclosure_route",
+    "private_advisory_delivery",
+    "mailbox_receipt",
+}
 
 
 class IncidentDrillError(ValueError):
@@ -74,6 +81,7 @@ def normalize_incident_drill_report(
             "comms_owner",
             "security_owner",
             "external_counsel",
+            "disclosure_probe_operator",
             "affected_scope",
             "evidence_preserved",
             "timeline",
@@ -105,7 +113,11 @@ def normalize_incident_drill_report(
         raise IncidentDrillError("report.started_at_utc must be before report.completed_at_utc")
 
     release_binding = _validate_release_binding(
-        normalized.get("release_binding"), "report.release_binding", IncidentDrillError, context
+        normalized.get("release_binding"),
+        "report.release_binding",
+        IncidentDrillError,
+        context,
+        require_canonical_topology=True,
     )
     if normalized["environment"] == "base-sepolia" and release_binding["network"] != "base-sepolia":
         raise IncidentDrillError("a base-sepolia drill must bind to a base-sepolia release")
@@ -116,15 +128,22 @@ def normalize_incident_drill_report(
 
     identities = _validate_roles(normalized, context)
     counsel = _validate_external_counsel(normalized.get("external_counsel"), context)
-    _require_distinct_identities(list(identities.items()) + [("external-counsel", counsel)])
+    probe_operator = _validate_probe_operator(normalized.get("disclosure_probe_operator"), context)
+    _require_distinct_identities(
+        list(identities.items())
+        + [("external-counsel", counsel), (DISCLOSURE_PROBE_ROLE, probe_operator)]
+    )
     _validate_evidence_preserved(normalized.get("evidence_preserved"), context)
     last_timeline_at = _validate_timeline(normalized.get("timeline"), started_at, completed_at)
     _validate_decisions(normalized.get("decisions"), started_at, completed_at)
     _validate_invariants(normalized.get("invariants_checked"))
     _validate_regressions(normalized.get("regressions"), started_at, completed_at, context)
     _validate_communications(normalized.get("communications"))
-    counsel_approved_at, activated_at = _validate_bug_bounty(
-        normalized.get("bug_bounty"), completed_at, context
+    _, activated_at = _validate_bug_bounty(
+        normalized.get("bug_bounty"),
+        completed_at,
+        context,
+        probe_operator=probe_operator,
     )
     _validate_followups(normalized.get("open_followups"), completed_at)
     signoff_times = _validate_human_signoff(
@@ -135,8 +154,6 @@ def normalize_incident_drill_report(
     )
     _reject_placeholders(normalized)
 
-    if counsel_approved_at > activated_at:
-        raise IncidentDrillError("report.bug_bounty.counsel_approved_at_utc must not be after activation")
     signoff_floor = max(last_timeline_at, activated_at)
     for prefix, signed_at in signoff_times:
         if signed_at < signoff_floor or signed_at > completed_at:
@@ -210,6 +227,33 @@ def _validate_external_counsel(
         counsel.get("license_identifier"), "report.external_counsel.license_identifier", IncidentDrillError
     )
     return counsel
+
+
+def _validate_probe_operator(
+    value: Any, context: AttestationValidationContext
+) -> Mapping[str, Any]:
+    operator = _require_mapping(value, "report.disclosure_probe_operator")
+    expected = {
+        "name",
+        "organization",
+        "professional_email",
+        "role",
+        "public_key",
+        "identity_evidence",
+        "independent_from_p42",
+    }
+    if set(operator) != expected:
+        raise IncidentDrillError(
+            "report.disclosure_probe_operator must contain the exact independent probe identity fields"
+        )
+    return _validate_identity(
+        operator,
+        "report.disclosure_probe_operator",
+        expected_role=DISCLOSURE_PROBE_ROLE,
+        require_independent=True,
+        error_type=IncidentDrillError,
+        context=context,
+    )
 
 
 def _validate_evidence_preserved(value: Any, context: AttestationValidationContext) -> None:
@@ -311,9 +355,29 @@ def _validate_communications(value: Any) -> None:
 
 
 def _validate_bug_bounty(
-    value: Any, completed_at: datetime, context: AttestationValidationContext
+    value: Any,
+    completed_at: datetime,
+    context: AttestationValidationContext,
+    *,
+    probe_operator: Mapping[str, Any],
 ) -> tuple[datetime, datetime]:
     bounty = _require_mapping(value, "report.bug_bounty")
+    expected_fields = {
+        "status",
+        "policy_artifact",
+        "public_policy_uri",
+        "private_reporting_uri",
+        "disclosure_contact",
+        "triage_sla_hours",
+        "bounty_owner_role",
+        "scope_summary",
+        "counsel_approved_at_utc",
+        "activated_at_utc",
+        "activation_evidence",
+        "external_probe_receipts",
+    }
+    if set(bounty) != expected_fields:
+        raise IncidentDrillError("report.bug_bounty must contain the exact active disclosure fields")
     if bounty.get("status") != "active":
         raise IncidentDrillError("report.bug_bounty.status must be active for Gate 2 incident/disclosure signoff")
     _validate_artifact_reference(
@@ -348,7 +412,116 @@ def _validate_bug_bounty(
     )
     if activated_at > completed_at:
         raise IncidentDrillError("report.bug_bounty.activated_at_utc must not be after report.completed_at_utc")
+    if counsel_approved_at > activated_at:
+        raise IncidentDrillError("report.bug_bounty.counsel_approved_at_utc must not be after activation")
+    receipt_times = _validate_probe_receipts(
+        bounty.get("external_probe_receipts"),
+        bounty=bounty,
+        policy_sha256=str(bounty["policy_artifact"]["sha256"]),
+        operator=probe_operator,
+        counsel_approved_at=counsel_approved_at,
+        activated_at=activated_at,
+        context=context,
+    )
+    if max(receipt_times) > activated_at:
+        raise IncidentDrillError("all external disclosure probe receipts must predate active status")
     return counsel_approved_at, activated_at
+
+
+def _validate_probe_receipts(
+    value: Any,
+    *,
+    bounty: Mapping[str, Any],
+    policy_sha256: str,
+    operator: Mapping[str, Any],
+    counsel_approved_at: datetime,
+    activated_at: datetime,
+    context: AttestationValidationContext,
+) -> list[datetime]:
+    receipts = _require_list(value, "report.bug_bounty.external_probe_receipts", min_items=0)
+    if len(receipts) != len(PROBE_RECEIPT_TYPES):
+        raise IncidentDrillError("report.bug_bounty.external_probe_receipts must contain exactly three typed receipts")
+    expected_targets = {
+        "public_disclosure_route": bounty["public_policy_uri"],
+        "private_advisory_delivery": bounty["private_reporting_uri"],
+        "mailbox_receipt": bounty["disclosure_contact"],
+    }
+    seen_types: set[str] = set()
+    seen_evidence: set[tuple[str, str]] = set()
+    observed_times: list[datetime] = []
+    for index, item in enumerate(receipts):
+        prefix = f"report.bug_bounty.external_probe_receipts[{index}]"
+        receipt = _require_mapping(item, prefix)
+        expected_fields = {
+            "receipt_type",
+            "target",
+            "outcome",
+            "policy_sha256",
+            "observed_at_utc",
+            "evidence",
+            "receipt_hash",
+            "operator_signature",
+        }
+        if set(receipt) != expected_fields:
+            raise IncidentDrillError(f"{prefix} must contain the exact hash-bound probe receipt fields")
+        receipt_type = receipt.get("receipt_type")
+        if receipt_type not in PROBE_RECEIPT_TYPES:
+            raise IncidentDrillError(f"{prefix}.receipt_type is invalid")
+        if receipt_type in seen_types:
+            raise IncidentDrillError(f"duplicate external probe receipt type: {receipt_type}")
+        seen_types.add(receipt_type)
+        if receipt.get("target") != expected_targets[receipt_type]:
+            raise IncidentDrillError(f"{prefix}.target must match the configured {receipt_type} target")
+        if receipt.get("outcome") != "confirmed":
+            raise IncidentDrillError(f"{prefix}.outcome must be confirmed")
+        if receipt.get("policy_sha256") != policy_sha256:
+            raise IncidentDrillError(f"{prefix}.policy_sha256 must bind the active policy artifact")
+        observed_at = _require_utc(
+            receipt.get("observed_at_utc"), f"{prefix}.observed_at_utc", IncidentDrillError
+        )
+        if observed_at < counsel_approved_at or observed_at > activated_at:
+            raise IncidentDrillError(
+                f"{prefix}.observed_at_utc must be on/after counsel approval and on/before activation"
+            )
+        evidence = _validate_artifact_reference(
+            receipt.get("evidence"), f"{prefix}.evidence", IncidentDrillError, context
+        )
+        evidence_created_at = _require_utc(
+            evidence.get("created_at_utc"), f"{prefix}.evidence.created_at_utc", IncidentDrillError
+        )
+        if evidence_created_at > observed_at:
+            raise IncidentDrillError(f"{prefix}.evidence must exist by the observed receipt time")
+        evidence_key = (str(evidence["uri"]), str(evidence["sha256"]))
+        if evidence_key in seen_evidence:
+            raise IncidentDrillError("external probe receipts must use distinct evidence artifacts")
+        seen_evidence.add(evidence_key)
+
+        unsigned = dict(receipt)
+        provided_hash = unsigned.pop("receipt_hash", None)
+        signature = unsigned.pop("operator_signature", None)
+        receipt_hash = sha256_bytes(canonical_json(unsigned).encode("utf-8"))
+        if provided_hash != receipt_hash:
+            raise IncidentDrillError(
+                f"{prefix}.receipt_hash does not match canonical unsigned receipt bytes"
+            )
+        _validate_signature(
+            signature,
+            f"{prefix}.operator_signature",
+            schema_version=INCIDENT_DRILL_ATTESTATION_CLASS,
+            artifact_hash=receipt_hash,
+            identity=operator,
+            expected_role=DISCLOSURE_PROBE_ROLE,
+            error_type=IncidentDrillError,
+            context=context,
+            expected_signed_at=observed_at,
+            not_after=activated_at,
+            require_after_context_evidence=False,
+        )
+        observed_times.append(observed_at)
+    missing = sorted(PROBE_RECEIPT_TYPES - seen_types)
+    if missing:
+        raise IncidentDrillError(f"missing external probe receipt type(s): {', '.join(missing)}")
+    return observed_times
 
 
 def _validate_followups(value: Any, completed_at: datetime) -> None:
@@ -434,7 +607,7 @@ def _validate_attestations(
         _validate_signature(
             mapping,
             prefix,
-            schema_version=INCIDENT_DRILL_SCHEMA_VERSION,
+            schema_version=INCIDENT_DRILL_ATTESTATION_CLASS,
             artifact_hash=drill_hash,
             identity=expected[role],
             expected_role=role,

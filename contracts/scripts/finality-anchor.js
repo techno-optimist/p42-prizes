@@ -11,6 +11,12 @@ export const BASE_SEPOLIA_FINALITY_POLICY = Object.freeze({
 
 const HASH = /^0x[0-9a-fA-F]{64}$/;
 
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
 function quantity(value, label) {
   if (typeof value !== "string" || !/^0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)$/.test(value)) {
     throw new Error(`${label} is not a canonical RPC quantity`);
@@ -102,6 +108,12 @@ export async function collectCanonicalFinalizedBlockEvidence({ endpoints, anchor
 }
 
 export async function validateMonotonicFinalityAnchor({ previous, current, endpoints = null }) {
+  if (!previous?.rpcEvidence || !current?.rpcEvidence || JSON.stringify(previous.operators) !== JSON.stringify([previous.rpcEvidence.primaryOperatorId, previous.rpcEvidence.secondaryOperatorId]) || JSON.stringify(current.operators) !== JSON.stringify([current.rpcEvidence.primaryOperatorId, current.rpcEvidence.secondaryOperatorId])) throw new Error("finality anchor RPC authority binding is invalid");
+  if (canonical(previous.rpcEvidence) !== canonical(current.rpcEvidence)) throw new Error("finality anchor RPC authority changed without an authenticated rotation");
+  if (endpoints) {
+    const expectedRpcEvidence = buildTrustedRpcEvidence({ primaryUrl: endpoints[0]?.url, secondaryUrl: endpoints[1]?.url, primaryOperatorId: endpoints[0]?.operatorId, secondaryOperatorId: endpoints[1]?.operatorId });
+    if (canonical(current.rpcEvidence) !== canonical(expectedRpcEvidence)) throw new Error("finality anchor RPC authority does not match configured endpoints");
+  }
   const dimensions = [["l2.finalized", previous.l2.finalized, current.l2.finalized], ["l2.safe", previous.l2.safe, current.l2.safe], ["l1.origin", previous.l1.origin, current.l1.origin], ["l1.finalized", previous.l1.finalized, current.l1.finalized]];
   for (const [label, before, after] of dimensions) {
     if (after.number < before.number) throw new Error(`${label} anchor downgraded during recheck`);

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/service-probe-endpoint-registry-v1.json",
+  "title": "P42 protected operational service probe endpoint registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "registry_id", "network", "chain_id", "release_binding_hash", "expected_build_digest", "max_challenge_age_seconds", "max_response_age_seconds", "max_response_bytes", "distributed_public_keys", "endpoints"],
+  "properties": {
+    "schema": { "const": "p42-service-probe-endpoint-registry/v1" },
+    "registry_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{7,127}$" },
+    "network": { "enum": ["base-sepolia", "base-mainnet"] },
+    "chain_id": { "enum": [84532, 8453] },
+    "release_binding_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "expected_build_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "max_challenge_age_seconds": { "type": "integer", "minimum": 1, "maximum": 300 },
+    "max_response_age_seconds": { "type": "integer", "minimum": 1, "maximum": 60 },
+    "max_response_bytes": { "type": "integer", "minimum": 512, "maximum": 65536 },
+    "distributed_public_keys": {
+      "type": "array", "minItems": 2, "maxItems": 16, "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^ed25519:[a-f0-9]{64}$" }
+    },
+    "endpoints": {
+      "type": "array", "minItems": 2, "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["endpoint_id", "endpoint_url", "instance_id", "ownership_group", "expected_release_digest", "expected_build_digest", "public_key", "controls"],
+        "properties": {
+          "endpoint_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{2,127}$" },
+          "endpoint_url": { "type": "string", "maxLength": 512, "pattern": "^https://[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?::[1-9][0-9]{0,4})?/[A-Za-z0-9._~!$&'()*+,;=:@/-]+$" },
+          "instance_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{2,127}$" },
+          "ownership_group": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{2,127}$" },
+          "expected_release_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+          "expected_build_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+          "public_key": { "type": "string", "pattern": "^ed25519:[a-f0-9]{64}$" },
+          "controls": {
+            "type": "array", "minItems": 1, "uniqueItems": true,
+            "items": { "enum": ["mutation_api_auth", "distributed_rate_limit", "distributed_idempotency", "abuse_alerting", "payload_size_limit", "payload_quarantine", "malware_archive_bomb_rejection"] }
+          }
+        }
+      }
+    }
+  }
+}

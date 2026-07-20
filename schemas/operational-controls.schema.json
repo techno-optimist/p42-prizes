@@ -1,16 +1,55 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://p42.xyz/schemas/operational-controls-v1.json",
-  "title": "P42 Gate 2 Operational Controls Evidence v1",
+  "$id": "https://p42.xyz/schemas/operational-controls-v3.json",
+  "title": "P42 Gate 2 Operational Controls Evidence v1/v2 historical or v3 exact-ten production",
   "type": "object",
   "required": ["schema_version", "evidence_id", "window_started_at_utc", "window_completed_at_utc", "release_binding", "controls", "report_signer", "final_gate_claim", "operational_controls_hash", "report_signature"],
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "schema_version": { "const": "p42-operational-controls/v1" } } },
+      "then": { "not": { "required": ["production_binding"] } },
+      "else": { "required": ["production_binding"] }
+    },
+    {
+      "if": { "properties": { "schema_version": { "const": "p42-operational-controls/v3" } } },
+      "then": {
+        "properties": {
+          "controls": {
+            "items": {
+              "allOf": [
+                {
+                  "if": { "properties": { "control": { "enum": ["session_expiry", "session_revocation", "chain_contract_problem_scope_binding", "spend_cap_and_forbidden_actions"] } }, "required": ["control"] },
+                  "then": { "properties": { "environment": { "required": ["session_domains"], "allOf": [{ "not": { "required": ["session_domain"] } }, { "not": { "required": ["service_probe"] } }] } } }
+                },
+                {
+                  "if": { "properties": { "control": { "enum": ["mutation_api_auth", "distributed_rate_limit", "distributed_idempotency", "abuse_alerting", "payload_size_limit", "payload_quarantine", "malware_archive_bomb_rejection"] } }, "required": ["control"] },
+                  "then": { "properties": { "environment": { "required": ["service_probe"], "allOf": [{ "not": { "required": ["session_domain"] } }, { "not": { "required": ["session_domains"] } }] } } }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "controls": {
+            "items": {
+              "if": { "properties": { "control": { "enum": ["session_expiry", "session_revocation", "chain_contract_problem_scope_binding", "spend_cap_and_forbidden_actions"] } } },
+              "then": { "properties": { "environment": { "required": ["session_domain"], "not": { "required": ["session_domains"] } } } }
+            }
+          }
+        }
+      }
+    }
+  ],
   "properties": {
-    "schema_version": { "const": "p42-operational-controls/v1" },
+    "schema_version": { "enum": ["p42-operational-controls/v1", "p42-operational-controls/v2", "p42-operational-controls/v3"] },
     "evidence_id": { "type": "string", "minLength": 1 },
     "window_started_at_utc": { "type": "string", "format": "date-time" },
     "window_completed_at_utc": { "type": "string", "format": "date-time" },
     "release_binding": { "$ref": "#/$defs/releaseBinding" },
+    "production_binding": { "$ref": "#/$defs/productionBinding" },
     "controls": {
       "type": "array",
       "minItems": 11,
@@ -95,8 +134,122 @@
       "additionalProperties": false,
       "properties": {
         "chain_id": { "type": "integer", "minimum": 1 },
-        "contract_addresses": { "type": "array", "minItems": 5, "uniqueItems": true, "items": { "$ref": "#/$defs/address" } },
+        "contract_addresses": { "type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true, "items": { "$ref": "#/$defs/address" } },
         "problem_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "sessionPermission": {
+      "type": "object",
+      "required": ["action", "target_address", "selector", "calldata", "calldata_hash", "scope", "scope_hash", "max_calls", "current_calls", "policy_expires_at_utc"],
+      "additionalProperties": false,
+      "properties": {
+        "action": { "enum": ["commit", "reveal", "challenge", "claim", "fund"] },
+        "target_address": { "$ref": "#/$defs/address" },
+        "selector": { "type": "string", "pattern": "^0x(?!00000000$)[a-fA-F0-9]{8}$" },
+        "calldata": { "type": "string", "pattern": "^0x[a-fA-F0-9]{10,}$" },
+        "calldata_hash": { "type": "string", "pattern": "^0x[a-fA-F0-9]{64}$" },
+        "scope": {
+          "type": "object",
+          "required": ["problem_id", "action", "wallet_address", "session_key"],
+          "additionalProperties": false,
+          "properties": {
+            "problem_id": { "type": "string", "minLength": 1 },
+            "action": { "enum": ["commit", "reveal", "challenge", "claim", "fund"] },
+            "wallet_address": { "$ref": "#/$defs/address" },
+            "session_key": { "$ref": "#/$defs/address" }
+          }
+        },
+        "scope_hash": { "type": "string", "pattern": "^0x[a-fA-F0-9]{64}$" },
+        "max_calls": { "const": 1 },
+        "current_calls": { "const": 0 },
+        "policy_expires_at_utc": { "type": "string", "format": "date-time" }
+      }
+    },
+    "transactionReceipt": {
+      "type": "object",
+      "required": ["transaction_hash", "block_number", "block_hash", "transaction_index", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "transaction_hash": { "type": "string", "pattern": "^0x[a-fA-F0-9]{64}$" },
+        "block_number": { "type": "integer", "minimum": 1 },
+        "block_hash": { "type": "string", "pattern": "^0x[a-fA-F0-9]{64}$" },
+        "transaction_index": { "type": "integer", "minimum": 0 },
+        "status": { "const": 1 }
+      }
+    },
+    "walletCallState": {
+      "type": "object",
+      "required": ["wallet_address", "allowlisted_policy_count", "policy_mutation_epoch", "session_key", "session_chain_id", "session_expires_at_utc", "revoked", "per_call_value_cap_wei", "total_spend_cap_wei", "spent_wei", "policies"],
+      "additionalProperties": false,
+      "properties": {
+        "wallet_address": { "$ref": "#/$defs/address" },
+        "allowlisted_policy_count": { "const": 5 },
+        "policy_mutation_epoch": { "const": 5 },
+        "session_key": { "$ref": "#/$defs/address" },
+        "session_chain_id": { "enum": [8453, 84532] },
+        "session_expires_at_utc": { "type": "string", "format": "date-time" },
+        "revoked": { "const": false },
+        "per_call_value_cap_wei": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+        "total_spend_cap_wei": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+        "spent_wei": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+        "policies": { "type": "array", "minItems": 5, "maxItems": 5, "items": { "$ref": "#/$defs/sessionPermission" } }
+      }
+    },
+    "walletStateSnapshot": {
+      "type": "object",
+      "required": ["observed_at_utc", "block_number", "block_hash", "block_timestamp", "install_receipt", "eth_call_state"],
+      "additionalProperties": false,
+      "properties": {
+        "observed_at_utc": { "type": "string", "format": "date-time" },
+        "block_number": { "type": "integer", "minimum": 1 },
+        "block_hash": { "type": "string", "pattern": "^0x[a-fA-F0-9]{64}$" },
+        "block_timestamp": { "type": "integer", "minimum": 1 },
+        "install_receipt": { "$ref": "#/$defs/transactionReceipt" },
+        "eth_call_state": { "$ref": "#/$defs/walletCallState" }
+      }
+    },
+    "exactTenSessionDomain": {
+      "type": "object",
+      "required": ["board_number", "problem_id", "chain_id", "wallet_address", "session_key", "manager_address", "permissions", "state_snapshot", "wallet_provenance", "installed_at_utc", "session_expires_at_utc", "revocation_tested", "per_call_value_cap_wei", "cumulative_spend_cap_wei", "spent_wei", "policy_mutation_epoch_baseline", "policy_mutation_epoch"],
+      "additionalProperties": false,
+      "properties": {
+        "board_number": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "problem_id": { "type": "string", "minLength": 1 },
+        "chain_id": { "enum": [8453, 84532] },
+        "wallet_address": { "$ref": "#/$defs/address" },
+        "session_key": { "$ref": "#/$defs/address" },
+        "manager_address": { "$ref": "#/$defs/address" },
+        "installed_at_utc": { "type": "string", "format": "date-time" },
+        "wallet_provenance": {
+          "type": "object",
+          "required": ["runtime_code_hash", "capsule_digest", "owner_address", "owner_policy_hash"],
+          "additionalProperties": false,
+          "properties": {
+            "runtime_code_hash": { "type": "string", "pattern": "^0x[a-f0-9]{64}$" },
+            "capsule_digest": { "$ref": "#/$defs/hash" },
+            "owner_address": { "$ref": "#/$defs/address" },
+            "owner_policy_hash": { "$ref": "#/$defs/hash" }
+          }
+        },
+        "permissions": { "type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true, "items": { "$ref": "#/$defs/sessionPermission" } },
+        "session_expires_at_utc": { "type": "string", "format": "date-time" },
+        "revocation_tested": { "const": true },
+        "per_call_value_cap_wei": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+        "cumulative_spend_cap_wei": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+        "spent_wei": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+        "policy_mutation_epoch_baseline": { "const": 0 },
+        "policy_mutation_epoch": { "const": 5 },
+        "state_snapshot": { "$ref": "#/$defs/walletStateSnapshot" }
+      }
+    },
+    "serviceProbe": {
+      "type": "object",
+      "required": ["service_id", "build_digest", "deployment_id"],
+      "additionalProperties": false,
+      "properties": {
+        "service_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{7,127}$" },
+        "build_digest": { "$ref": "#/$defs/hash" },
+        "deployment_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{7,127}$" }
       }
     },
     "environment": {
@@ -111,7 +264,9 @@
         "release_binding_hash": { "$ref": "#/$defs/hash" },
         "deployment_manifest_hash": { "$ref": "#/$defs/hash" },
         "configuration_hash": { "$ref": "#/$defs/hash" },
-        "session_domain": { "$ref": "#/$defs/sessionDomain" }
+        "session_domain": { "$ref": "#/$defs/sessionDomain" },
+        "session_domains": { "type": "array", "minItems": 10, "maxItems": 10, "items": { "$ref": "#/$defs/exactTenSessionDomain" } },
+        "service_probe": { "$ref": "#/$defs/serviceProbe" }
       }
     },
     "control": {
@@ -148,7 +303,7 @@
         "chain_bytecode_artifact": { "$ref": "#/$defs/artifact" }
       }
     },
-    "releaseBinding": {
+    "legacyReleaseBinding": {
       "type": "object",
       "required": ["repository_uri", "git_commit", "network", "chain_id", "deployment_manifest", "configuration_artifact", "contracts"],
       "additionalProperties": false,
@@ -160,6 +315,72 @@
         "deployment_manifest": { "$ref": "#/$defs/artifact" },
         "configuration_artifact": { "$ref": "#/$defs/artifact" },
         "contracts": { "type": "array", "minItems": 5, "maxItems": 5, "items": { "$ref": "#/$defs/contract" } }
+      }
+    },
+    "canonicalContract": {
+      "type": "object",
+      "required": ["topology_key", "name", "address", "runtime_bytecode_hash", "manifest_runtime_code_hash", "source_artifact", "runtime_bytecode_artifact", "chain_bytecode_artifact"],
+      "additionalProperties": false,
+      "properties": {
+        "topology_key": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "address": { "$ref": "#/$defs/address" },
+        "runtime_bytecode_hash": { "$ref": "#/$defs/hash" },
+        "manifest_runtime_code_hash": { "type": "string", "pattern": "^0x[a-fA-F0-9]{64}$" },
+        "source_artifact": { "$ref": "#/$defs/artifact" },
+        "runtime_bytecode_artifact": { "$ref": "#/$defs/artifact" },
+        "chain_bytecode_artifact": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "canonicalReleaseBinding": {
+      "type": "object",
+      "required": ["binding_version", "repository_uri", "deployment_commit", "git_commit", "network", "chain_id", "canonical_topology", "release_capsule", "capsule_rebuild_attestation", "deployment_manifest", "configuration_artifact", "contracts"],
+      "additionalProperties": false,
+      "properties": {
+        "binding_version": { "const": "p42-release-binding/v2" },
+        "repository_uri": { "const": "https://github.com/techno-optimist/p42-prizes" },
+        "deployment_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "git_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "network": { "const": "base-sepolia" },
+        "chain_id": { "const": 84532 },
+        "canonical_topology": { "$ref": "#/$defs/artifact" },
+        "release_capsule": { "$ref": "#/$defs/artifact" },
+        "capsule_rebuild_attestation": { "$ref": "#/$defs/artifact" },
+        "deployment_manifest": { "$ref": "#/$defs/artifact" },
+        "configuration_artifact": { "$ref": "#/$defs/artifact" },
+        "contracts": { "type": "array", "minItems": 47, "maxItems": 47, "items": { "$ref": "#/$defs/canonicalContract" } }
+      }
+    },
+    "releaseBinding": {
+      "oneOf": [{ "$ref": "#/$defs/legacyReleaseBinding" }, { "$ref": "#/$defs/canonicalReleaseBinding" }]
+    },
+    "productionContractIdentity": {
+      "type": "object",
+      "required": ["topology_key", "name", "address", "runtime_bytecode_hash", "manifest_runtime_code_hash"],
+      "additionalProperties": false,
+      "properties": {
+        "topology_key": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "address": { "$ref": "#/$defs/address" },
+        "runtime_bytecode_hash": { "$ref": "#/$defs/hash" },
+        "manifest_runtime_code_hash": { "type": "string", "pattern": "^0x[a-fA-F0-9]{64}$" }
+      }
+    },
+    "productionBinding": {
+      "type": "object",
+      "required": ["deployment_commit", "capsule_digest", "slate_digest", "config_digest", "release_binding_digest", "board_set_digest", "timelock_address", "treasury_address", "resolver_quorum_address", "contracts"],
+      "additionalProperties": false,
+      "properties": {
+        "deployment_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "capsule_digest": { "$ref": "#/$defs/hash" },
+        "slate_digest": { "$ref": "#/$defs/hash" },
+        "config_digest": { "$ref": "#/$defs/hash" },
+        "release_binding_digest": { "$ref": "#/$defs/hash" },
+        "board_set_digest": { "$ref": "#/$defs/hash" },
+        "timelock_address": { "$ref": "#/$defs/address" },
+        "treasury_address": { "$ref": "#/$defs/address" },
+        "resolver_quorum_address": { "$ref": "#/$defs/address" },
+        "contracts": { "type": "array", "minItems": 47, "maxItems": 47, "items": { "$ref": "#/$defs/productionContractIdentity" } }
       }
     }
   }

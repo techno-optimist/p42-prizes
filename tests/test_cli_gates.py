@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from p42_prizes import cli
@@ -52,6 +54,24 @@ def run_attestation_cli(command, builder, tmp_path: Path, *, mutate=None):
     report_path = tmp_path / "report.json"
     report_path.write_text(json.dumps(report), encoding="utf-8")
     registry_path = fixture.write_registry(registry)
+    if command in {"governance-signoff-validate", "operational-controls-validate"}:
+        with ExitStack() as stack:
+            rpc_urls = [stack.enter_context(fixture.chain_rpc_server()) for _ in range(2)]
+            policy_path, digest_path = fixture.write_governance_rpc_policy(rpc_urls)
+            return run_cli(
+                command,
+                "--report",
+                str(report_path),
+                "--trust-registry",
+                str(registry_path),
+                "--artifact-root",
+                str(tmp_path),
+                "--governance-rpc-policy",
+                str(policy_path),
+                "--governance-rpc-policy-digest",
+                str(digest_path),
+                "--allow-test-trust-registry",
+            )
     with fixture.chain_rpc_server() as rpc_url:
         return run_cli(
             command,
@@ -63,6 +83,35 @@ def run_attestation_cli(command, builder, tmp_path: Path, *, mutate=None):
             str(tmp_path),
             "--chain-rpc-url",
             rpc_url,
+            "--allow-test-trust-registry",
+        )
+
+
+def run_governance_cli_with_providers(tmp_path: Path, provider_options: list[dict]):
+    report, fixture, registry = valid_governance_report(tmp_path)
+    report_path = tmp_path / "governance-report.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    registry_path = fixture.write_registry(registry)
+    with ExitStack() as stack:
+        rpc_urls = []
+        for options in provider_options:
+            if options.get("transport_outage"):
+                rpc_urls.append("http://127.0.0.1:1")
+            else:
+                rpc_urls.append(stack.enter_context(fixture.chain_rpc_server(**options)))
+        policy_path, digest_path = fixture.write_governance_rpc_policy(rpc_urls)
+        return run_cli(
+            "governance-signoff-validate",
+            "--report",
+            str(report_path),
+            "--trust-registry",
+            str(registry_path),
+            "--artifact-root",
+            str(tmp_path),
+            "--governance-rpc-policy",
+            str(policy_path),
+            "--governance-rpc-policy-digest",
+            str(digest_path),
             "--allow-test-trust-registry",
         )
 
@@ -142,6 +191,196 @@ def test_gate_validator_accepts_valid_report(command, builder, tmp_path: Path) -
     completed = run_attestation_cli(command, builder, tmp_path)
 
     assert completed.returncode == 0, completed.stderr
+    if command == "governance-signoff-validate":
+        assert json.loads(completed.stdout)["schema_version"] == "p42-governance-signoff/v2"
+
+
+def test_governance_cli_rejects_one_endpoint_replay_policy(tmp_path: Path) -> None:
+    completed = run_governance_cli_with_providers(tmp_path, [{}])
+
+    assert completed.returncode == 1
+    assert "at least two quorum providers" in completed.stderr
+
+
+def test_governance_v2_rejects_caller_selected_single_rpc(tmp_path: Path) -> None:
+    report, fixture, registry = valid_governance_report(tmp_path)
+    report_path = tmp_path / "single-rpc-governance.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    registry_path = fixture.write_registry(registry)
+    with fixture.chain_rpc_server() as rpc_url:
+        completed = run_cli(
+            "governance-signoff-validate",
+            "--report",
+            str(report_path),
+            "--trust-registry",
+            str(registry_path),
+            "--artifact-root",
+            str(tmp_path),
+            "--chain-rpc-url",
+            rpc_url,
+            "--allow-test-trust-registry",
+        )
+
+    assert completed.returncode == 1
+    assert "rejects caller-selected --chain-rpc-url" in completed.stderr
+
+
+def test_operational_controls_v3_rejects_caller_selected_single_rpc(tmp_path: Path) -> None:
+    report, fixture, registry = valid_operational_controls(tmp_path)
+    report_path = tmp_path / "single-rpc-operational.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    registry_path = fixture.write_registry(registry)
+    with fixture.chain_rpc_server() as rpc_url:
+        completed = run_cli(
+            "operational-controls-validate",
+            "--report", str(report_path),
+            "--trust-registry", str(registry_path),
+            "--artifact-root", str(tmp_path),
+            "--chain-rpc-url", rpc_url,
+            "--allow-test-trust-registry",
+        )
+    assert completed.returncode == 1
+    assert "v3 rejects caller-selected --chain-rpc-url" in completed.stderr
+
+
+def test_governance_cli_rejects_provider_state_disagreement(tmp_path: Path) -> None:
+    completed = run_governance_cli_with_providers(
+        tmp_path,
+        [{}, {"governance_state_overrides": {"threshold": 4}}],
+    )
+
+    assert completed.returncode == 1
+    assert "did not reach one state quorum" in completed.stderr
+
+
+def test_governance_cli_accepts_head_skew_and_minority_transport_outage(
+    tmp_path: Path,
+) -> None:
+    completed = run_governance_cli_with_providers(
+        tmp_path,
+        [
+            {"finalized_block_number": 6000, "head_block_number": 6001},
+            {"finalized_block_number": 6001, "head_block_number": 6003},
+            {"transport_outage": True},
+        ],
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_governance_cli_accepts_quorum_despite_hostile_minority_state(tmp_path: Path) -> None:
+    completed = run_governance_cli_with_providers(
+        tmp_path,
+        [{}, {}, {"governance_state_overrides": {"threshold": 4}}],
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_governance_cli_rejects_unbounded_provider_freshness(tmp_path: Path) -> None:
+    stale = {"finalized_block_number": 6000, "head_block_number": 6100}
+    completed = run_governance_cli_with_providers(tmp_path, [stale, stale])
+
+    assert completed.returncode == 1
+    assert "bounded freshness quorum" in completed.stderr
+
+
+def test_governance_policy_rejects_same_upstream_ownership_aliases(tmp_path: Path) -> None:
+    _, fixture, _ = valid_governance_report(tmp_path)
+    with ExitStack() as stack:
+        rpc_urls = [stack.enter_context(fixture.chain_rpc_server()) for _ in range(2)]
+        policy_path, _ = fixture.write_governance_rpc_policy(
+            rpc_urls,
+            ownership_groups=["shared-upstream", "shared-upstream"],
+        )
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+
+    with pytest.raises(cli.AdmissionError, match="distinct certified ownership groups"):
+        cli._validate_governance_rpc_policy(policy, expected_environment="test")
+
+
+def test_launch_authorization_composite_uses_governance_quorum_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sentinel_reader = object()
+    captured: dict[str, object] = {}
+    policy = {"schema_version": "p42-governance-rpc-policy/v2"}
+    args = SimpleNamespace(
+        trust_registry=str(tmp_path / "registry.json"),
+        artifact_root=str(tmp_path),
+        allow_test_trust_registry=False,
+        chain_rpc_url=None,
+        governance_rpc_policy=None,
+        governance_rpc_policy_digest=None,
+        authorization=str(tmp_path / "authorization.json"),
+        output=None,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_load_pinned_trust_registry",
+        lambda *args, **kwargs: {"environment": "production"},
+    )
+    monkeypatch.setattr(cli, "_load_governance_rpc_policy", lambda **kwargs: policy)
+    monkeypatch.setattr(cli, "_GovernanceQuorumChainReader", lambda value: sentinel_reader)
+    monkeypatch.setattr(cli, "load_evidence_file", lambda path: {"governance": "v2"})
+
+    def normalize(value, **kwargs):
+        captured.update(value=value, **kwargs)
+        return {"schema_version": "p42-production-launch-authorization/v1"}
+
+    monkeypatch.setattr(cli, "normalize_launch_authorization", normalize)
+    monkeypatch.setattr(cli, "_enforce_gate_schema", lambda report, schema: None)
+    monkeypatch.setattr(cli, "_write_or_print_json", lambda report, output: None)
+
+    assert cli._cmd_production_launch_authorization_validate(args) == 0
+    assert captured["chain_reader"] is sentinel_reader
+    assert captured["value"] == {"governance": "v2"}
+    assert captured["now_utc"] is None
+
+
+def test_launch_authorization_rejects_legacy_single_rpc_before_composition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = SimpleNamespace(
+        trust_registry=str(tmp_path / "registry.json"),
+        artifact_root=str(tmp_path),
+        allow_test_trust_registry=False,
+        chain_rpc_url="https://caller-selected.invalid",
+        governance_rpc_policy=None,
+        governance_rpc_policy_digest=None,
+        authorization=str(tmp_path / "authorization.json"),
+        now_utc=None,
+        output=None,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_load_pinned_trust_registry",
+        lambda *args, **kwargs: {"environment": "production"},
+    )
+
+    assert cli._cmd_production_launch_authorization_validate(args) == 1
+    assert "rejects caller-selected --chain-rpc-url" in capsys.readouterr().err
+
+
+def test_governance_cli_rejects_non_finalized_completion(tmp_path: Path) -> None:
+    provider = {"finalized_block_number": 5999, "head_block_number": 6000}
+    completed = run_governance_cli_with_providers(tmp_path, [provider, provider])
+
+    assert completed.returncode == 1
+    assert "not included in the live finalized chain" in completed.stderr
+
+
+def test_governance_cli_rejects_stale_packet_after_live_rotation(tmp_path: Path) -> None:
+    rotated_signers = ["0x" + f"{index + 10:040x}" for index in range(5)]
+    provider = {
+        "finalized_block_number": 6001,
+        "head_block_number": 6001,
+        "live_governance_state_overrides": {"signers": rotated_signers},
+    }
+    completed = run_governance_cli_with_providers(tmp_path, [provider, provider])
+
+    assert completed.returncode == 1
+    assert "stale after a finalized timelock rotation" in completed.stderr
 
 
 def test_legal_memo_v2_validates_end_to_end_through_cli(tmp_path: Path) -> None:

@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { ethers } from "ethers";
 
 import { canonicalJson, sha256Canonical } from "./lib.mjs";
@@ -6,6 +8,8 @@ import { readStrictJsonFileSyncWithBytes } from "./strict-json.mjs";
 
 export const ACTIVATION_RPC_REGISTRY_SCHEMA = "p42-activation-rpc-operator-registry/v1";
 export const ACTIVATION_RPC_AUTHORITY_SCHEMA = "p42-activation-rpc-authority/v1";
+export const PRODUCTION_ACTIVATION_RPC_REGISTRY_DIGEST_PATH =
+  "/etc/p42/activation-rpc-operator-registry.sha256";
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const OPERATOR_ID_RE = /^[a-z0-9][a-z0-9._-]{2,63}$/;
 const LIMITS = Object.freeze({
@@ -17,6 +21,51 @@ const LIMITS = Object.freeze({
 });
 const DNS_LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const NUMERIC_ALIAS_RE = /^(?:0x[0-9a-f]+|[0-9]+)(?:\.(?:0x[0-9a-f]+|[0-9]+)){0,3}$/;
+
+export function loadPinnedActivationRpcRegistryDigest(
+  path = PRODUCTION_ACTIVATION_RPC_REGISTRY_DIGEST_PATH,
+  { allowTestPath = false } = {},
+) {
+  const absolute = resolve(path);
+  if (!allowTestPath && absolute !== PRODUCTION_ACTIVATION_RPC_REGISTRY_DIGEST_PATH) {
+    throw new Error("production activation RPC registry digest path is fixed out of band");
+  }
+  const parent = dirname(absolute);
+  const parentStat = lstatSync(parent);
+  if (!parentStat.isDirectory() || parentStat.isSymbolicLink() || (parentStat.mode & 0o022) !== 0
+      || (!allowTestPath && parentStat.uid !== 0)) {
+    throw new Error("activation RPC registry digest parent is not protected");
+  }
+  const before = lstatSync(absolute);
+  const fd = openSync(absolute, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size !== 72 || (stat.mode & 0o222) !== 0
+        || stat.dev !== before.dev || stat.ino !== before.ino || (!allowTestPath && stat.uid !== 0)) {
+      throw new Error("activation RPC registry digest pin is not one immutable protected file");
+    }
+    const bytes = Buffer.alloc(stat.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (count <= 0) throw new Error("activation RPC registry digest pin was truncated");
+      offset += count;
+    }
+    const after = fstatSync(fd);
+    if (after.dev !== stat.dev || after.ino !== stat.ino || after.size !== stat.size
+        || after.mode !== stat.mode || after.nlink !== stat.nlink || after.mtimeMs !== stat.mtimeMs
+        || after.ctimeMs !== stat.ctimeMs) {
+      throw new Error("activation RPC registry digest pin changed while reading");
+    }
+    const value = bytes.toString("ascii");
+    if (!/^sha256:[0-9a-f]{64}\n$/.test(value)) {
+      throw new Error("activation RPC registry digest pin is not canonical");
+    }
+    return value.slice(0, -1);
+  } finally {
+    closeSync(fd);
+  }
+}
 
 function exactKeys(value, keys) {
   return value && typeof value === "object" && !Array.isArray(value)

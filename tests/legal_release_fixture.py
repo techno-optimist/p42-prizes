@@ -143,13 +143,14 @@ def schema_valid_manifest_shell() -> dict[str, Any]:
         {
             "required": [
                 "finalityAnchor", "acceptanceValidatedAt", "completionBlockTimestamp",
-                "completionBlockHash", "completionBlockEvidence",
+                "completionBlockHash", "completionBlockEvidence", "roleAcceptancePacketBytesDigest",
             ]
         },
     )
     manifest["governanceSetup"] = sample(governance_schema)
     manifest["governanceSetup"]["completedAt"] = "2026-07-08T14:00:00Z"
     manifest["governanceSetup"]["completionBlock"] = 100
+    manifest["governanceSetup"]["roleAcceptancePacketBytesDigest"] = "sha256:" + "ab" * 32
     for index, operation in enumerate(manifest["setupTransactions"]):
         operation["executedOperationId"] = "0x" + f"{index + 1:064x}"
         operation["txHash"] = "0x" + f"{index + 101:064x}"
