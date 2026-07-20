@@ -198,10 +198,13 @@ It fails closed unless all of the following agree:
 1. Render service `srv-d96pokeq1p3s73foqk60` is configured for `main`.
 2. Render reports `autoDeploy: no` and `autoDeployTrigger: off`, matching
    `render.yaml`; a push cannot publish ahead of exact-main CI.
-3. Its one live deployment commit contains the latest first-parent GitHub
+3. Render reports the database-aware health check path
+   `/prizes/api/health`, matching `render.yaml`; the generic portal page is not
+   accepted as service readiness.
+4. Its one live deployment commit contains the latest first-parent GitHub
    `main` commit that touches `web/` or `render.yaml`, queried through the
    canonical `origin` remote.
-4. The Render origin and `projectforty2.ai` proxy return success for all prize
+5. The Render origin and `projectforty2.ai` proxy return success for all prize
    routes required by the portal.
 
 The guard makes 55 HTTP observations. The exact ordered 32-observation subset

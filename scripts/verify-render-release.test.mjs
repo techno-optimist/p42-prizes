@@ -92,7 +92,13 @@ function ancestry(...pairs) {
 
 test("findService unwraps Render CLI service records", () => {
   const service = findService(
-    [{ service: { id: "srv-prizes", branch: "main", autoDeploy: "no", autoDeployTrigger: "off" } }],
+    [{ service: {
+      id: "srv-prizes",
+      branch: "main",
+      autoDeploy: "no",
+      autoDeployTrigger: "off",
+      serviceDetails: { healthCheckPath: "/prizes/api/health" },
+    } }],
     "srv-prizes",
   );
   assert.equal(service.branch, "main");
@@ -102,6 +108,17 @@ test("findService unwraps Render CLI service records", () => {
     /must disable autodeploy/,
   );
   assert.throws(() => assertServiceReleaseConfig(service, "release"), /expected "release"/);
+  assert.throws(
+    () => assertServiceReleaseConfig({
+      ...service,
+      serviceDetails: { healthCheckPath: "/prizes" },
+    }, "main"),
+    /health check is "\/prizes"/,
+  );
+  assert.throws(
+    () => assertServiceReleaseConfig({ ...service, serviceDetails: {} }, "main"),
+    /expected "\/prizes\/api\/health"/,
+  );
 });
 
 test("findLiveDeploy requires exactly one SHA-pinned live deploy", () => {

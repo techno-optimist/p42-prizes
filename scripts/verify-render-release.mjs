@@ -23,6 +23,8 @@ const DEFAULTS = Object.freeze({
   serviceId: "srv-d96pokeq1p3s73foqk60",
 });
 
+const EXPECTED_HEALTH_CHECK_PATH = "/prizes/api/health";
+
 const EXPECTED_CAPABILITIES = Object.freeze({
   api_version: "p42-prizes-capabilities-v1",
   mutations: Object.freeze({
@@ -198,6 +200,13 @@ export function assertServiceReleaseConfig(service, branch) {
   if (service.autoDeploy !== "no" || service.autoDeployTrigger !== "off") {
     throw new Error(
       `Render service ${service.id} must disable autodeploy so exact-main CI precedes deployment.`,
+    );
+  }
+  const healthCheckPath = service.serviceDetails?.healthCheckPath;
+  if (healthCheckPath !== EXPECTED_HEALTH_CHECK_PATH) {
+    throw new Error(
+      `Render service ${service.id} health check is ${JSON.stringify(healthCheckPath)}, `
+      + `expected ${JSON.stringify(EXPECTED_HEALTH_CHECK_PATH)}.`,
     );
   }
 }
