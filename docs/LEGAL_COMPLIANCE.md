@@ -13,6 +13,8 @@ reruns, transcripts, alerts, or challenge-candidate generation.
 ```bash
 PYTHONPATH=src python3 -m p42_prizes.cli legal-memo-validate \
   --report legal/gate2-legal-compliance-memo.json \
+  --trust-registry /owner-controlled/p42-attestation-trust-registry.json \
+  --artifact-root /absolute/frozen/p42-release \
   --output legal/gate2-legal-compliance-memo.normalized.json
 ```
 
@@ -194,8 +196,10 @@ attestation. This repository ships none of those production facts or keys.
 
 ## Deliberately Invalid Template
 
-The following is a fill-in handoff, not evidence. Its angle-bracket values,
-missing topic rows, and absent signature are intentionally rejected.
+The following is a fill-in handoff, not evidence. Its network pair reflects the
+only network admitted by the current v2 release binding, but its angle-bracket
+values, missing topic rows, and absent signature remain deliberately invalid and
+are intentionally rejected.
 
 ```json
 {
@@ -213,8 +217,8 @@ missing topic rows, and absent signature are intentionally rejected.
     "repository_uri": "https://github.com/techno-optimist/p42-prizes",
     "deployment_commit": "<REQUIRED_FROZEN_DEPLOYMENT_COMMIT>",
     "git_commit": "<REQUIRED_FROZEN_40_HEX_COMMIT>",
-    "network": "base-mainnet",
-    "chain_id": 8453,
+    "network": "base-sepolia",
+    "chain_id": 84532,
     "deployment_manifest": {"uri": "<REQUIRED>", "sha256": "<REQUIRED>"},
     "configuration_artifact": {"uri": "<REQUIRED>", "sha256": "<REQUIRED>"},
     "canonical_topology": {"uri": "<REQUIRED>", "sha256": "<REQUIRED>"},

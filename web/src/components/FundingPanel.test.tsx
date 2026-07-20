@@ -18,6 +18,12 @@ const WALLET_URI = `ethereum:${ADDRESS}@84532`;
 const FUNDING_AUTHORIZATION_DIGEST = `sha256:${"4".repeat(64)}`;
 const ACTIVATION_COMPLETION_DIGEST = `sha256:${"5".repeat(64)}`;
 const CHECKPOINT_DIGEST = `sha256:${"6".repeat(64)}`;
+const RELEASE_ARTIFACTS = {
+  terms: { uri: "https://legal.projectforty2.ai/releases/test/terms", sha256: `sha256:${"a".repeat(64)}` },
+  privacy: { uri: "https://legal.projectforty2.ai/releases/test/privacy", sha256: `sha256:${"b".repeat(64)}` },
+  risk: { uri: "https://legal.projectforty2.ai/releases/test/risk", sha256: `sha256:${"c".repeat(64)}` },
+  eligibility: { uri: "https://legal.projectforty2.ai/releases/test/eligibility", sha256: `sha256:${"d".repeat(64)}` },
+};
 
 function props(overrides: Partial<FundingPanelProps> = {}): FundingPanelProps {
   return {
@@ -50,6 +56,7 @@ function responseBody({
   checkpointBlock = 100,
   checkpointDigest = CHECKPOINT_DIGEST,
   activationFinalizedBlock = 99,
+  releaseArtifacts = RELEASE_ARTIFACTS,
 }: {
   slug?: string;
   address?: string;
@@ -62,6 +69,7 @@ function responseBody({
   checkpointBlock?: unknown;
   checkpointDigest?: unknown;
   activationFinalizedBlock?: unknown;
+  releaseArtifacts?: unknown;
 } = {}) {
   return {
     schema: "p42-prizes/funding-target/v3",
@@ -83,6 +91,7 @@ function responseBody({
       chainId: 84532,
       explorerUrl: `https://sepolia.basescan.org/address/${address}`,
       walletUri: `ethereum:${address}@84532`,
+      releaseArtifacts,
     } : null,
   };
 }
@@ -125,7 +134,7 @@ function expectTargetClearedFromDom() {
 }
 
 function acknowledgePolicy() {
-  const acknowledgement = screen.getByRole("checkbox", { name: /I acknowledge the exact authorization/ });
+  const acknowledgement = screen.getByRole("checkbox", { name: /I have reviewed the release-bound Terms/ });
   fireEvent.click(acknowledgement);
   expect((acknowledgement as HTMLInputElement).checked).toBe(true);
   return acknowledgement;
@@ -264,7 +273,39 @@ describe("FundingPanel deadline reconciliation", () => {
     expect(details.textContent).toContain(FUNDING_AUTHORIZATION_DIGEST);
     expect(details.textContent).toContain(ACTIVATION_COMPLETION_DIGEST);
     expect(details.textContent).toContain(CHECKPOINT_DIGEST);
-    expect(screen.getByRole("checkbox", { name: /exact authorization.*checkpoint-generation.*policy digest disclosure and API/i })).toBeTruthy();
+    expect(screen.getByRole("checkbox", { name: /release-bound Terms.*checkpoint-generation values/i })).toBeTruthy();
+  });
+
+  it("presents every release-bound artifact link and digest before acknowledgement", async () => {
+    await renderAndReveal();
+    for (const [label, artifact] of [
+      ["Terms", RELEASE_ARTIFACTS.terms],
+      ["Privacy", RELEASE_ARTIFACTS.privacy],
+      ["Risk disclosures", RELEASE_ARTIFACTS.risk],
+      ["Eligibility", RELEASE_ARTIFACTS.eligibility],
+    ] as const) {
+      expect(screen.getByRole("link", { name: label }).getAttribute("href")).toBe(artifact.uri);
+      expect(screen.getByText(artifact.sha256)).toBeTruthy();
+    }
+    expect((screen.getByRole("button", { name: "Copy sponsor pool address" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it.each([
+    ["missing bundle", undefined],
+    ["missing artifact", { ...RELEASE_ARTIFACTS, eligibility: undefined }],
+    ["malformed URI", { ...RELEASE_ARTIFACTS, terms: { ...RELEASE_ARTIFACTS.terms, uri: "http://example.com/terms" } }],
+    ["credentialed URI", { ...RELEASE_ARTIFACTS, privacy: { ...RELEASE_ARTIFACTS.privacy, uri: "https://user@example.com/privacy" } }],
+    ["zero digest", { ...RELEASE_ARTIFACTS, risk: { ...RELEASE_ARTIFACTS.risk, sha256: `sha256:${"0".repeat(64)}` } }],
+    ["extra field", { ...RELEASE_ARTIFACTS, extra: RELEASE_ARTIFACTS.terms }],
+  ])("fails closed on %s in release artifacts", async (_label, releaseArtifacts) => {
+    const body = responseBody() as { target: Record<string, unknown> };
+    if (releaseArtifacts === undefined) delete body.target.releaseArtifacts;
+    else body.target.releaseArtifacts = releaseArtifacts;
+    vi.mocked(fetch).mockResolvedValue(okResponse(body));
+    render(<FundingPanel {...props()} />);
+    await flushResponse();
+    expectTargetClearedFromDom();
+    expect(screen.getByText("funding unavailable")).toBeTruthy();
   });
 
   it("copies the full exact policy digests rather than an abbreviation", async () => {
@@ -417,6 +458,7 @@ describe("FundingPanel deadline reconciliation", () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: clipboardWrite } });
     const { rerender } = render(<FundingPanel {...props()} />);
     await flushResponse();
+    acknowledgePolicy();
 
     fireEvent.click(screen.getByRole("button", { name: "Copy sponsor pool address" }));
     expect(clipboardWrite).toHaveBeenCalledWith(ADDRESS);
@@ -441,6 +483,7 @@ describe("FundingPanel deadline reconciliation", () => {
     const longProps = props({ fundingDeadline: new Date(longDeadline).toISOString() });
     const { rerender } = render(<FundingPanel {...longProps} />);
     await flushResponse();
+    acknowledgePolicy();
 
     fireEvent.click(screen.getByRole("button", { name: "Copy sponsor pool address" }));
     await flushResponse();
@@ -455,6 +498,7 @@ describe("FundingPanel deadline reconciliation", () => {
     rerender(<FundingPanel {...longProps} slug={B_SLUG} />);
     await flushResponse();
     expectTargetVisible(B_ADDRESS);
+    acknowledgePolicy();
     fireEvent.click(screen.getByRole("button", { name: "Copy sponsor pool address" }));
     await flushResponse();
     expect(screen.getByRole("button", { name: "Copy sponsor pool address" }).textContent).toBe("copied");
@@ -474,6 +518,7 @@ describe("FundingPanel deadline reconciliation", () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: clipboardWrite } });
     render(<FundingPanel {...props()} />);
     await flushResponse();
+    acknowledgePolicy();
 
     const copyButton = screen.getByRole("button", { name: "Copy sponsor pool address" });
     fireEvent.click(copyButton);
@@ -492,6 +537,7 @@ describe("FundingPanel deadline reconciliation", () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
     render(<FundingPanel {...props()} />);
     await flushResponse();
+    acknowledgePolicy();
 
     const copyButton = screen.getByRole("button", { name: "Copy sponsor pool address" });
     fireEvent.click(copyButton);
@@ -584,7 +630,7 @@ describe("FundingPanel deadline reconciliation", () => {
     expectTargetClearedFromDom();
     await flushResponse();
     expectTargetVisible();
-    expect((screen.getByRole("checkbox", { name: /I acknowledge the exact authorization/ }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole("checkbox", { name: /I have reviewed the release-bound Terms/ }) as HTMLInputElement).checked).toBe(false);
   });
 
   it("resets acknowledgement when the policy binding changes", async () => {
@@ -597,7 +643,7 @@ describe("FundingPanel deadline reconciliation", () => {
     expectTargetClearedFromDom();
     await flushResponse();
     expectTargetVisible();
-    expect((screen.getByRole("checkbox", { name: /I acknowledge the exact authorization/ }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole("checkbox", { name: /I have reviewed the release-bound Terms/ }) as HTMLInputElement).checked).toBe(false);
   });
 
   it("blocks and clears a wallet click at the exact boundary", async () => {
@@ -655,6 +701,10 @@ describe("FundingPanel deadline reconciliation", () => {
     ["funding authorization", { fundingAuthorizationDigest: `sha256:${"9".repeat(64)}` }],
     ["activation completion", { activationCompletionDigest: `sha256:${"9".repeat(64)}` }],
     ["checkpoint", { checkpointBlock: 101 }],
+    ["release artifact", { releaseArtifacts: {
+      ...RELEASE_ARTIFACTS,
+      terms: { ...RELEASE_ARTIFACTS.terms, sha256: `sha256:${"e".repeat(64)}` },
+    } }],
   ])("does not arm wallet launch when click-time %s binding changes", async (_label, changed) => {
     await renderAndReveal();
     acknowledgePolicy();

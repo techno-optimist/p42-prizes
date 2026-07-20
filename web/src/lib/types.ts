@@ -250,6 +250,19 @@ export interface FundingTargetV3 {
   chainId: 84532 | 8453;
   explorerUrl: string;
   walletUri: string;
+  releaseArtifacts: FundingReleaseArtifactsV1;
+}
+
+export interface FundingArtifactReference {
+  uri: string;
+  sha256: `sha256:${string}`;
+}
+
+export interface FundingReleaseArtifactsV1 {
+  terms: FundingArtifactReference;
+  privacy: FundingArtifactReference;
+  risk: FundingArtifactReference;
+  eligibility: FundingArtifactReference;
 }
 
 export interface FundingTargetEnvelopeV3 {

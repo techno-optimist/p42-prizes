@@ -1,7 +1,7 @@
 import { json } from "@/lib/api";
 import { publishedDonationTarget } from "@/lib/chain-provenance";
 import { loadPortalReadModel } from "@/lib/indexer-read-model";
-import type { FundingTargetEnvelopeV3 } from "@/lib/types";
+import type { FundingReleaseArtifactsV1, FundingTargetEnvelopeV3 } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -26,6 +26,43 @@ function validDigest(value: unknown): value is string {
 
 function validBlock(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function validPublicArtifactUri(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" && parsed.username === "" && parsed.password === ""
+      && parsed.hash === "" && parsed.hostname.includes(".") && parsed.href === value;
+  } catch {
+    return false;
+  }
+}
+
+function releaseArtifacts(): FundingReleaseArtifactsV1 | null {
+  const raw = process.env.P42_FUNDING_RELEASE_ARTIFACTS;
+  if (!raw) return null;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+    const artifacts = value as Record<string, unknown>;
+    if (!exactKeys(artifacts, ["eligibility", "privacy", "risk", "terms"])) return null;
+    for (const artifact of Object.values(artifacts)) {
+      if (artifact === null || typeof artifact !== "object" || Array.isArray(artifact)) return null;
+      const reference = artifact as Record<string, unknown>;
+      if (!exactKeys(reference, ["sha256", "uri"])
+        || !validPublicArtifactUri(reference.uri) || !validDigest(reference.sha256)) return null;
+    }
+    return artifacts as unknown as FundingReleaseArtifactsV1;
+  } catch {
+    return null;
+  }
 }
 
 function unavailable(slug: string): FundingTargetEnvelopeV3 {
@@ -80,7 +117,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ slu
     const effectiveTimestamp = Math.max(Date.parse(funding.publicationObservedAt), Date.now());
     const serverObservedAt = new Date(effectiveTimestamp).toISOString();
     const authorizationExpired = Math.floor(effectiveTimestamp / 1000) > Math.floor(authorizationTimestamp / 1000);
-    const target = funding.canFund && !authorizationExpired && effectiveTimestamp < deadlineTimestamp
+    const artifacts = releaseArtifacts();
+    const target = artifacts && funding.canFund && !authorizationExpired && effectiveTimestamp < deadlineTimestamp
       && funding.remainingFundingCapWei !== "0"
       ? publishedDonationTarget(problem.donationWallet, problem.chainProvenance)
       : null;
@@ -104,6 +142,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ slu
         chainId: target.chainId as 84532 | 8453,
         explorerUrl: target.explorerUrl,
         walletUri: target.walletUri,
+        releaseArtifacts: artifacts!,
       },
     };
     return json(body);

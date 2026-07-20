@@ -5,7 +5,7 @@ export async function POST() {
     {
       error: "Coinbase Onramp is disabled for P42 Prizes v1",
       capability: "disabled",
-      future_flow: "wallet-first: onramp to a user-controlled wallet, then explicitly sign pool.fund()",
+      status_detail: "No Onramp session or reviewed funding flow is available.",
     },
     { status: 503 },
   );

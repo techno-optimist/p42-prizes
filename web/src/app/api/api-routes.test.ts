@@ -506,9 +506,10 @@ describe("mutable API routes", () => {
 
     expect(response.status).toBe(503);
     expect(fetchSpy).not.toHaveBeenCalled();
-    await expect(response.json()).resolves.toMatchObject({
+    await expect(response.json()).resolves.toEqual({
       error: "Coinbase Onramp is disabled for P42 Prizes v1",
       capability: "disabled",
+      status_detail: "No Onramp session or reviewed funding flow is available.",
     });
   });
 

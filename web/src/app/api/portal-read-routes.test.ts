@@ -21,6 +21,12 @@ vi.mock("@/lib/indexer-read-model", () => ({ loadPortalReadModel: vi.fn() }));
 const ADDRESS = `0x${"2".repeat(40)}`;
 const FUNDING_ADDRESS = `0x${"6".repeat(40)}`;
 const HASH = `0x${"3".repeat(64)}`;
+const RELEASE_ARTIFACTS = {
+  terms: { uri: "https://legal.projectforty2.ai/releases/test/terms", sha256: `sha256:${"a".repeat(64)}` },
+  privacy: { uri: "https://legal.projectforty2.ai/releases/test/privacy", sha256: `sha256:${"b".repeat(64)}` },
+  risk: { uri: "https://legal.projectforty2.ai/releases/test/risk", sha256: `sha256:${"c".repeat(64)}` },
+  eligibility: { uri: "https://legal.projectforty2.ai/releases/test/eligibility", sha256: `sha256:${"d".repeat(64)}` },
+};
 
 function provenance(index: number): ChainProvenance {
   return {
@@ -174,8 +180,14 @@ function payloadStrings(node: unknown, seen = new Set<object>()): string[] {
 }
 
 describe("chain portal API consumers", () => {
-  beforeEach(() => vi.mocked(loadPortalReadModel).mockResolvedValue(model()));
-  afterEach(() => vi.useRealTimers());
+  beforeEach(() => {
+    vi.mocked(loadPortalReadModel).mockResolvedValue(model());
+    process.env.P42_FUNDING_RELEASE_ARTIFACTS = JSON.stringify(RELEASE_ARTIFACTS);
+  });
+  afterEach(() => {
+    delete process.env.P42_FUNDING_RELEASE_ARTIFACTS;
+    vi.useRealTimers();
+  });
 
   it("publishes chain frontier, pool, source, and actionability in list/detail APIs", async () => {
     const listResponse = await problemsGet();
@@ -335,8 +347,28 @@ describe("chain portal API consumers", () => {
         chainId: 84532,
         explorerUrl: `https://sepolia.basescan.org/address/${FUNDING_ADDRESS}`,
         walletUri: `ethereum:${FUNDING_ADDRESS}@84532`,
+        releaseArtifacts: RELEASE_ARTIFACTS,
       },
     });
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["malformed JSON", "{"],
+    ["missing artifact", JSON.stringify({ ...RELEASE_ARTIFACTS, terms: undefined })],
+    ["insecure URI", JSON.stringify({ ...RELEASE_ARTIFACTS, privacy: { ...RELEASE_ARTIFACTS.privacy, uri: "http://example.com/privacy" } })],
+    ["zero digest", JSON.stringify({ ...RELEASE_ARTIFACTS, risk: { ...RELEASE_ARTIFACTS.risk, sha256: `sha256:${"0".repeat(64)}` } })],
+  ])("suppresses the funding target when release artifacts are %s", async (_label, configuredArtifacts) => {
+    if (configuredArtifacts === undefined) delete process.env.P42_FUNDING_RELEASE_ARTIFACTS;
+    else process.env.P42_FUNDING_RELEASE_ARTIFACTS = configuredArtifacts;
+    const response = await fundingTargetGet(
+      new Request(`http://localhost/api/problems/${launchProblems[0].slug}/funding-target`),
+      { params: Promise.resolve({ slug: launchProblems[0].slug }) },
+    );
+    const body = await response.json();
+    expect(body.target).toBeNull();
+    expect(JSON.stringify(body)).not.toContain(FUNDING_ADDRESS);
+    expect(JSON.stringify(body)).not.toContain("ethereum:");
   });
 
   it.each([
@@ -473,7 +505,21 @@ describe("chain portal API consumers", () => {
       { params: Promise.resolve({ slug: launchProblems[0].slug }) },
     );
     const body = await response.json();
-    expect(body).toMatchObject({ fundingDeadline: null, serverObservedAt: null, target: null });
+    expect(body).toEqual({
+      schema: "p42-prizes/funding-target/v3",
+      slug: launchProblems[0].slug,
+      authorizationExpiresAt: null,
+      finalizedObservedAt: null,
+      fundingDeadline: null,
+      remainingCapWei: null,
+      serverObservedAt: null,
+      fundingAuthorizationDigest: null,
+      activationCompletionDigest: null,
+      checkpointBlock: null,
+      checkpointDigest: null,
+      activationFinalizedBlock: null,
+      target: null,
+    });
     expect(JSON.stringify(body)).not.toContain(FUNDING_ADDRESS);
   });
 

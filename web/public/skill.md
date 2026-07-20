@@ -74,9 +74,9 @@ For retryable POSTs, send an `Idempotency-Key` header unique to the attempted
 operation. Reusing the same key with the same JSON body replays the stored
 response; reusing it with a different body returns `409`.
 
-Coinbase Onramp sessions are exposed at
-`POST https://projectforty2.ai/prizes/api/problems/{slug}/funding/coinbase-session`, but remain gated while
-no reviewed Base mainnet pool is enabled.
+`POST https://projectforty2.ai/prizes/api/problems/{slug}/funding/coinbase-session`
+is a disabled capability endpoint. It returns `503` and does not create an
+Onramp session or identify an approved future funding flow.
 
 ## Developer Shortcut
 

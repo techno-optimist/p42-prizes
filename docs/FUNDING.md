@@ -13,14 +13,21 @@ the problem has a reconciled, bytecode-backed pool on the declared chain.
 - A future Base Sepolia or Base target must pass the portal's chain,
   reconciliation, runtime-bytecode, registry, and deployment-commit checks
   before a donation action is exposed.
+- An otherwise valid target remains fully suppressed unless
+  `P42_FUNDING_RELEASE_ARTIFACTS` is an exact JSON bundle containing release-
+  bound `terms`, `privacy`, `risk`, and `eligibility` HTTPS artifact URIs and
+  nonzero `sha256:<64 lowercase hex>` digests. Missing, extra, or malformed
+  artifact data fails closed.
+- When a target is available, the portal displays all four links and exact
+  digests. The wallet action and address-copy control remain disabled until the
+  funder explicitly acknowledges those release artifacts and the target's
+  authorization, activation, and checkpoint bindings.
 
 ## Coinbase Onramp
 
-Coinbase Onramp is wallet-first only. A backend-created single-use session may
-send purchased ETH to an authenticated user's Base wallet. That wallet must
-then separately sign `pool.fund()`, making the wallet the on-chain sponsor and
-zero-credit refund owner. Coinbase must never be configured with a pool as the
-session destination.
+Coinbase Onramp is not available in this release. No reviewed session flow or
+funding destination is configured, and the portal must not present an Onramp
+control as actionable.
 
 The v1 route exists only as a hard-disabled capability endpoint:
 
@@ -29,10 +36,9 @@ POST /api/problems/{slug}/funding/coinbase-session
 ```
 
 It unconditionally returns `503` and never calls Coinbase, creates a session,
-or stores an intent. Any future implementation must onramp only to an
-authenticated user-controlled wallet; the user must then separately sign the
-pool's plain `fund()` call. Direct Coinbase-to-pool settlement remains
-prohibited because Coinbase does not bind pool calldata or sponsor attribution.
+or stores an intent. Any future flow requires a new reviewed design and must be
+bound to the same release artifacts before it can become actionable. No future
+architecture or approval should be inferred from this disabled endpoint.
 
-Coinbase is never the verifier, resolver, or payout oracle. It is only an
-onboarding rail that helps a funder move assets to the on-chain pool.
+Coinbase is not a verifier, resolver, payout oracle, or enabled funding rail in
+the current release.

@@ -2,7 +2,12 @@
 
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { sitePath } from "@/lib/site-paths";
-import type { FundingTargetEnvelopeV3, FundingTargetV3 } from "@/lib/types";
+import type {
+  FundingArtifactReference,
+  FundingReleaseArtifactsV1,
+  FundingTargetEnvelopeV3,
+  FundingTargetV3,
+} from "@/lib/types";
 
 const MAX_TIMEOUT_MS = 2_147_000_000;
 const RESPONSE_SCHEMA = "p42-prizes/funding-target/v3";
@@ -50,6 +55,30 @@ function validBlock(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
+function validPublicArtifactUri(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" && parsed.username === "" && parsed.password === ""
+      && parsed.hash === "" && parsed.hostname.includes(".") && parsed.href === value;
+  } catch {
+    return false;
+  }
+}
+
+function parseReleaseArtifacts(value: unknown): FundingReleaseArtifactsV1 | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const artifacts = value as Record<string, unknown>;
+  if (!exactKeys(artifacts, ["eligibility", "privacy", "risk", "terms"])) return null;
+  for (const artifact of Object.values(artifacts)) {
+    if (artifact === null || typeof artifact !== "object" || Array.isArray(artifact)) return null;
+    const reference = artifact as Record<string, unknown>;
+    if (!exactKeys(reference, ["sha256", "uri"])
+      || !validPublicArtifactUri(reference.uri) || !validDigest(reference.sha256)) return null;
+  }
+  return artifacts as unknown as FundingReleaseArtifactsV1;
+}
+
 function abbreviatedDigest(value: string): string {
   return `${value.slice(0, 15)}...${value.slice(-8)}`;
 }
@@ -71,6 +100,14 @@ function launchBindingKey(response: FundingTargetResponse): string | null {
     response.target.chainId,
     response.target.explorerUrl,
     response.target.walletUri,
+    response.target.releaseArtifacts.terms.uri,
+    response.target.releaseArtifacts.terms.sha256,
+    response.target.releaseArtifacts.privacy.uri,
+    response.target.releaseArtifacts.privacy.sha256,
+    response.target.releaseArtifacts.risk.uri,
+    response.target.releaseArtifacts.risk.sha256,
+    response.target.releaseArtifacts.eligibility.uri,
+    response.target.releaseArtifacts.eligibility.sha256,
   ]);
 }
 
@@ -112,7 +149,7 @@ function parseFundingTargetResponse(value: unknown, slug: string): FundingTarget
   }
   if (typeof response.target !== "object" || Array.isArray(response.target)) return null;
   const target = response.target as Record<string, unknown>;
-  if (!exactKeys(target, ["address", "asset", "chain", "chainId", "explorerUrl", "walletUri"])
+  if (!exactKeys(target, ["address", "asset", "chain", "chainId", "explorerUrl", "releaseArtifacts", "walletUri"])
     || typeof target.address !== "string" || !ADDRESS.test(target.address) || /^0x0{40}$/i.test(target.address)
     || target.asset !== "ETH" || typeof target.explorerUrl !== "string" || typeof target.walletUri !== "string") return null;
   const chainMatches = (target.chain === "Base Sepolia" && target.chainId === 84532)
@@ -120,6 +157,8 @@ function parseFundingTargetResponse(value: unknown, slug: string): FundingTarget
   if (!chainMatches || target.walletUri !== `ethereum:${target.address}@${target.chainId}`) return null;
   const explorerBase = target.chain === "Base" ? "https://basescan.org" : "https://sepolia.basescan.org";
   if (target.explorerUrl !== `${explorerBase}/address/${target.address}`) return null;
+  const releaseArtifacts = parseReleaseArtifacts(target.releaseArtifacts);
+  if (!releaseArtifacts) return null;
   return {
     authorizationExpiresAt: response.authorizationExpiresAt,
     finalizedObservedAt: response.finalizedObservedAt,
@@ -133,7 +172,7 @@ function parseFundingTargetResponse(value: unknown, slug: string): FundingTarget
     activationFinalizedBlock: response.activationFinalizedBlock,
     schema: RESPONSE_SCHEMA,
     slug,
-    target: target as unknown as ClientFundingTarget,
+    target: { ...target, releaseArtifacts } as unknown as ClientFundingTarget,
   };
 }
 
@@ -393,7 +432,7 @@ export function FundingPanel({
   }, [bindingKey, canCheckFunding, fundingDeadline, serverObservedAt, slug]);
 
   async function copyAddress() {
-    if (!boundTarget || boundTarget.bindingKey !== bindingKeyRef.current) return;
+    if (!acknowledged || !boundTarget || boundTarget.bindingKey !== bindingKeyRef.current) return;
     if (cutoffReached()) {
       expireFunding(true);
       return;
@@ -558,6 +597,12 @@ export function FundingPanel({
     : deadlineClosed && fundingDeadline
       ? `The portal conservatively stops publishing funding targets at ${fundingDeadline}; the contract funding function rejects transactions after that timestamp.`
       : "The pool is deployed, but no current funding target is available.";
+  const artifactRows: readonly [string, FundingArtifactReference][] = target ? [
+    ["Terms", target.releaseArtifacts.terms],
+    ["Privacy", target.releaseArtifacts.privacy],
+    ["Risk disclosures", target.releaseArtifacts.risk],
+    ["Eligibility", target.releaseArtifacts.eligibility],
+  ] : [];
 
   return (
     <div className="funding">
@@ -583,10 +628,27 @@ export function FundingPanel({
                 fund {target.asset}
               </button>
             )}
-            <button className="copy-button" type="button" onClick={copyAddress} aria-label="Copy sponsor pool address">
+            <button
+              className="copy-button"
+              type="button"
+              onClick={copyAddress}
+              disabled={!acknowledged}
+              aria-label="Copy sponsor pool address"
+            >
               {copied ? "copied" : "copy"}
             </button>
             <a className="ref" href={target.explorerUrl} target="_blank" rel="noreferrer">basescan</a>
+          </div>
+          <div className="funding-release-artifacts" aria-label="Release-bound funding documents">
+            <p>Release-bound funding documents</p>
+            <dl>
+              {artifactRows.map(([title, artifact]) => (
+                <div key={title}>
+                  <dt><a href={artifact.uri} target="_blank" rel="noreferrer">{title}</a></dt>
+                  <dd><code>{artifact.sha256}</code></dd>
+                </div>
+              ))}
+            </dl>
           </div>
           <div className="funding-policy-binding">
             <span>authorization <code>{abbreviatedDigest(fundingAuthorizationDigest!)}</code></span>
@@ -641,7 +703,7 @@ export function FundingPanel({
               onChange={(event) => setAcknowledged(event.currentTarget.checked)}
             />
             <span>
-              I acknowledge the exact authorization, activation, and checkpoint-generation values available in the policy digest disclosure and API for this funding target.
+              I have reviewed the release-bound Terms, Privacy, Risk Disclosures, and Eligibility documents and acknowledge their exact SHA-256 digests plus the authorization, activation, and checkpoint-generation values for this funding target.
             </span>
           </label>
           <p className="testnet-warning">

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.ai/prizes/schemas/funding-target-v3.schema.json",
+  "title": "P42 actionable funding target",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "slug", "authorizationExpiresAt", "finalizedObservedAt",
+    "fundingDeadline", "remainingCapWei", "serverObservedAt",
+    "fundingAuthorizationDigest", "activationCompletionDigest",
+    "checkpointBlock", "checkpointDigest", "activationFinalizedBlock", "target"
+  ],
+  "properties": {
+    "schema": { "const": "p42-prizes/funding-target/v3" },
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "authorizationExpiresAt": { "type": ["string", "null"], "format": "date-time" },
+    "finalizedObservedAt": { "type": ["string", "null"], "format": "date-time" },
+    "fundingDeadline": { "type": ["string", "null"], "format": "date-time" },
+    "remainingCapWei": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/uintString" }] },
+    "serverObservedAt": { "type": ["string", "null"], "format": "date-time" },
+    "fundingAuthorizationDigest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
+    "activationCompletionDigest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
+    "checkpointBlock": { "type": ["integer", "null"], "minimum": 0 },
+    "checkpointDigest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
+    "activationFinalizedBlock": { "type": ["integer", "null"], "minimum": 0 },
+    "target": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["address", "asset", "chain", "chainId", "explorerUrl", "walletUri", "releaseArtifacts"],
+          "properties": {
+            "address": { "$ref": "#/$defs/address" },
+            "asset": { "const": "ETH" },
+            "chain": { "enum": ["Base Sepolia", "Base"] },
+            "chainId": { "enum": [84532, 8453] },
+            "explorerUrl": { "$ref": "#/$defs/httpsUri" },
+            "walletUri": { "type": "string", "pattern": "^ethereum:0x[0-9a-fA-F]{40}@(84532|8453)$" },
+            "releaseArtifacts": { "$ref": "#/$defs/releaseArtifacts" }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "address": { "type": "string", "pattern": "^0x(?!0{40}$)[0-9a-fA-F]{40}$" },
+    "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" },
+    "uintString": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+    "httpsUri": { "type": "string", "pattern": "^https://[^@/#]+(?:/[^#]*)?$" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "sha256"],
+      "properties": {
+        "uri": { "$ref": "#/$defs/httpsUri" },
+        "sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "releaseArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["terms", "privacy", "risk", "eligibility"],
+      "properties": {
+        "terms": { "$ref": "#/$defs/artifact" },
+        "privacy": { "$ref": "#/$defs/artifact" },
+        "risk": { "$ref": "#/$defs/artifact" },
+        "eligibility": { "$ref": "#/$defs/artifact" }
+      }
+    }
+  }
+}
