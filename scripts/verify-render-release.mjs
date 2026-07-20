@@ -126,6 +126,12 @@ export const PROBE_ROUTES = Object.freeze([
     origins: Object.freeze(["render", "public"]),
   }),
   Object.freeze({
+    id: "health",
+    path: EXPECTED_HEALTH_CHECK_PATH,
+    kind: "health-json",
+    origins: Object.freeze(["render", "public"]),
+  }),
+  Object.freeze({
     id: "standings",
     path: "/prizes/standings",
     kind: "html",
@@ -536,6 +542,10 @@ export function validateProbeBody(routeId, body, contentType) {
       validateProblemDetail(payload, route);
     } else if (route.kind === "funding-target-json") {
       validateFundingTarget(payload, route);
+    } else if (route.kind === "health-json") {
+      if (!isDeepStrictEqual(payload, { status: "ok", database: "ready" })) {
+        describe(route, "must report the exact database-ready health state.");
+      }
     } else if (!isDeepStrictEqual(payload, EXPECTED_CAPABILITIES)) {
       describe(
         route,

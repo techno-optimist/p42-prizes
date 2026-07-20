@@ -271,7 +271,7 @@ test("rollback verification requires the exact pinned commit on branch history",
 
 test("probeUrls retains the standalone and proxied prize paths", () => {
   const urls = probeUrls("https://render.example/", "https://public.example/");
-  assert.deepEqual(urls.slice(0, 15), [
+  assert.deepEqual(urls.slice(0, 17), [
     "https://render.example/prizes",
     "https://public.example/prizes",
     "https://render.example/prizes/intro",
@@ -284,11 +284,13 @@ test("probeUrls retains the standalone and proxied prize paths", () => {
     "https://public.example/prizes/api/problems",
     "https://render.example/prizes/api/capabilities",
     "https://public.example/prizes/api/capabilities",
+    "https://render.example/prizes/api/health",
+    "https://public.example/prizes/api/health",
     "https://public.example/prizes/standings",
     "https://render.example/prizes/skill.md",
     "https://public.example/prizes/skill.md",
   ]);
-  const boundaryUrls = urls.slice(15);
+  const boundaryUrls = urls.slice(17);
   assert.equal(boundaryUrls.length, 40);
   for (const { slug } of EXPECTED_BOARD_MANIFEST.boards) {
     assert.ok(boundaryUrls.includes(`https://render.example/prizes/api/problems/${slug}`));
@@ -305,7 +307,7 @@ test("probeUrls retains the standalone and proxied prize paths", () => {
 test("expanded probes preserve the signed 32-observation v3 authority contract", () => {
   const count = (routes) => routes.reduce((total, route) => total + route.origins.length, 0);
   assert.equal(count(sourceReleaseV3Routes()), 32);
-  assert.equal(count(releaseGuardRoutes()), 55);
+  assert.equal(count(releaseGuardRoutes()), 57);
   assert.deepEqual(
     sourceReleaseV3Routes().filter((route) => route.id === "skill")[0].origins,
     ["public"],
@@ -464,6 +466,22 @@ test("capabilities probe requires the secret-free fail-closed production state",
   );
 });
 
+test("health probes require the exact database-ready state", () => {
+  const valid = JSON.stringify({ status: "ok", database: "ready" });
+  assert.deepEqual(
+    validateProbeBody("health", valid, contentTypes.json),
+    { status: "ok", database: "ready" },
+  );
+  assert.throws(
+    () => validateProbeBody(
+      "health",
+      JSON.stringify({ status: "ok", database: "unknown" }),
+      contentTypes.json,
+    ),
+    /exact database-ready health state/,
+  );
+});
+
 test("funding-target probes require exact fail-closed v3 envelopes", () => {
   const slug = EXPECTED_BOARD_MANIFEST.boards[0].slug;
   const routeId = `funding-target-${slug}`;
@@ -491,6 +509,7 @@ test("paired direct and proxy probes reject body and semantic divergence", () =>
     api_version: "p42-prizes-capabilities-v1",
     mutations: { status: "unconfigured", available: false, authentication: "unavailable" },
   };
+  const sameHealth = { status: "ok", database: "ready" };
   const matching = [
     result("home", "render", "same home"),
     result("home", "public", "same home"),
@@ -504,6 +523,8 @@ test("paired direct and proxy probes reject body and semantic divergence", () =>
     result("problems", "public", "public json", structuredClone(sameProblems)),
     result("capabilities", "render", "render json", sameCapabilities),
     result("capabilities", "public", "public json", structuredClone(sameCapabilities)),
+    result("health", "render", "render json", sameHealth),
+    result("health", "public", "public json", structuredClone(sameHealth)),
     result("skill", "render", "same skill"),
     result("skill", "public", "same skill"),
     ...problemDetailResults(),

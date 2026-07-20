@@ -207,13 +207,14 @@ It fails closed unless all of the following agree:
 5. The Render origin and `projectforty2.ai` proxy return success for all prize
    routes required by the portal.
 
-The guard makes 55 HTTP observations. The exact ordered 32-observation subset
+The guard makes 57 HTTP observations. The exact ordered 32-observation subset
 signed by source-release policy v1 remains unchanged: portal home, cinematic
 intro, Build Week archive, problems API, capability API, standings, public
-agent skill, and every exact-ten funding-target route. Another 23 mandatory
-observations cover the agent page, the direct skill response, and all ten
-problem-detail APIs at both origins. These supplemental checks must pass but do
-not silently rewrite the signed v1 policy. Every funding-target response must
+agent skill, and every exact-ten funding-target route. Another 25 mandatory
+observations cover the agent page, the direct skill response, all ten
+problem-detail APIs at both origins, and exact database-ready health JSON from
+Render and the public proxy. These supplemental checks must pass but do not
+silently rewrite the signed v1 policy. Every funding-target response must
 be the exact fail-closed v3 envelope with `target: null`; every public problem
 projection must omit actionable chain identifiers recursively. HTML probes
 require stable page identity markers, and every paired response must be
