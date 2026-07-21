@@ -130,7 +130,7 @@ The report must also set all current invariants to true:
 
 - `claim_capped_by_final_entitlement`
 - `bond_uses_pool_at_submission`
-- `da_bound_at_commit_and_finalize`
+- `da_bound_at_commit_and_reveal`
 - `resolver_transcript_required`
 - `invalid_verifier_alerted`
 - `sybil_split_not_profitable`

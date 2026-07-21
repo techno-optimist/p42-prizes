@@ -12,6 +12,7 @@ import struct
 from types import ModuleType
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from p42_prizes.verdict import (
     SCORE_ATOM_SCALE,
@@ -21,19 +22,21 @@ from p42_prizes.verdict import (
     sha256_bytes,
 )
 from verifier_fuzz_helpers import (
-    SEED_EXAMPLES,
     ROOT,
     duplicate_first_key,
     duplicate_nested_key,
     load_verifier,
+    production_board_authority,
     production_board_slugs,
     run_verifier_cli,
     seed_fixture,
+    solution_schema,
 )
 
 
+AUTHORITY = production_board_authority()
 SLUGS = production_board_slugs()
-assert set(SEED_EXAMPLES) == set(SLUGS)
+AUTHORITY_BY_SLUG = {board.slug: board for board in AUTHORITY}
 VERIFIERS = {slug: load_verifier(slug) for slug in SLUGS}
 OUTSIDE_VERIFIERS = {
     slug: load_verifier(slug)
@@ -55,11 +58,43 @@ REPORT_KEYS = {
 
 def test_fuzz_cohort_is_exactly_the_frozen_production_board_set() -> None:
     assert len(SLUGS) == 10
-    assert set(SEED_EXAMPLES) == set(SLUGS)
+    assert tuple(board.slug for board in AUTHORITY) == SLUGS
+    assert set(AUTHORITY_BY_SLUG) == set(SLUGS)
+    assert {module.PROBLEM_ID for module in VERIFIERS.values()} == set(SLUGS)
     assert {
         "hadamard-mini",
         "signed-autoconvolution-c3-upper",
     }.isdisjoint(SLUGS)
+
+
+def schema_boundary_violations(slug: str) -> tuple[dict, ...]:
+    schema = solution_schema(slug)
+    Draft202012Validator.check_schema(schema)
+    fixture = seed_fixture(slug)
+    properties = schema["properties"]
+    mutations: list[dict] = []
+
+    for field in schema["required"]:
+        field_schema = properties[field]
+        original = fixture[field]
+        mutated = deepcopy(fixture)
+        if "const" in field_schema:
+            constant = field_schema["const"]
+            mutated[field] = constant + 1 if isinstance(constant, int) else f"{constant}-outside"
+        elif field_schema.get("type") == "integer" and "minimum" in field_schema:
+            mutated[field] = field_schema["minimum"] - 1
+        elif field_schema.get("type") == "array" and field_schema.get("minItems", 0) > 0:
+            mutated[field] = original[: field_schema["minItems"] - 1]
+        elif field_schema.get("type") == "string" and "pattern" in field_schema:
+            mutated[field] = "outside-schema"
+        else:
+            continue
+        assert list(Draft202012Validator(schema).iter_errors(mutated))
+        mutations.append(mutated)
+        break
+
+    assert mutations, f"no schema boundary generated for {slug}"
+    return tuple(mutations)
 
 
 def assert_fail_closed(module: ModuleType, path: Path, expected_reason: str | None = None) -> dict:
@@ -167,6 +202,14 @@ def test_valid_fixture_type_mutation_fails_closed(slug: str, tmp_path: Path) -> 
     assert_fail_closed(VERIFIERS[slug], solution)
 
 
+@pytest.mark.parametrize("slug", SLUGS)
+def test_schema_derived_boundary_violation_is_total(slug: str, tmp_path: Path) -> None:
+    for case, fixture in enumerate(schema_boundary_violations(slug)):
+        solution = tmp_path / f"schema-boundary-{case}.json"
+        solution.write_text(json.dumps(fixture, separators=(",", ":")), encoding="utf-8")
+        assert_fail_closed(VERIFIERS[slug], solution)
+
+
 MUTATION_FIELDS = {
     "arithmetic-kakeya": ("grid", "slopes", "free", "edge_labels", "relations"),
     "autoconvolution-c1-upper": ("n", "values"),
@@ -216,55 +259,61 @@ def test_adversarial_cli_completes_within_timeout(slug: str, tmp_path: Path) -> 
     assert report["reason"] == "MALFORMED_JSON"
 
 
-VALID_FIXTURE_EXPECTATIONS = {
-    "arithmetic-kakeya": ("7/4", "NOT_STRICT_IMPROVEMENT", "edge_cost", 4),
-    "distinct-subset-sums-a11": (
-        "594/1",
-        "NOT_STRICT_IMPROVEMENT",
-        "distinct_subset_sums",
-        2048,
-    ),
-    "erdos-min-overlap": (
-        "1424992289798782609633201801352767458976314440679252577/3741444197802851304404516484910431627947663875649308401",
-        "NOT_STRICT_IMPROVEMENT",
-        "checked_lags",
-        4799,
-    ),
-    "hadamard-668-defect": ("55444/1", "NOT_STRICT_IMPROVEMENT", "checked_pairs", 222778),
+LYING_SCORE_OVERRIDES = {
     "mertens-lp-ceiling-k12000": (
-        "249371902576813203926437/250000000000000000000000",
-        "NOT_STRICT_IMPROVEMENT",
-        "rows",
-        12058,
+        "printed_decimal",
+        "0.0000000000000000000000000",
+        "VAULT_FAIL",
     ),
     "pnt-sparse-mertens-construction": (
-        "9974252022196793/10000000000000000",
-        "NOT_STRICT_IMPROVEMENT",
-        "checked_rows",
-        960000,
-    ),
-    "q6-intersecting-hypergraph": (
-        "18/1",
-        "NOT_STRICT_IMPROVEMENT",
-        "pairs_checked",
-        153,
+        "printed_decimal",
+        "9.9999999999999999",
+        "SCORE_LOWER_BOUND_FAIL",
     ),
 }
 
 
-@pytest.mark.parametrize("slug", tuple(VALID_FIXTURE_EXPECTATIONS))
-def test_uncovered_valid_fixture_executes_real_score_path(slug: str, tmp_path: Path) -> None:
+@pytest.mark.parametrize("slug", SLUGS)
+def test_authority_seed_and_lying_score_execute_real_verifier(slug: str, tmp_path: Path) -> None:
+    authority = AUTHORITY_BY_SLUG[slug]
+    schema = solution_schema(slug)
+    validator = Draft202012Validator(schema)
     fixture = seed_fixture(slug)
     solution = tmp_path / "valid.json"
     solution.write_text(json.dumps(fixture, separators=(",", ":")), encoding="utf-8")
 
-    report = VERIFIERS[slug].report_for_solution(solution).to_dict()
-    expected_score, expected_reason, detail_key, detail_value = VALID_FIXTURE_EXPECTATIONS[slug]
+    assert not list(validator.iter_errors(fixture))
+    baseline = VERIFIERS[slug].report_for_solution(solution).to_dict()
+    assert baseline["score"] == authority.seed_score
+    assert baseline["improvement"] == authority.seed_improvement
+    assert baseline["valid"] is authority.seed_valid
+    assert baseline["reason"] == authority.seed_reason
+    assert baseline["solution_hash"] == sha256_bytes(solution.read_bytes())
 
-    assert report["score"] == expected_score
-    assert report["reason"] == expected_reason
-    assert report["details"][detail_key] == detail_value
-    assert report["solution_hash"] == sha256_bytes(solution.read_bytes())
+    lying = deepcopy(fixture)
+    override = LYING_SCORE_OVERRIDES.get(slug)
+    if override is None:
+        assert "claimed_score" in schema["properties"]
+        lying["claimed_score"] = "-999999999999999999999999/1"
+    else:
+        field, value, _ = override
+        lying[field] = value
+    assert not list(validator.iter_errors(lying)), f"lying-score case must remain schema-valid: {slug}"
+
+    lying_solution = tmp_path / "lying-score.json"
+    lying_solution.write_text(json.dumps(lying, separators=(",", ":")), encoding="utf-8")
+    lying_report = VERIFIERS[slug].report_for_solution(lying_solution).to_dict()
+    assert lying_report["solution_hash"] != baseline["solution_hash"]
+    assert lying_report["valid"] is False
+    assert lying_report["improvement"] == "0/1"
+    assert lying_report["score"] == authority.seed_score
+    assert lying_report["reason"] != "INTERNAL"
+
+    if override is None:
+        for key in REPORT_KEYS - {"solution_hash"}:
+            assert lying_report[key] == baseline[key], f"claimed score affected {key} for {slug}"
+    else:
+        assert lying_report["reason"] == override[2]
 
 
 def naive_autoconvolution(values: list[int]) -> list[int]:
