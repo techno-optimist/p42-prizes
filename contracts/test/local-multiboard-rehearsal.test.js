@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,13 +38,27 @@ import {
   MULTIBOARD_CONTRACT_NAMES,
   MULTIBOARD_PRECHALLENGE_DEPLOYMENT_COUNT,
 } from "../scripts/multiboard-deployment-plan.js";
+import {
+  assertProductionGovernancePolicy,
+  buildGovernanceOperationRequests,
+  buildGovernanceOperationRequestsFromJournal,
+  reserveFinalGovernanceOperationJournal,
+  validateGovernanceOperationRequests,
+  writeGovernanceOperationRequests,
+} from "../scripts/governance-operation-requests.js";
 
 const FIXTURE = new URL("./fixtures/multiboard-ceremony-10.json", import.meta.url);
 const { ethers } = await network.create();
 const deploymentLibraryImport = Symbol.for("p42-prizes.deploy-base-sepolia.library-import");
 globalThis[deploymentLibraryImport] = true;
-const { executeSignedDeploymentPlan } = await import("../scripts/deploy-base-sepolia.js");
+const {
+  buildPendingMultiBoardManifest,
+  collectMultiBoardOperationEvidence,
+  executeSignedDeploymentPlan,
+} = await import("../scripts/deploy-base-sepolia.js");
 delete globalThis[deploymentLibraryImport];
+const REHEARSAL_CONFIG_HASH = ethers.id("local-production-shaped-rehearsal");
+const REHEARSAL_RELEASE_BINDING = `sha256:${"0".repeat(64)}`;
 const DECISION_TYPES = {
   Decision: [
     { name: "chainId", type: "uint256" },
@@ -138,17 +153,42 @@ function boardContracts(deployed, problemId) {
   ]));
 }
 
+async function reconcileJournalWithProductionPath(timelock, journal, startBlock, checkedBlock) {
+  const reconciled = await collectMultiBoardOperationEvidence(
+    timelock,
+    journal.operations,
+    startBlock,
+    checkedBlock,
+  );
+  assert.equal(reconciled.length, journal.operations.length);
+  for (const [index, result] of reconciled.entries()) {
+    const durable = journal.operations[index];
+    assert.equal(result.check.ok, true, result.check.name);
+    assert.equal(result.operation.state, durable.state, `${durable.label} state`);
+    assert.equal(
+      result.operation.executedOperationId.toLowerCase(),
+      durable.observedOperationId.toLowerCase(),
+      `${durable.label} executed candidate`,
+    );
+    assert.equal(result.operation.txHash.toLowerCase(), durable.executeTxHash.toLowerCase(), `${durable.label} tx hash`);
+    assert.equal(result.operation.blockNumber, durable.blockNumber, `${durable.label} block number`);
+  }
+  return reconciled;
+}
+
 describe("production-shaped exact-ten local ceremony", { timeout: 900_000 }, function () {
   it("deploys the canonical 47, executes 110 governed setup operations, and keeps inactive proofs non-fundable", async function (t) {
     const input = JSON.parse(await readFile(FIXTURE, "utf8"));
     const signers = await ethers.getSigners();
     const [
-      signer1, signer2, signer3, guardian, treasury, resolver, deployerFunder, sponsor, solver, challenger,
+      signer1, signer2, signer3, signer4, signer5, guardian, treasury, resolver, deployerFunder, sponsor, solver, challenger,
       productionLaunchAuthority, independentSecurityAuthority, governanceAuthority,
     ] = signers;
     const deployer = ethers.Wallet.createRandom().connect(ethers.provider);
     await (await deployerFunder.sendTransaction({ to: deployer.address, value: ethers.parseEther("100") })).wait();
-    input.governance.signers = [signer1.address, signer2.address, signer3.address];
+    input.governance.signers = [signer1.address, signer2.address, signer3.address, signer4.address, signer5.address];
+    input.governance.threshold = "3";
+    input.governance.delaySeconds = "172800";
     input.governance.guardian = guardian.address;
     input.roles.treasury = treasury.address;
     input.roles.resolver = resolver.address;
@@ -161,6 +201,19 @@ describe("production-shaped exact-ten local ceremony", { timeout: 900_000 }, fun
     }
     const config = readMultiBoardCeremonyConfig(ethers, input, { deployerAddress: deployer.address });
     assert.deepEqual(config.problems.map(({ problemSlug }) => problemSlug), PRODUCTION_LAUNCH_SLUGS);
+    const productionGovernance = assertProductionGovernancePolicy({
+      signers: config.governance.signers,
+      threshold: config.governance.threshold,
+      overrideThreshold: config.governance.overrideThreshold,
+      delaySeconds: config.governance.delaySeconds,
+      overrideDelaySeconds: config.governance.overrideDelaySeconds,
+      guardian: config.governance.guardian,
+    });
+    assert.equal(productionGovernance.signers.length, 5);
+    assert.equal(productionGovernance.threshold, "3");
+    assert.equal(productionGovernance.overrideThreshold, "4");
+    assert.equal(productionGovernance.delaySeconds, "172800");
+    assert.equal(productionGovernance.overrideDelaySeconds, "345600");
 
     const objectiveArtifact = await artifacts.readArtifact(MULTIBOARD_CONTRACT_NAMES.objectiveVerifier);
     const objectiveVerifierRuntimeCodehash = ethers.keccak256(objectiveArtifact.deployedBytecode);
@@ -233,9 +286,12 @@ describe("production-shaped exact-ten local ceremony", { timeout: 900_000 }, fun
         secondaryOperatorId: "local-secondary",
       });
       const predeploymentJournalPath = join(directory, "predeployment-governance.json");
+      const predeploymentRequestsPath = join(directory, "predeployment-governance-requests.json");
+      const finalRequestsPath = join(directory, "final-governance-requests.json");
       let predeploymentVerification;
+      let predeploymentExport;
       let phaseGateCalls = 0;
-      const beforeStep = async ({ index }) => {
+      const beforeStep = async ({ index, deployments }) => {
         if (index !== MULTIBOARD_PRECHALLENGE_DEPLOYMENT_COUNT) return;
         phaseGateCalls += 1;
         const timelockFactory = await ethers.getContractFactory(MULTIBOARD_CONTRACT_NAMES.timelock);
@@ -261,10 +317,16 @@ describe("production-shaped exact-ten local ceremony", { timeout: 900_000 }, fun
           releaseBindingDigest: `sha256:${"1".repeat(64)}`,
           fromBlock: 0,
         };
-        await verifyMultiBoardPredeploymentGovernancePhase({
+        const verification = await verifyMultiBoardPredeploymentGovernancePhase({
           ...predeploymentVerification,
           toBlock: await ethers.provider.getBlockNumber(),
         });
+        const checkedBlock = await ethers.provider.getBlockNumber();
+        const startBlock = deployments.timelock.manifest.blockNumber;
+        await reconcileJournalWithProductionPath(timelock, verification.journal, startBlock, checkedBlock);
+        const requests = buildGovernanceOperationRequestsFromJournal(verification.journal);
+        const written = writeGovernanceOperationRequests(predeploymentRequestsPath, directory, requests);
+        predeploymentExport = { requests, written, checkedBlock, startBlock };
       };
       const runnerOptions = {
         beforeStep,
@@ -308,7 +370,7 @@ describe("production-shaped exact-ten local ceremony", { timeout: 900_000 }, fun
       const expectedJournal = buildGovernanceOperationJournal({
         chainId: 31337,
         timelock: plan.addresses.timelock,
-        deploymentConfigHash: ethers.id("local-production-shaped-rehearsal"),
+        deploymentConfigHash: REHEARSAL_CONFIG_HASH,
         deploymentCommit: "a".repeat(40),
         governance: {
           signers: config.governance.signers,
@@ -318,7 +380,7 @@ describe("production-shaped exact-ten local ceremony", { timeout: 900_000 }, fun
           overrideDelaySeconds: config.governance.overrideDelaySeconds.toString(),
           guardian: config.governance.guardian,
         },
-        releaseBindingDigest: `sha256:${"0".repeat(64)}`,
+        releaseBindingDigest: REHEARSAL_RELEASE_BINDING,
         expectedTimelockCodeHash: ethers.keccak256(await ethers.provider.getCode(plan.addresses.timelock)),
         operations,
       });
@@ -327,7 +389,8 @@ describe("production-shaped exact-ten local ceremony", { timeout: 900_000 }, fun
         readGovernanceOperationJournal(predeploymentJournalPath).operations.filter(({ state }) => state === "planned").length,
         40,
       );
-      await executeOperations(timelock, [signer1, signer2, signer3], operations, prerequisiteIndexes, journalPath);
+      const governanceSigners = [signer1, signer2, signer3, signer4, signer5];
+      await executeOperations(timelock, governanceSigners, operations, prerequisiteIndexes, journalPath);
       t.diagnostic("40 prerequisite governance operations executed");
       assert.equal(readGovernanceOperationJournal(journalPath).operations.filter(({ state }) => state === "executed").length, 40);
       const resumed = await executeSignedDeploymentPlan(
@@ -356,20 +419,121 @@ describe("production-shaped exact-ten local ceremony", { timeout: 900_000 }, fun
         readGovernanceOperationJournal(predeploymentJournalPath).operations.filter(({ state }) => state === "executed").length,
         40,
       );
+      assert.ok(predeploymentExport);
+      assert.equal(predeploymentExport.requests.phase, "predeployment-40");
+      assert.equal(predeploymentExport.requests.operationCount, 40);
+      assert.equal(predeploymentExport.requests.broadcastAuthorized, false);
+      assert.match(predeploymentExport.written.sha256, /^sha256:[0-9a-f]{64}$/);
       assert.equal(Object.keys(deployed).length, 47);
       for (const descriptor of canonicalTopologyDescriptors()) {
         assert.notEqual(await ethers.provider.getCode(plan.addresses[descriptor.id]), "0x", descriptor.id);
       }
 
       await assert.rejects(
-        executeOperations(timelock, [signer1, signer2, signer3], operations, remainingIndexes, journalPath, { crashAfterExecute: 17 }),
+        executeOperations(timelock, governanceSigners, operations, remainingIndexes, journalPath, { crashAfterExecute: 17 }),
         /post-execution pre-journal crash/,
       );
       assert.equal(readGovernanceOperationJournal(journalPath).operations.filter(({ state }) => state === "executed").length, 56);
-      await executeOperations(timelock, [signer1, signer2, signer3], operations, remainingIndexes, journalPath);
+      await executeOperations(timelock, governanceSigners, operations, remainingIndexes, journalPath);
       const journal = readGovernanceOperationJournal(journalPath);
       assert.equal(journal.operations.filter(({ state }) => state === "executed").length, 110);
-      t.diagnostic("all 110 governed setup operations executed and reconciled");
+      const finalCheckedBlock = await ethers.provider.getBlockNumber();
+      const deploymentStartBlock = Math.min(...Object.values(resumed.deployments).map(({ manifest }) => manifest.blockNumber));
+      await reconcileJournalWithProductionPath(timelock, journal, deploymentStartBlock, finalCheckedBlock);
+      const descriptors = canonicalTopologyDescriptors();
+      const sharedDescriptors = descriptors.filter(({ scope }) => scope === "shared");
+      const rootDeployments = Object.fromEntries(sharedDescriptors.map(({ key, id }) => [
+        key,
+        resumed.deployments[id],
+      ]));
+      const rootAddresses = Object.fromEntries(sharedDescriptors.map(({ key, id }) => [
+        key,
+        plan.addresses[id],
+      ]));
+      const manifestBoards = config.problems.map((problem) => ({
+        problem,
+        deployments: Object.fromEntries(
+          descriptors
+            .filter(({ scope, problemId }) => scope === "board" && problemId === Number(problem.problemId))
+            .map(({ key, id }) => [key, resumed.deployments[id]]),
+        ),
+      }));
+      for (const descriptor of descriptors) {
+        assert.equal(
+          resumed.deployments[descriptor.id].manifest.address.toLowerCase(),
+          plan.addresses[descriptor.id].toLowerCase(),
+          `${descriptor.id} production manifest address`,
+        );
+      }
+      const requestManifest = buildPendingMultiBoardManifest({
+        ethers,
+        config,
+        deploymentCommit: "a".repeat(40),
+        releaseMode: "production",
+        releaseEvidence: {
+          mode: "production",
+          slateDigest: `sha256:${"2".repeat(64)}`,
+          capsuleDigest: `sha256:${"3".repeat(64)}`,
+          finalityPolicy: config.finalityPolicy,
+          configDigest: `sha256:${REHEARSAL_CONFIG_HASH.slice(2)}`,
+          releaseBindingDigest: REHEARSAL_RELEASE_BINDING,
+          boardSetDigest: immutableBoardSetDigest,
+          operationPlanDigest: `sha256:${"0".repeat(64)}`,
+          contractCount: 47,
+          boardCount: 10,
+          operationCount: 110,
+        },
+        rootDeployments,
+        rootAddresses,
+        boards: manifestBoards,
+        setupTransactions: operations,
+        firstBlock: deploymentStartBlock,
+        network: { name: "hardhat", chainId: 31337, explorerBaseUrl: "https://example.invalid" },
+        deployerAddress: deployer.address,
+        deployedAt: "2026-07-21T00:00:00.000Z",
+      });
+      const reservedFinal = reserveFinalGovernanceOperationJournal(output, requestManifest);
+      assert.equal(reservedFinal.journal.planDigest, journal.planDigest);
+      for (const [index, operation] of operations.entries()) {
+        const evidence = await observeGovernanceOperation(timelock, operation, {
+          chainId: 31337,
+          timelockAddress: plan.addresses.timelock,
+          expectedTimelockCodeHash: requestManifest.contracts.timelock.runtimeCodeHash,
+          toBlock: finalCheckedBlock,
+        });
+        await recordGovernanceObservation(
+          reservedFinal.path,
+          reservedFinal.journal.planDigest,
+          index,
+          evidence,
+        );
+      }
+      const productionJournal = readGovernanceOperationJournal(reservedFinal.path);
+      assert.equal(productionJournal.operations.filter(({ state }) => state === "executed").length, 110);
+      await reconcileJournalWithProductionPath(
+        timelock,
+        productionJournal,
+        deploymentStartBlock,
+        finalCheckedBlock,
+      );
+      const finalRequests = buildGovernanceOperationRequests(requestManifest, productionJournal);
+      const finalWritten = writeGovernanceOperationRequests(finalRequestsPath, directory, finalRequests);
+      const retainedRequestBytes = await readFile(finalRequestsPath);
+      assert.equal(
+        `sha256:${createHash("sha256").update(retainedRequestBytes).digest("hex")}`,
+        finalWritten.sha256,
+      );
+      const retainedRequests = JSON.parse(retainedRequestBytes.toString("utf8"));
+      assert.deepEqual(
+        validateGovernanceOperationRequests(requestManifest, productionJournal, retainedRequests),
+        retainedRequests,
+      );
+      assert.equal(finalRequests.phase, "final-110");
+      assert.equal(finalRequests.operationCount, 110);
+      assert.equal(finalRequests.topologyContractCount, 47);
+      assert.equal(finalRequests.broadcastAuthorized, false);
+      assert.match(finalWritten.sha256, /^sha256:[0-9a-f]{64}$/);
+      t.diagnostic("all 110 planner operations reconciled against chain state and exported from the durable journal");
 
       const registry = deployed.registry;
       const submissionFactory = deployed.submissionManagerFactory;
@@ -514,7 +678,7 @@ describe("production-shaped exact-ten local ceremony", { timeout: 900_000 }, fun
         chainId: decision.chainId,
         verifyingContract: await quorum.getAddress(),
       };
-      const signatures = (await Promise.all([signer1, signer2].map(async (signer) => ({
+      const signatures = (await Promise.all([signer1, signer2, signer3].map(async (signer) => ({
         signer: signer.address.toLowerCase(),
         signature: await signer.signTypedData(domain, DECISION_TYPES, decision),
       })))).sort((left, right) => left.signer.localeCompare(right.signer)).map(({ signature }) => signature);
