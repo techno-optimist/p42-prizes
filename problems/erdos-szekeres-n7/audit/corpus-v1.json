@@ -1,0 +1,22 @@
+{
+  "format": "p42-es7-cleanroom-corpus-v1",
+  "prng": "python-random-mt19937",
+  "seed": 712042,
+  "random_point_sets": 256,
+  "point_counts": [32, 33],
+  "sets_per_point_count": 128,
+  "sampled_seven_subsets_per_set": 256,
+  "random_sampled_seven_subsets": 65536,
+  "generated_corpus_sha256": "sha256:63f415f0899d2c65675ac9e6fc503e428dbced82777810779f90020e5621e6f3",
+  "crafted_families": [
+    "tied-x-sideways-parabola-33",
+    "translated-extreme-coordinate-parabola-33",
+    "interior-point-seven",
+    "convex-seven"
+  ],
+  "generator": {
+    "coordinate_min": -1000000,
+    "coordinate_max": 1000000,
+    "general_position": "reject a candidate point if it duplicates a point or is collinear with any existing pair"
+  }
+}

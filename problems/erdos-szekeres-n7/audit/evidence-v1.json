@@ -1,0 +1,87 @@
+{
+  "format": "p42-es7-cleanroom-audit-evidence-v1",
+  "observed_at": "2026-07-21",
+  "authority": "non-admission independent audit evidence",
+  "evidence_scope": {
+    "deterministic_fields": "machine-reconciled by CI",
+    "timing_and_rss": "observational only; not replay-bound"
+  },
+  "host": {
+    "kernel": "Darwin 24.5.0",
+    "architecture": "arm64",
+    "python": "3.14.2",
+    "rss_units": "bytes on this Darwin host"
+  },
+  "source_hashes": {
+    "cleanroom_auditor": "sha256:0487603b12d056c68d1e504876386b90de5a0d298663a7e3afcf69be1ef1f458",
+    "corpus_manifest": "sha256:04bc997e6ad2d746419c7db13d5237beee7076d57cf405e291fd1f9e7254381b",
+    "differential_tests": "sha256:aa592163ac7b8a1960bbe045435d5de99ef6f927d644c8ac9898b1fbe6166f02",
+    "primary_verifier_compared": "sha256:b2546643c3a86855d26d90fc93c63125993cc1fbdf64177db07d019af289c89e"
+  },
+  "frozen_seed_replay": {
+    "input_sha256": "sha256:a997986312e57a6659382972f0e1eaa2f2db945f9e51d8fc529595be5382c395",
+    "points": 32,
+    "triples_checked": 4960,
+    "seven_subsets_checked": 3365856,
+    "convex_seven_subsets": 0,
+    "reason": "NOT_STRICT_IMPROVEMENT",
+    "elapsed_seconds": 51.501706,
+    "max_rss_bytes": 23429120
+  },
+  "hostile_rejections": [
+    {
+      "input_sha256": "sha256:969fa7d64243a6804d3baea21585170d49401eacdc8319f75ea5887612c0b6d1",
+      "fixture": "convex-33.json",
+      "triples_checked": 5456,
+      "first_convex_seven_subset": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "reason": "CONTAINS_CONVEX_7"
+    },
+    {
+      "input_sha256": "sha256:edddf8107dbb4e047d67256214c2a1831998e672040efbeb04ba73f75c9755a6",
+      "fixture": "tied-x-extreme-33.json",
+      "triples_checked": 5456,
+      "first_convex_seven_subset": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "reason": "CONTAINS_CONVEX_7"
+    }
+  ],
+  "differential_corpus": {
+    "prng_seed": 712042,
+    "general_position_point_sets": 256,
+    "sets_of_32": 128,
+    "sets_of_33": 128,
+    "sampled_seven_subsets": 65536,
+    "generated_corpus_sha256": "sha256:63f415f0899d2c65675ac9e6fc503e428dbced82777810779f90020e5621e6f3",
+    "crafted_families": 4,
+    "discrepancies": 0
+  },
+  "focused_test_run": {
+    "tests_passed": 7,
+    "tests_failed": 0,
+    "pytest_seconds": 55.26,
+    "wall_seconds": 55.26,
+    "max_rss_bytes": 84361216
+  },
+  "mathematical_discrepancy": null,
+  "independence": {
+    "primary": "lexicographic lower and upper monotone chains",
+    "cleanroom": "supporting-pair count by strict one-sided exact orientations",
+    "shared": "public board constants, Python integer arithmetic, and signed orientation identity",
+    "not_proved": "compiler/runtime diversity, independent-host determinism, image reproducibility, or signed external mathematical review"
+  }
+}
