@@ -278,7 +278,7 @@
         "problem_yaml": {"properties": {"path": {"const": "problems/erdos-min-overlap/problem.yaml"}}},
         "specification": {"properties": {"path": {"const": "problems/erdos-min-overlap/SPEC.md"}}},
         "solution_schema": {"properties": {"path": {"const": "problems/erdos-min-overlap/solution.schema.json"}}},
-        "seed": {"properties": {"path": {"const": "problems/erdos-min-overlap/examples/hyra-upper.json"}}}
+        "seed": {"properties": {"path": {"const": "problems/erdos-min-overlap/examples/lnzwz-n512-repaired.json"}}}
       }
     },
     "pathSetEdgesTriangles": {

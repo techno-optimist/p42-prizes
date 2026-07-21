@@ -177,7 +177,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:5103228b298dcf50acf579f5a1695581b7184522521337c5c35a6d88bbb8de70",
+        "source_tree_sha256": "sha256:2b86e1bc732cd8f61d826442d0b42545717e5695b00fa008c9081b41853ddb67",
         "version": "0.1.0"
       }
     },
@@ -199,7 +199,7 @@
         {
           "expected_verdict": {
             "reason": "NOT_STRICT_IMPROVEMENT",
-            "report_sha256": "sha256:8b193936f9d96a4cfa802b62de857819425450770729cdbb4ac97d6b72824e8c",
+            "report_sha256": "sha256:efac1d9ce57342df6227c03d2fff53e3488749ed6d5a96ec9a32ce8b03c139ee",
             "returncode": 1,
             "status": "rejected",
             "valid": false
@@ -210,7 +210,18 @@
         {
           "expected_verdict": {
             "reason": "NOT_STRICT_IMPROVEMENT",
-            "report_sha256": "sha256:6b5b50b9e68ef2f739c7952bfea98e62e0f2c164410aacd97c0275300f762502",
+            "report_sha256": "sha256:11aeede15d4c271a7bdc7734a2ad5afda7f0d42f0153ebde1d524df7e0fab9c4",
+            "returncode": 1,
+            "status": "rejected",
+            "valid": false
+          },
+          "path": "problems/erdos-min-overlap/examples/lnzwz-n512-repaired.json",
+          "sha256": "sha256:fc2b3de49806b8b20a7fa37ac1bae85b56bd9395123f1f3d77a52a3359a22d1f"
+        },
+        {
+          "expected_verdict": {
+            "reason": "NOT_STRICT_IMPROVEMENT",
+            "report_sha256": "sha256:6fd822fd10809f1fa838aa8a4a74a47c775072ee6b4b07440f3fdb62d7647343",
             "returncode": 1,
             "status": "rejected",
             "valid": false
@@ -221,7 +232,7 @@
         {
           "expected_verdict": {
             "reason": "WRONG_SHAPE",
-            "report_sha256": "sha256:91f7c1bfa51f9f5e6de65c5b236b46ff686187cd800ca85a8948264dae377986",
+            "report_sha256": "sha256:64086b995602fb4a2183bbbe28fe85f98f0ac833b139333c89c6474e871e1dfe",
             "returncode": 1,
             "status": "rejected",
             "valid": false
@@ -236,22 +247,26 @@
         "min_improvement": "1/1000000000000",
         "optimum": "0/1",
         "score_name": "overlap_upper_bound",
-        "seed_best": "1424992289798782609633201801352767458976314440679252577/3741444197802851304404516484910431627947663875649308401",
+        "seed_best": "8906018162028540388168670826976087326497984749751/23384026197294446691258957323460528314494920687616",
         "target_classification": "search_target"
       },
       "problem_yaml": {
         "path": "problems/erdos-min-overlap/problem.yaml",
-        "sha256": "sha256:4965b2161c2a81b1fabad61c64eba2500e190a5be626a4e92453faf583064251"
+        "sha256": "sha256:8229359ed6342bd573a5b3309e47342dc915841e54dc3624642c9ecc407afe8d"
       },
       "provenance": {
         "local_evidence": [
           {
             "path": "problems/erdos-min-overlap/SPEC.md",
-            "sha256": "sha256:02fb2857f1cd8952c5235a19d3a1b28a86d822d2452215d2d5c7f475fd1a6aec"
+            "sha256": "sha256:ff679628361f5bf7c74433f644c04d4862fa3f0b87e031a4f790bc86040fbf1b"
           },
           {
             "path": "problems/erdos-min-overlap/HARDENING.md",
-            "sha256": "sha256:3236cf06896fa9d56b6e7ffcb2dfb03ea92a5169bd3dbecabc4732bbb166dd8c"
+            "sha256": "sha256:d0a32605ece4b4c95db3c50bc39790d7d6cc67b0adfb28b251255823af35cec7"
+          },
+          {
+            "path": "problems/erdos-min-overlap/PROVENANCE.md",
+            "sha256": "sha256:1f6e42b137c7cbdab07db6682f4edb7c1f2e5e153e6a9a2d265888284dee1a9d"
           }
         ],
         "status": "incomplete",
@@ -261,27 +276,27 @@
         ]
       },
       "seed": {
-        "canonical_verdict_sha256": "sha256:8b193936f9d96a4cfa802b62de857819425450770729cdbb4ac97d6b72824e8c",
-        "path": "problems/erdos-min-overlap/examples/hyra-upper.json",
-        "sha256": "sha256:f37c8f97ae3f3b8a50344d7b9e9ffb3be506457a26a8d55622004b83f5ae64d1",
+        "canonical_verdict_sha256": "sha256:11aeede15d4c271a7bdc7734a2ad5afda7f0d42f0153ebde1d524df7e0fab9c4",
+        "path": "problems/erdos-min-overlap/examples/lnzwz-n512-repaired.json",
+        "sha256": "sha256:fc2b3de49806b8b20a7fa37ac1bae85b56bd9395123f1f3d77a52a3359a22d1f",
         "verdict_reason": "NOT_STRICT_IMPROVEMENT",
         "verdict_valid": false,
         "verified_improvement": "0/1",
-        "verified_score": "1424992289798782609633201801352767458976314440679252577/3741444197802851304404516484910431627947663875649308401"
+        "verified_score": "8906018162028540388168670826976087326497984749751/23384026197294446691258957323460528314494920687616"
       },
       "slug": "erdos-min-overlap",
       "solution_schema": {
         "path": "problems/erdos-min-overlap/solution.schema.json",
-        "sha256": "sha256:b3dd805eab4b46ef7123819528b50eb87e5660916b7d75aae8725f1c161d472e"
+        "sha256": "sha256:eb2b39a128a0fd04180f34557a3289cae7e4d2e50110ee6c92defbfd9e1c1e08"
       },
       "specification": {
         "path": "problems/erdos-min-overlap/SPEC.md",
-        "sha256": "sha256:02fb2857f1cd8952c5235a19d3a1b28a86d822d2452215d2d5c7f475fd1a6aec"
+        "sha256": "sha256:ff679628361f5bf7c74433f644c04d4862fa3f0b87e031a4f790bc86040fbf1b"
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:c221270d4c3d9e6d373d0ee3f20286a2dff7b3158db9deb9585acebd4866ced5",
-        "version": "0.1.1"
+        "source_tree_sha256": "sha256:f8046284fe9d6f5043ab71ba0a48966db5ba08daa78d7292474ba140db0769cb",
+        "version": "0.2.0"
       }
     },
     {
@@ -383,7 +398,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:4ac3c41dcbb52ebce3a2b3b740a8a915a61e31b9a0972e4a64c87f309ca90750",
+        "source_tree_sha256": "sha256:c79b0129c992c43eb80a6ddf6c189335209a77d03065ae03bc809eee5710e4b9",
         "version": "0.1.2"
       }
     },
@@ -486,7 +501,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:fd04e81e00b40edaf87caedc072628bada04d45bde0819e83469ef818edadfbd",
+        "source_tree_sha256": "sha256:a17129cd8d0cf1e73d4e6a9c31057384ffb4399ccd2c938af6249bc336c95a8d",
         "version": "0.2.0"
       }
     },
@@ -589,7 +604,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:9478b9d4c919dd25d7660f5de859eefea4c2651a66feec9c8affde243fb3d8dd",
+        "source_tree_sha256": "sha256:792f0bdd33a54f277810fcce590b2ca76fcab0fb2933dba26837638fbda15b42",
         "version": "0.1.1"
       }
     },
@@ -692,7 +707,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:6cfee82fed1c448bba6af0557b025c9bda31e141cdeb2531b097a886d4c7b29a",
+        "source_tree_sha256": "sha256:f6d6c2c3b6d2e7d09a7a76cc3cc65edf58f9a316534c2d18a8b3bc2ee7bf6334",
         "version": "0.1.1"
       }
     },
@@ -869,7 +884,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:a3ebc173d3c6ad408258a5bf1d897ca7d509bfe28ed7e81e3bf5eaca16272f04",
+        "source_tree_sha256": "sha256:9e81e7f5a916156c9f500fd738b7ff01c2d6aa00b314f7d826558ab3061f63f6",
         "version": "0.1.0"
       }
     },
@@ -961,7 +976,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:39ebd288de6c7763433b8f427b94b8652b40564087026a56b88da4f57ee66c71",
+        "source_tree_sha256": "sha256:cbec72273aa5b45fbb8728ddafb67d7ba29b8ed3dcb097f43d8fe72545686d31",
         "version": "0.1.1"
       }
     },
@@ -1064,7 +1079,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:f0551715c38d7e5b5c3350d019f29b4580b42a9df52212bdfe40234d86c63175",
+        "source_tree_sha256": "sha256:5f3ac099809aeb4f48818ca8664f9c1c335ad9e1294d00fe87fdd8a57c8818de",
         "version": "0.1.2"
       }
     },
@@ -1176,7 +1191,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:583cf6e59ad3daece59a61ee98668275cd0b00d8a328819594fda456de20f9c0",
+        "source_tree_sha256": "sha256:12edb4f48da1781e74c22ee5efb4454e341c44b48f735fececc64d7f4447c0e7",
         "version": "0.1.2"
       }
     }

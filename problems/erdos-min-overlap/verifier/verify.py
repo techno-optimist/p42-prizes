@@ -17,25 +17,39 @@ from p42_prizes.verdict import (
 
 
 PROBLEM_ID = "erdos-min-overlap"
-VERIFIER_VERSION = "0.1.1"
+VERIFIER_VERSION = "0.2.0"
 VERIFIER_IMAGE = verifier_image_identity("sha256:local-dev")
-N = 2400
-HALF_N = 1200
+# v0.2.0: generalized to ANY admissible resolution n (was pinned to n=2400).
+# Any admissible step construction at any n gives a valid upper bound on the
+# minimum-overlap constant mu; the normalized overlap functional (the score
+# below) is comparable across n, so a finer/coarser witness with a smaller
+# score is a genuine improvement. See SPEC.md "Any-n generalization".
+MIN_N = 2
+# MAX_N is set by the verifier's max_compute budget (problem.yaml wall_seconds).
+# Across all lags the score loop evaluates exactly n^2 overlap terms. A local
+# maximum-bound diagnostic is recorded in HARDENING.md; raising MAX_N requires
+# re-benchmarking against the compute budget and, before activation, a fresh
+# independent N-host admission run.
+MAX_N = 4096
 MAX_DENOMINATOR_POWER = 128
 MAX_SOLUTION_BYTES = 256 * 1024
-# Audit F1: the previous seed pinned the published Haugland upper bound
-# (0.380926853433087) — a real record — but the bundled hyra-upper witness
-# verifies BELOW it (~0.3808669), so leaving the Haugland seed would let
-# anyone resubmit the bundled witness for a false prize. The seed is therefore
-# the bundled witness's exact score.
-# Seeding (docs/OPEN_WITNESS_SEEDING.md): this local seed is a LOOSE starting
-# ceiling for the free open phase, NOT an attested published record. Whether
-# the bundled witness "genuinely" beats Haugland never needs ruling on:
-# posting it for free during the open phase establishes the frontier, and the
-# paid phase (after armFunding()) only rewards marginal improvement over that.
+MAX_SOURCE_CHARS = 4096
+MAX_CLAIM_CHARS = 512
+ALLOWED_KEYS = {
+    "n",
+    "source",
+    "claimed_improvement",
+    "claimed_lag",
+    "claimed_score",
+    "denominator_power",
+    "values",
+}
+# The seed is the bundled, independently rebuildable v1.2 n=512 frontier.
+# Keeping this exact value synchronized with problem.yaml prevents the package
+# itself from supplying a free first improvement.
 SEED_BEST = Fraction(
-    1424992289798782609633201801352767458976314440679252577,
-    3741444197802851304404516484910431627947663875649308401,
+    8906018162028540388168670826976087326497984749751,
+    23384026197294446691258957323460528314494920687616,
 )
 MIN_IMPROVEMENT = Fraction(1, 1000000000000)
 
@@ -53,7 +67,7 @@ def require_int(value: Any, label: str) -> int:
     return value
 
 
-def parse_solution(raw: bytes) -> tuple[int, list[int]]:
+def parse_solution(raw: bytes) -> tuple[int, int, list[int]]:
     if len(raw) > MAX_SOLUTION_BYTES:
         raise VerifierFailure(
             "OVERSIZED",
@@ -66,8 +80,33 @@ def parse_solution(raw: bytes) -> tuple[int, list[int]]:
 
     if not isinstance(data, dict):
         raise VerifierFailure("MALFORMED", "solution root must be an object")
-    if data.get("n") != N:
-        raise VerifierFailure("WRONG_N", "n must equal 2400")
+    unknown = sorted(set(data) - ALLOWED_KEYS)
+    if unknown:
+        raise VerifierFailure(
+            "MALFORMED",
+            f"unknown solution field: {unknown[0]}",
+        )
+
+    source = data.get("source")
+    if source is not None and not isinstance(source, str):
+        raise VerifierFailure("MALFORMED", "source must be a string")
+    if source is not None and len(source) > MAX_SOURCE_CHARS:
+        raise VerifierFailure("MALFORMED", "source is too long")
+    for label in ("claimed_improvement", "claimed_score"):
+        value = data.get(label)
+        if value is not None and not isinstance(value, str):
+            raise VerifierFailure("MALFORMED", f"{label} must be a string")
+        if value is not None and len(value) > MAX_CLAIM_CHARS:
+            raise VerifierFailure("MALFORMED", f"{label} is too long")
+    if "claimed_lag" in data:
+        require_int(data["claimed_lag"], "claimed_lag")
+
+    n = require_int(data.get("n"), "n")
+    if n < MIN_N or n > MAX_N:
+        raise VerifierFailure(
+            "N_RANGE",
+            f"n must satisfy {MIN_N} <= n <= {MAX_N}",
+        )
 
     denominator_power = require_int(data.get("denominator_power"), "denominator_power")
     if denominator_power < 0 or denominator_power > MAX_DENOMINATOR_POWER:
@@ -78,8 +117,8 @@ def parse_solution(raw: bytes) -> tuple[int, list[int]]:
     denominator = 1 << denominator_power
 
     raw_values = data.get("values")
-    if not isinstance(raw_values, list) or len(raw_values) != N:
-        raise VerifierFailure("WRONG_SHAPE", "values must contain exactly 2400 entries")
+    if not isinstance(raw_values, list) or len(raw_values) != n:
+        raise VerifierFailure("WRONG_SHAPE", "values must contain exactly n entries")
 
     values: list[int] = []
     for index, raw_value in enumerate(raw_values):
@@ -94,14 +133,24 @@ def parse_solution(raw: bytes) -> tuple[int, list[int]]:
     if sum(values) == 0:
         raise VerifierFailure("ZERO_MASS", "sum(values) must be nonzero")
 
-    return denominator_power, values
+    return n, denominator_power, values
 
 
-def compute_score(values: list[int]) -> tuple[Fraction, dict[str, Any]]:
+def compute_score(n: int, values: list[int]) -> tuple[Fraction, dict[str, Any]]:
+    # Exact-integer overlap functional for ANY n.  Normalize f_i = (n/2) a_i / T
+    # where a_i = values[i] and T = sum(a).  Factor the 1/2 out to keep the hot
+    # loop in pure integers even for odd n:  let S_i = n * a_i, so f_i = S_i/(2T)
+    # and g_i = 1 - f_i = (2T - S_i)/(2T).  Then
+    #   c_m = sum_i f_i g_{i+m} = (1 / (2T)^2) * sum_i S_i (2T - S_{i+m})
+    # and the reported score is  (2/n) * max_m c_m = best / (2 n T^2),
+    # with best = max_m sum_i S_i (2T - S_{i+m}).  For n=2400 this is
+    # bit-identical to the original (S_i = 2*scaled_i, complements = 2*old),
+    # so the retained historical witness preserves its v0.1.1 exact score.
     total = sum(values)
-    scaled = [HALF_N * value for value in values]
+    two_total = 2 * total
+    scaled = [n * value for value in values]
 
-    over = [index for index, value in enumerate(scaled) if value > total]
+    over = [index for index, s in enumerate(scaled) if s > two_total]
     if over:
         first = over[0]
         raise VerifierFailure(
@@ -109,13 +158,13 @@ def compute_score(values: list[int]) -> tuple[Fraction, dict[str, Any]]:
             f"rescaled values[{first}] exceeds 1 exactly",
         )
 
-    complements = [total - value for value in scaled]
+    complements = [two_total - s for s in scaled]
 
     best_lag = 0
     best_total = -1
-    for lag in range(-(N - 1), N):
+    for lag in range(-(n - 1), n):
         start = max(0, -lag)
-        stop = min(N, N - lag)
+        stop = min(n, n - lag)
         lag_total = 0
         for index in range(start, stop):
             lag_total += scaled[index] * complements[index + lag]
@@ -123,10 +172,10 @@ def compute_score(values: list[int]) -> tuple[Fraction, dict[str, Any]]:
             best_total = lag_total
             best_lag = lag
 
-    score = Fraction(2 * best_total, N * total * total)
+    score = Fraction(best_total, 2 * n * total * total)
     details = {
         "argmax_lag": best_lag,
-        "checked_lags": 2 * N - 1,
+        "checked_lags": 2 * n - 1,
         "raw_sum": str(total),
         "rescale_denominator": str(total),
     }
@@ -146,15 +195,15 @@ def report_for_solution(path: Path) -> VerdictReport:
     solution_hash = solution.solution_hash
 
     try:
-        denominator_power, values = parse_solution(raw)
-        score, details = compute_score(values)
+        n, denominator_power, values = parse_solution(raw)
+        score, details = compute_score(n, values)
         improvement = max(Fraction(0, 1), SEED_BEST - score)
         valid = improvement >= MIN_IMPROVEMENT
         reason = "" if valid else "NOT_STRICT_IMPROVEMENT"
         details = {
             **details,
             "denominator_power": denominator_power,
-            "n": N,
+            "n": n,
         }
     except VerifierFailure as exc:
         score = SEED_BEST

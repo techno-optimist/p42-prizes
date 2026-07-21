@@ -1,0 +1,2 @@
+# Standard-library-only verifier. The shared P42 runtime is supplied by the
+# repository verifier image and locked in ../../requirements.runtime.lock.

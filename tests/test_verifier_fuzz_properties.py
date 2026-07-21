@@ -451,20 +451,19 @@ def test_arithmetic_kakeya_fixture_matches_independent_rank_oracle() -> None:
     assert details["rounds"] == expected_rounds == [[[2, 2]], [[1, 1], [1, 2], [2, 1]]]
 
 
-@pytest.mark.parametrize("values", [[1, 1], [1, 2, 1, 2], [0, 1, 1, 0]])
-def test_erdos_overlap_matches_direct_lag_oracle(
-    values: list[int], monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.mark.parametrize(
+    "values",
+    [[1, 1], [1, 1, 1], [1, 2, 2], [1, 2, 1, 2], [0, 1, 1, 0]],
+)
+def test_erdos_overlap_matches_direct_lag_oracle(values: list[int]) -> None:
     module = VERIFIERS["erdos-min-overlap"]
     n = len(values)
-    monkeypatch.setattr(module, "N", n)
-    monkeypatch.setattr(module, "HALF_N", n // 2)
     total = sum(values)
-    scaled = [(n // 2) * value for value in values]
-    complements = [total - value for value in scaled]
+    normalized = [Fraction(n * value, 2 * total) for value in values]
+    complements = [1 - value for value in normalized]
     lag_totals = {
         lag: sum(
-            scaled[left] * complements[right]
+            normalized[left] * complements[right]
             for left in range(n)
             for right in range(n)
             if right - left == lag
@@ -473,10 +472,36 @@ def test_erdos_overlap_matches_direct_lag_oracle(
     }
     best_lag = max(lag_totals, key=lag_totals.get)
 
-    score, details = module.compute_score(values)
+    score, details = module.compute_score(n, values)
 
-    assert score == Fraction(2 * lag_totals[best_lag], n * total * total)
+    assert score == Fraction(2, n) * lag_totals[best_lag]
     assert details["argmax_lag"] == best_lag
+    assert details["checked_lags"] == 2 * n - 1
+    assert details["raw_sum"] == str(total)
+
+
+@pytest.mark.parametrize(
+    "fixture,reason",
+    [
+        ({"n": 1, "denominator_power": 0, "values": [1]}, "N_RANGE"),
+        (
+            {"n": 4097, "denominator_power": 0, "values": [1] * 4097},
+            "N_RANGE",
+        ),
+        ({"n": 3, "denominator_power": 0, "values": [1, 1]}, "WRONG_SHAPE"),
+        ({"n": 5, "denominator_power": 0, "values": [1, 1, True, 1, 1]}, "MALFORMED"),
+    ],
+)
+def test_erdos_variable_n_malformed_candidates_are_total(
+    fixture: dict, reason: str, tmp_path: Path
+) -> None:
+    module = VERIFIERS["erdos-min-overlap"]
+    solution = tmp_path / "candidate.json"
+    solution.write_text(json.dumps(fixture, separators=(",", ":")), encoding="utf-8")
+
+    report = assert_fail_closed(module, solution, reason)
+
+    assert report["solution_hash"] == sha256_bytes(solution.read_bytes())
 
 
 @pytest.mark.parametrize("rows", [[0b0000, 0b0011, 0b0101, 0b0110], [0, 0, 15, 15]])
@@ -743,16 +768,19 @@ TRANSITION_CASES = {
 
 
 def transition_witness(
-    slug: str, tmp_path: Path, module: ModuleType, monkeypatch: pytest.MonkeyPatch
+    slug: str,
+    tmp_path: Path,
+    module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    erdos_n: int | None = None,
 ) -> Path:
     solution = tmp_path / f"{slug}.json"
     if slug in ("autoconvolution-c1-upper", "autoconvolution-c2-lower"):
         monkeypatch.setattr(module, "N", 4)
         fixture = {"n": 4, "values": [2, 0, 5, 1]}
     elif slug == "erdos-min-overlap":
-        monkeypatch.setattr(module, "N", 4)
-        monkeypatch.setattr(module, "HALF_N", 2)
-        fixture = {"n": 4, "denominator_power": 2, "values": [1, 2, 1, 2]}
+        assert erdos_n is not None
+        fixture = {"n": erdos_n, "denominator_power": 0, "values": [1] * erdos_n}
     elif slug == "hadamard-668-defect":
         monkeypatch.setattr(module, "N", 4)
         monkeypatch.setattr(module, "ROW_HEX_DIGITS", 1)
@@ -773,14 +801,25 @@ def transition_witness(
     return solution
 
 
-@pytest.mark.parametrize("slug", SLUGS)
+TRANSITION_PARAMETERS = [
+    *((slug, None) for slug in SLUGS if slug != "erdos-min-overlap"),
+    pytest.param("erdos-min-overlap", 2, id="erdos-min-overlap-n2"),
+    pytest.param("erdos-min-overlap", 3, id="erdos-min-overlap-n3"),
+    pytest.param("erdos-min-overlap", 7, id="erdos-min-overlap-n7"),
+]
+
+
+@pytest.mark.parametrize("slug,erdos_n", TRANSITION_PARAMETERS)
 def test_one_atom_frontier_transition_accepts_then_rejects_equal_score(
-    slug: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    slug: str,
+    erdos_n: int | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = VERIFIERS[slug]
     direction, expected_score = TRANSITION_CASES[slug]
     score_atom = Fraction(1, SCORE_ATOM_SCALE)
-    solution = transition_witness(slug, tmp_path, module, monkeypatch)
+    solution = transition_witness(slug, tmp_path, module, monkeypatch, erdos_n)
 
     frontier = expected_score + score_atom if direction == "minimize" else expected_score - score_atom
     expected_improvement = score_atom

@@ -1,7 +1,9 @@
 # Bounty Metadata
 
-Status: Phase 0 packaging only. No real ETH, no audited contracts, no legal
-review, and no immutable verifier image.
+Status: **HOLD**. The exact frontier is bundled and reproducible, but no real
+ETH is authorized. Independent continuum-reduction and scope review, an
+immutable verifier image, N-host resource evidence, and legal review remain
+open.
 
 - Chain: Base Sepolia
 - Pool address: not deployed

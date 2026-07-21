@@ -1,81 +1,93 @@
-# Erdos Min-Overlap
+# Erdos Minimum Overlap
 
-This package certifies exact rational upper-bound witnesses for the Erdos
-minimum-overlap constant. It is adapted from the local
-`arena/erdos_note` verification package, but the submitted artifact format has
-been changed for P42 admission: the verifier accepts integer dyadic numerators,
-not JSON decimal numbers.
+This HOLD package certifies exact rational upper-bound witnesses for the Erdos
+minimum-overlap constant. The submitted format contains integer dyadic
+numerators only; JSON decimals never enter the verifier.
 
 ## Problem
 
-Let `n = 2400`. A submission gives raw step-function samples
-`a_i / 2^L`, for `0 <= i < n`, with `0 <= a_i <= 2^L`.
+Version 0.2.0 accepts a submission-declared resolution `n` with
+`2 <= n <= 4096`. A submission gives samples `a_i / 2^L`, where
+`0 <= i < n`, `0 <= L <= 128`, and `0 <= a_i <= 2^L`.
 
-The verifier rescales the vector exactly so its discrete integral matches the
-normalization from White's overlap functional:
+The verifier normalizes exactly:
 
 ```text
-f_i = (n/2) * a_i / sum_j a_j
+T   = sum_i a_i
+f_i = n * a_i / (2T)
 g_i = 1 - f_i
 ```
 
-The submission is admissible only if every rescaled `f_i` remains in `[0, 1]`.
-For every integer lag `m` with `-(n-1) <= m <= n-1`, the verifier computes
+The witness is admissible only when `T > 0` and every `f_i` is in `[0, 1]`.
+For each integer lag `m` from `-(n-1)` through `n-1`, it computes over the
+overlapping indices
 
 ```text
-c_m = sum_i f_i * g_{i+m}
-```
-
-over the overlapping index range. The score is the exact upper bound
-
-```text
+c_m = sum_i f_i * g_(i+m)
 score = (2/n) * max_m c_m.
 ```
 
-The piecewise-linearity lemma from the source note reduces the continuum
-supremum of the step-function overlap to these finitely many lags.
+The implementation evaluates the equivalent integer numerator
+
+```text
+sum_i (n*a_i) * (2T - n*a_(i+m))
+```
+
+and constructs one reduced `Fraction` after selecting the exact maximum. This
+works without a parity exception for odd `n` and preserves the v0.1.1 result at
+`n=2400` byte-for-byte.
+
+The mathematical any-n scope relies on the source note's piecewise-linearity
+reduction: every admissible step construction supplies an upper bound, and the
+continuum supremum is attained at one of the checked grid lags. That reduction
+still requires independent review; package status therefore remains HOLD.
 
 ## Solution Format
 
-Solutions are canonical JSON:
-
 ```json
 {
-  "n": 2400,
-  "denominator_power": 82,
-  "values": [4835703273622813420367872, "..."]
+  "n": 512,
+  "denominator_power": 78,
+  "values": [192252155, 0, "..."]
 }
 ```
 
-`values` must contain exactly 2400 nonnegative integers. Each value is the
-dyadic numerator of the raw sample over `2^denominator_power`. Submitter fields
-such as `claimed_score`, `claimed_lag`, or `improvement` are ignored.
+`values` must contain exactly `n` integers. Optional `source`,
+`claimed_score`, `claimed_improvement`, and `claimed_lag` fields are type
+checked but never trusted. Unknown fields, booleans in integer positions,
+duplicate keys, malformed JSON, values outside the dyadic range, zero mass,
+and post-normalization box violations fail closed with typed reports.
 
-## Score And Improvement
+The certified resource envelope is:
 
-The score is serialized as an exact rational string. The seed best is the
-bundled Hyra witness's exact score:
+- input bytes: at most 262144;
+- resolution: `2 <= n <= 4096`;
+- denominator power: `0 <= L <= 128`;
+- work: all `2n-1` lags, exactly `n^2` overlap terms;
+- manifest budget: 10 wall seconds and 256 MiB.
+
+Raising any bound requires a verifier version change and fresh resource review.
+
+## Seed And Improvement
+
+The seed is the bundled v1.2 repaired `n=512` witness:
 
 ```text
-1424992289798782609633201801352767458976314440679252577
+8906018162028540388168670826976087326497984749751
 /
-3741444197802851304404516484910431627947663875649308401
+23384026197294446691258957323460528314494920687616
 ```
 
-(audit F1: the previous seed pinned the published Haugland upper bound
-`380926853433087/1000000000000000`, but the bundled witness verifies below it,
-so a looser seed would let anyone resubmit the witness for a false prize).
-Improvement is:
+Improvement is recomputed as
 
 ```text
-improvement = max(0, seed_best - score)
+max(0, seed_best - score).
 ```
 
-The bundled Hyra witness verifies to exactly the seed score and improvement
-`0/1` — it is the frontier, not an improvement over it.
+The seed itself returns `NOT_STRICT_IMPROVEMENT` and `0/1`; the older bundled
+`n=2400` witness is worse and also receives `0/1`. Thus the package does not
+offer its own public frontier as a free first improvement. No decimal score is
+used for seeding or acceptance.
 
-Seeding note: this local seed is a loose starting ceiling for the free open
-witness phase, not an attested published record. Under open-witness-phase
-seeding (`docs/OPEN_WITNESS_SEEDING.md`) the on-chain frontier
-self-establishes from free open-phase postings before `armFunding()` opens the
-paid phase, so no ruling on the witness-vs-Haugland record is needed.
+See `PROVENANCE.md` for the immutable source, exact rebuild, hashes, DOI, and
+HOLD boundary. See `NOTICE.md` for attribution and redistribution terms.
