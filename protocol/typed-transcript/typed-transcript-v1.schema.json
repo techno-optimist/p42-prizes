@@ -4,7 +4,7 @@
   "title": "P42 TypedTranscriptV1 design constants",
   "type": "object",
   "additionalProperties": false,
-  "required": ["artifactStatus", "remediatesIssue164", "protocolId", "version", "fieldProfiles", "outerChallengeExtraction", "versionEnvelope", "constants", "phases", "eventTags", "encodingTags", "proofModeRouting", "proofWire", "gateway"],
+  "required": ["artifactStatus", "remediatesIssue164", "protocolId", "version", "fieldProfiles", "permutations", "extensionFields", "outerChallengeExtraction", "versionEnvelope", "constants", "phases", "eventTags", "encodingTags", "proofModeRouting", "proofWire", "gateway"],
   "properties": {
     "$schema": {"type": "string"},
     "artifactStatus": {"const": "design-only-non-activating"},
@@ -18,6 +18,22 @@
       "properties": {
         "inner-koalabear-v1": {"$ref": "#/$defs/profile"},
         "outer-bn254-rate-koalabear-v1": {"$ref": "#/$defs/profile"}
+      }
+    },
+    "permutations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outer-bn254-poseidon2-width3-v1"],
+      "properties": {
+        "outer-bn254-poseidon2-width3-v1": {"$ref": "#/$defs/outerPermutation"}
+      }
+    },
+    "extensionFields": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["koalabear-binomial-degree4-v1"],
+      "properties": {
+        "koalabear-binomial-degree4-v1": {"$ref": "#/$defs/extensionField"}
       }
     },
     "outerChallengeExtraction": {"$ref": "#/$defs/outerChallengeExtraction"},
@@ -51,6 +67,7 @@
         "profileId": {"type": "integer", "minimum": 1, "maximum": 15},
         "fieldId": {"type": "integer", "minimum": 1, "maximum": 255},
         "permutationId": {"type": "integer", "minimum": 1, "maximum": 255},
+        "permutation": {"const": "outer-bn254-poseidon2-width3-v1"},
         "modulus": {"type": "string", "pattern": "^[1-9][0-9]+$"},
         "width": {"type": "integer", "minimum": 2},
         "rate": {"type": "integer", "minimum": 1},
@@ -64,19 +81,108 @@
     "outerChallengeExtraction": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source", "scalarMethod", "koalaBearModulus", "extensionDegree", "extensionBasis", "bitsMethod", "minChallengeBits", "maxChallengeBits", "nativeBn254Challenges"],
+      "required": ["source", "scalarMethod", "koalaBearModulus", "extensionDegree", "extensionField", "extensionBasis", "extensionCoefficientOrder", "bitsMethod", "minChallengeBits", "maxChallengeBits", "nativeBn254Challenges"],
       "properties": {
         "source": {"const": "bn254-rate-word"},
         "scalarMethod": {"const": "bn254-mod-koalabear"},
         "koalaBearModulus": {"const": 2130706433},
         "extensionDegree": {"const": 4},
-        "extensionBasis": {"const": "sp1-koalabear-extension4-pinned-by-successor-fork"},
+        "extensionField": {"const": "koalabear-binomial-degree4-v1"},
+        "extensionBasis": {"const": "1,x,x^2,x^3-mod-x^4-minus-3"},
+        "extensionCoefficientOrder": {"const": "c0-c1-c2-c3"},
         "bitsMethod": {"const": "low-bits"},
         "minChallengeBits": {"const": 1},
         "maxChallengeBits": {"const": 30},
         "nativeBn254Challenges": {"const": false}
       }
     },
+    "outerPermutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fieldModulus", "width", "rate", "capacity", "sBoxExponent", "externalRounds", "internalRounds", "roundSchedule", "externalMatrix", "internalMatrix", "roundConstants", "upstreamSource"],
+      "properties": {
+        "fieldModulus": {"const": "21888242871839275222246405745257275088548364400416034343698204186575808495617"},
+        "width": {"const": 3},
+        "rate": {"const": 2},
+        "capacity": {"const": 1},
+        "sBoxExponent": {"const": 5},
+        "externalRounds": {"const": 8},
+        "internalRounds": {"const": 56},
+        "roundSchedule": {"const": "external-4-then-internal-56-then-external-4"},
+        "externalMatrix": {"$ref": "#/$defs/matrix3"},
+        "internalMatrix": {"$ref": "#/$defs/matrix3"},
+        "roundConstants": {"$ref": "#/$defs/roundConstants"},
+        "upstreamSource": {"$ref": "#/$defs/poseidonSource"}
+      }
+    },
+    "matrix3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3,
+        "items": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"}
+      }
+    },
+    "roundConstants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceTableRows", "sourceTableElements", "sourceTableEncoding", "sourceTableSha256", "effectiveElements", "effectiveEncoding", "effectiveSha256"],
+      "properties": {
+        "sourceTableRows": {"const": 64},
+        "sourceTableElements": {"const": 192},
+        "sourceTableEncoding": {"const": "row-major-64-rows-by-3-lanes-each-lane-canonical-32-byte-big-endian"},
+        "sourceTableSha256": {"$ref": "#/$defs/sha256"},
+        "effectiveElements": {"const": 80},
+        "effectiveEncoding": {"const": "round-order-first-4-external-all-3-lanes-then-56-internal-lane-0-only-then-last-4-external-all-3-lanes-each-lane-canonical-32-byte-big-endian"},
+        "effectiveSha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "poseidonSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "path", "fileSha256", "licenseExpression"],
+      "properties": {
+        "repository": {"const": "https://github.com/HorizenLabs/poseidon2"},
+        "commit": {"pattern": "^[0-9a-f]{40}$"},
+        "path": {"const": "plain_implementations/src/poseidon2/poseidon2_instance_bn256.rs"},
+        "fileSha256": {"$ref": "#/$defs/sha256"},
+        "licenseExpression": {"const": "MIT OR Apache-2.0"}
+      }
+    },
+    "extensionField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rustType", "baseFieldModulus", "degree", "definingPolynomial", "nonresidue", "coefficientOrder", "laneOrder", "canonicalElement", "canonicalCoefficientEncoding", "upstreamSource"],
+      "properties": {
+        "rustType": {"const": "BinomialExtensionField<KoalaBear,4>"},
+        "baseFieldModulus": {"const": "2130706433"},
+        "degree": {"const": 4},
+        "definingPolynomial": {"const": "x^4-3"},
+        "nonresidue": {"const": "3"},
+        "coefficientOrder": {"const": "c0-c1-c2-c3"},
+        "laneOrder": {"const": "element-major-then-coefficients-c0-c1-c2-c3"},
+        "canonicalElement": {"const": "c0+c1*x+c2*x^2+c3*x^3"},
+        "canonicalCoefficientEncoding": {"const": "each-ci-is-the-unique-decimal-integer-in-[0,2130706433)-no-modular-reduction"},
+        "upstreamSource": {"$ref": "#/$defs/extensionSource"}
+      }
+    },
+    "extensionSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "paths", "licenseExpression"],
+      "properties": {
+        "repository": {"const": "https://github.com/Plonky3/Plonky3"},
+        "commit": {"pattern": "^[0-9a-f]{40}$"},
+        "paths": {
+          "const": ["koala-bear/src/extension.rs", "field/src/extension/binomial_extension.rs"]
+        },
+        "licenseExpression": {"const": "MIT OR Apache-2.0"}
+      }
+    },
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "route": {
       "type": "object",
       "additionalProperties": false,

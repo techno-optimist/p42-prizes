@@ -75,9 +75,12 @@ The machine-readable constants are normative:
 - Poseidon2 width: `3`
 - rate: `2`
 - capacity: `1`
+- S-box: `x^5`
+- rounds: `8` external and `56` internal, ordered as four external, 56
+  internal, then four external
 - maximum `squeezeBits` request: `30`
-- `squeezeExtension`: supported using the existing SP1 four-coefficient
-  KoalaBear extension basis
+- `squeezeExtension`: supported as
+  `BinomialExtensionField<KoalaBear,4>` over `x^4 - 3`
 - rate-word field: BN254
 - exposed challenge field: KoalaBear only
 
@@ -85,9 +88,65 @@ The profiles share event semantics and framing but use their own permutation
 and rate-word field. Both expose only typed KoalaBear scalar, SP1 extension,
 and `[1, 31)` bit challenges. The outer profile is a bounded adapter around
 BN254 rate words; it is not a native-BN254 challenger and does not define a
-new BN254 PCS. Equality is required between implementations of the same
-profile only after the successor fork fixes the exact permutations and SP1
-extension basis.
+new BN254 PCS. The outer permutation and extension field are fixed below. The
+inner KoalaBear permutation remains outside this outer-extraction review slice;
+cryptographic-output vectors remain deliberately empty for both profiles.
+
+## Outer cryptographic authority
+
+The machine-readable authority in `typed-transcript-v1.json` is normative.
+The BN254 field is the scalar field with modulus
+`21888242871839275222246405745257275088548364400416034343698204186575808495617`.
+The outer Poseidon2 state has width three, rate two, capacity one, S-box
+exponent five, eight external rounds, and 56 internal rounds.
+
+For column state `[s0, s1, s2]`, the external matrix is:
+
+```text
+2 1 1
+1 2 1
+1 1 2
+```
+
+The internal matrix is:
+
+```text
+2 1 1
+1 2 1
+1 1 3
+```
+
+All entries are canonical BN254 field integers. The matrices apply by ordinary
+matrix-vector multiplication modulo the pinned field modulus.
+
+The 64-row source table is the `RC3` table in
+`HorizenLabs/poseidon2` commit
+`055bde3f4782731ba5f5ce5888a440a94327eaf3`, path
+`plain_implementations/src/poseidon2/poseidon2_instance_bn256.rs`, dual licensed
+`MIT OR Apache-2.0`. The upstream file SHA-256 is
+`7b34cc6574424ea4ea56af1a8b568f99c449e092ceaa372e5226c4308937e7ac`.
+
+The complete source table digest is computed by concatenating all 64 rows in
+row-major order, all three lanes per row, with each canonical value encoded as
+exactly 32 unsigned big-endian bytes. The resulting 6,144 bytes have SHA-256
+`c08ebd7b8765286f6933070d74e9a1859072e58fb7d18d17f9ca97872b93f4a2`.
+The effective permutation constants are the first four rows with all lanes,
+rows `[4, 60)` with lane zero only, and the last four rows with all lanes.
+Those 80 values, encoded identically into 2,560 bytes, have SHA-256
+`f58a02b261e94419e962e7b72d759d7b4df69f02e25f56aea90f263dc4b03b37`.
+Implementations MUST verify both digests before generating outputs.
+
+The extension is exactly `BinomialExtensionField<KoalaBear,4>` from
+`Plonky3/Plonky3` commit
+`5fa5e044def35d9fb7b2d8f3296c23efd5b00306`, paths
+`koala-bear/src/extension.rs` and
+`field/src/extension/binomial_extension.rs`, dual licensed
+`MIT OR Apache-2.0`. It is the quotient by `x^4 - 3`. A value is canonically
+`c0 + c1*x + c2*x^2 + c3*x^3`, serialized and exposed in coefficient order
+`[c0, c1, c2, c3]`. Each coefficient is the unique decimal integer in
+`[0, 2130706433)`; accepting a noncanonical integer and reducing it is
+forbidden. Multiple extension values are flattened element-major, with the
+four coefficients of each element contiguous in this order.
 
 ## Constants
 
@@ -204,13 +263,11 @@ have different frames.
 
 ### Extension values
 
-An extension element is exactly four KoalaBear coefficients in the basis and
-coefficient order used by the successor SP1 fork. This design does not assert
-that basis has received cryptographic review. Implementations MUST pin and test
-it in the successor SP1 fork. The
+An extension element is exactly four KoalaBear coefficients in the pinned
+`1, x, x^2, x^3` basis modulo `x^4 - 3`, in `[c0, c1, c2, c3]` order. The
 outer profile flattens coefficients in element order, then applies the same
 eight-limb packing. This document does not choose a replacement extension or
-PCS representation.
+PCS representation and does not claim cryptographic review.
 
 ### Digests and commitments
 
@@ -688,6 +745,47 @@ permutation states are explicitly `not-generated` with a JSON `null` state;
 this is a refusal to invent cryptographic expectations, not a wildcard that a
 future implementation may ignore.
 
+`typed-transcript-cryptographic-outputs-v1.schema.json` is the versioned
+normative artifact shape for a later cryptographic corpus. It requires canonical decimal
+lanes for every permutation input/output state, separately records
+squeeze-continuation control and output states, and provides disjoint scalar,
+extension, and little-endian bit extraction records. Every output record binds
+to a structural outer transcript step and names the exact state rate lanes it
+consumes. This schema defines a future interchange shape only. It does not
+authorize those records, prove that referenced artifacts exist, or make
+schema-valid metadata activation evidence.
+
+This design-only validator unconditionally rejects every corpus with
+`cryptographicOutputsIncluded: true` using the stable error
+`CRYPTOGRAPHIC_OUTPUTS_UNSUPPORTED`. Rejection occurs before provenance,
+permutation states, continuation states, extracted values, or signed-review
+metadata can be interpreted. Validator success therefore cannot authorize
+cryptographic outputs or successor activation.
+
+A successor promotion must use a separate promotion verifier that:
+
+1. evaluates the pinned Poseidon2 permutation for every required structural
+   lifecycle state and binds the exact permutation, continuation, and output bytes;
+2. resolves and hashes every source, toolchain, executable, result, run, and
+   input-corpus artifact;
+3. enforces repository, commit, and operator independence between the
+   implementation under test, primary oracle, and second implementation or reviewer;
+4. cryptographically verifies signed review evidence rather than merely
+   accepting schema-valid signature metadata; and
+5. binds and replays the actual oracle/result bytes across the required
+   independent implementations.
+
+The committed `typed-transcript-cryptographic-outputs-v1.json` intentionally
+has `cryptographicOutputsIncluded: false`, null implementation/oracle identities,
+and zero records in all three output categories. Empty records are not wildcards.
+
+`typed-transcript-artifact-registry-v1.json` records byte lengths, SHA-256
+digests, and category counts for the design files and both vector corpora. The
+structural validator recomputes every registered value. The registry itself is
+design-only, pins base head `56ad82bba566294f674cc621275020f334031743`, and
+currently fixes `cryptographicOutputsIncluded` to false with an empty
+`provenanceArtifacts` list.
+
 `idRegistry` is the sorted projection of every ID in the positive,
 collision-negative, rejection, extraction, proof-decoding, and gateway
 categories. JSON Schema requires registry entries to be unique. The semantic
@@ -746,7 +844,8 @@ Run:
 python3 protocol/typed-transcript/validate_vectors.py
 ```
 
-The validator checks JSON Schema validity, tag/profile uniqueness, profile
+The validator checks JSON Schema validity, the outer permutation and extension
+authority, registered artifact digests/counts, tag/profile uniqueness, profile
 dimensions, exact envelope bytes and field words, consecutive counters,
 ordered nesting, event shape, base-`2^31` digit decomposition and KoalaBear
 range checks, profile-specific squeeze bounds, canonical frame construction,
@@ -757,9 +856,10 @@ decoder-only synthetic proof matrix, opaque P42 V1 gateway ordering, per-mode
 pin coverage, outcome exclusivity, and suffix preservation,
 the global ID registry, duplicate-ID mutations, and independently asserted
 pre-mutation rejection snapshots for open slices and containers. It does not
-invoke Poseidon2, SP1, a recursion executor, Gnark, a gateway contract, or a
-verifier. Its success MUST NOT be described as remediation or cryptographic
-closure.
+invoke Poseidon2, SP1, an independent oracle, a recursion executor, Gnark, a
+gateway contract, or a verifier. It rejects every true cryptographic-output
+corpus before interpreting any such claim. Its success MUST NOT be described as
+output authorization, remediation, activation evidence, or cryptographic closure.
 
 ## Closure requirements outside this artifact
 

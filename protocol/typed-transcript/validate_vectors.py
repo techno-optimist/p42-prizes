@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import jsonschema
 
@@ -27,6 +30,40 @@ def reject(code: str, message: str) -> None:
 
 def load(name: str) -> dict[str, Any]:
     return json.loads((ROOT / name).read_text(encoding="utf-8"))
+
+
+def strict_format_checker() -> jsonschema.FormatChecker:
+    checker = jsonschema.FormatChecker()
+
+    def is_uri(value: object) -> bool:
+        if not isinstance(value, str) or any(character.isspace() for character in value):
+            return False
+        parsed = urlsplit(value)
+        return bool(parsed.scheme and (parsed.netloc or parsed.scheme not in {"http", "https"}))
+
+    def is_datetime(value: object) -> bool:
+        if not isinstance(value, str) or "T" not in value:
+            return False
+        has_timezone = value.endswith("Z") or (
+            len(value) >= 6 and value[-6] in {"+", "-"} and value[-3] == ":"
+        )
+        if not has_timezone:
+            return False
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+        return parsed.tzinfo is not None
+
+    checker.checks("uri", raises=(TypeError, ValueError))(is_uri)
+    checker.checks("date-time", raises=(TypeError, ValueError))(is_datetime)
+    return checker
+
+
+def artifact_identity(name: str) -> dict[str, Any]:
+    payload = (ROOT / name).read_bytes()
+    return {
+        "path": name,
+        "byteLength": len(payload),
+        "sha256": "sha256:" + hashlib.sha256(payload).hexdigest(),
+    }
 
 
 def limbs_u64(value: int, radix: int, count: int) -> list[int]:
@@ -425,6 +462,7 @@ def validate_spec_invariants(spec: dict[str, Any]) -> None:
             "profileId": 2,
             "fieldId": 2,
             "permutationId": 2,
+            "permutation": "outer-bn254-poseidon2-width3-v1",
             "modulus": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
             "width": 3,
             "rate": 2,
@@ -480,13 +518,69 @@ def validate_spec_invariants(spec: dict[str, Any]) -> None:
         "scalarMethod": "bn254-mod-koalabear",
         "koalaBearModulus": 2130706433,
         "extensionDegree": 4,
-        "extensionBasis": "sp1-koalabear-extension4-pinned-by-successor-fork",
+        "extensionField": "koalabear-binomial-degree4-v1",
+        "extensionBasis": "1,x,x^2,x^3-mod-x^4-minus-3",
+        "extensionCoefficientOrder": "c0-c1-c2-c3",
         "bitsMethod": "low-bits",
         "minChallengeBits": 1,
         "maxChallengeBits": 30,
         "nativeBn254Challenges": False,
     }:
         reject("SPEC_OUTER_EXTRACTION", "outer challenge extraction parameters are not frozen V1")
+    expected_outer_permutation = {
+        "fieldModulus": expected_profiles["outer-bn254-rate-koalabear-v1"]["modulus"],
+        "width": 3,
+        "rate": 2,
+        "capacity": 1,
+        "sBoxExponent": 5,
+        "externalRounds": 8,
+        "internalRounds": 56,
+        "roundSchedule": "external-4-then-internal-56-then-external-4",
+        "externalMatrix": [["2", "1", "1"], ["1", "2", "1"], ["1", "1", "2"]],
+        "internalMatrix": [["2", "1", "1"], ["1", "2", "1"], ["1", "1", "3"]],
+        "roundConstants": {
+            "sourceTableRows": 64,
+            "sourceTableElements": 192,
+            "sourceTableEncoding": "row-major-64-rows-by-3-lanes-each-lane-canonical-32-byte-big-endian",
+            "sourceTableSha256": "sha256:c08ebd7b8765286f6933070d74e9a1859072e58fb7d18d17f9ca97872b93f4a2",
+            "effectiveElements": 80,
+            "effectiveEncoding": "round-order-first-4-external-all-3-lanes-then-56-internal-lane-0-only-then-last-4-external-all-3-lanes-each-lane-canonical-32-byte-big-endian",
+            "effectiveSha256": "sha256:f58a02b261e94419e962e7b72d759d7b4df69f02e25f56aea90f263dc4b03b37",
+        },
+        "upstreamSource": {
+            "repository": "https://github.com/HorizenLabs/poseidon2",
+            "commit": "055bde3f4782731ba5f5ce5888a440a94327eaf3",
+            "path": "plain_implementations/src/poseidon2/poseidon2_instance_bn256.rs",
+            "fileSha256": "sha256:7b34cc6574424ea4ea56af1a8b568f99c449e092ceaa372e5226c4308937e7ac",
+            "licenseExpression": "MIT OR Apache-2.0",
+        },
+    }
+    if spec["permutations"] != {
+        "outer-bn254-poseidon2-width3-v1": expected_outer_permutation
+    }:
+        reject("SPEC_OUTER_PERMUTATION", "outer Poseidon2 authority is not frozen V1")
+    expected_extension = {
+        "rustType": "BinomialExtensionField<KoalaBear,4>",
+        "baseFieldModulus": "2130706433",
+        "degree": 4,
+        "definingPolynomial": "x^4-3",
+        "nonresidue": "3",
+        "coefficientOrder": "c0-c1-c2-c3",
+        "laneOrder": "element-major-then-coefficients-c0-c1-c2-c3",
+        "canonicalElement": "c0+c1*x+c2*x^2+c3*x^3",
+        "canonicalCoefficientEncoding": "each-ci-is-the-unique-decimal-integer-in-[0,2130706433)-no-modular-reduction",
+        "upstreamSource": {
+            "repository": "https://github.com/Plonky3/Plonky3",
+            "commit": "5fa5e044def35d9fb7b2d8f3296c23efd5b00306",
+            "paths": [
+                "koala-bear/src/extension.rs",
+                "field/src/extension/binomial_extension.rs",
+            ],
+            "licenseExpression": "MIT OR Apache-2.0",
+        },
+    }
+    if spec["extensionFields"] != {"koalabear-binomial-degree4-v1": expected_extension}:
+        reject("SPEC_EXTENSION_FIELD", "KoalaBear degree-four extension is not frozen V1")
     expected_modes = {"core", "compressed", "shrink", "wrap", "groth16", "plonk"}
     if set(spec["proofModeRouting"]) != expected_modes:
         reject("SPEC_PROOF_MODES", "proof-mode routing matrix must be exhaustive")
@@ -933,16 +1027,109 @@ def validate_semantics(spec: dict[str, Any], vectors: dict[str, Any]) -> None:
         validate_hostile_id_mutation(vectors, mutation)
 
 
+def validate_artifact_registry(
+    registry: dict[str, Any], vectors: dict[str, Any], cryptographic: dict[str, Any]
+) -> None:
+    design_names = [
+        "typed-transcript-v1.json",
+        "typed-transcript-v1.schema.json",
+        "typed-transcript-vectors-v1.schema.json",
+        "typed-transcript-cryptographic-outputs-v1.schema.json",
+        "typed-transcript-artifact-registry-v1.schema.json",
+    ]
+    if registry["designArtifacts"] != [artifact_identity(name) for name in design_names]:
+        reject("ARTIFACT_REGISTRY_DESIGN", "registered design artifact identity is stale")
+    structural_counts = {
+        key: len(vectors[key])
+        for key in (
+            "idRegistry",
+            "positiveTranscripts",
+            "collisionNegativeTranscripts",
+            "rejectionVectors",
+            "outerChallengeExtractionVectors",
+            "proofDecodingVectors",
+            "gatewayVectors",
+            "independentStateTransitionRegressions",
+            "hostileCorpusMutations",
+            "hostileOutcomeMutations",
+        )
+    }
+    cryptographic_counts = {
+        key: len(cryptographic[key])
+        for key in ("permutationStates", "continuationStates", "extractedOutputs")
+    }
+    expected_corpora = [
+        {**artifact_identity("typed-transcript-vectors-v1.json"), "recordCounts": structural_counts},
+        {
+            **artifact_identity("typed-transcript-cryptographic-outputs-v1.json"),
+            "recordCounts": cryptographic_counts,
+        },
+    ]
+    if registry["vectorCorpora"] != expected_corpora:
+        reject("ARTIFACT_REGISTRY_VECTORS", "registered vector identity or count is stale")
+    if registry["cryptographicOutputsIncluded"] != cryptographic["cryptographicOutputsIncluded"]:
+        reject("ARTIFACT_REGISTRY_ACTIVATION", "registry and cryptographic corpus flags disagree")
+    provenance_ids = [artifact["id"] for artifact in registry["provenanceArtifacts"]]
+    if len(provenance_ids) != len(set(provenance_ids)):
+        reject("PROVENANCE_ARTIFACT_ID", "provenance artifact IDs must be unique")
+    if not cryptographic["cryptographicOutputsIncluded"] and registry["provenanceArtifacts"]:
+        reject("INACTIVE_PROVENANCE", "an empty cryptographic corpus must not claim provenance")
+
+
+def validate_cryptographic_output_semantics(
+    spec: dict[str, Any],
+    vectors: dict[str, Any],
+    cryptographic: dict[str, Any],
+    registry: dict[str, Any],
+) -> None:
+    del spec, vectors, registry
+    if cryptographic["cryptographicOutputsIncluded"]:
+        reject(
+            "CRYPTOGRAPHIC_OUTPUTS_UNSUPPORTED",
+            "design-only validator rejects every corpus containing cryptographic outputs",
+        )
+    if (
+        cryptographic["implementationUnderTest"] is not None
+        or cryptographic["independentOracle"] is not None
+    ):
+        reject(
+            "CRYPTOGRAPHIC_OUTPUT_INACTIVE",
+            "inactive corpus must not claim implementation or oracle provenance",
+        )
+    if any(
+        cryptographic[key]
+        for key in ("permutationStates", "continuationStates", "extractedOutputs")
+    ):
+        reject(
+            "CRYPTOGRAPHIC_OUTPUT_INACTIVE",
+            "inactive corpus must contain no cryptographic outputs",
+        )
+
 def main() -> None:
     spec = load("typed-transcript-v1.json")
     vectors = load("typed-transcript-vectors-v1.json")
     spec_schema = load("typed-transcript-v1.schema.json")
     vector_schema = load("typed-transcript-vectors-v1.schema.json")
+    cryptographic = load("typed-transcript-cryptographic-outputs-v1.json")
+    cryptographic_schema = load("typed-transcript-cryptographic-outputs-v1.schema.json")
+    registry = load("typed-transcript-artifact-registry-v1.json")
+    registry_schema = load("typed-transcript-artifact-registry-v1.schema.json")
+    format_checker = strict_format_checker()
     jsonschema.Draft202012Validator.check_schema(spec_schema)
     jsonschema.Draft202012Validator.check_schema(vector_schema)
-    jsonschema.Draft202012Validator(spec_schema).validate(spec)
-    jsonschema.Draft202012Validator(vector_schema).validate(vectors)
+    jsonschema.Draft202012Validator.check_schema(cryptographic_schema)
+    jsonschema.Draft202012Validator.check_schema(registry_schema)
+    jsonschema.Draft202012Validator(spec_schema, format_checker=format_checker).validate(spec)
+    jsonschema.Draft202012Validator(vector_schema, format_checker=format_checker).validate(vectors)
+    jsonschema.Draft202012Validator(
+        cryptographic_schema, format_checker=format_checker
+    ).validate(cryptographic)
+    jsonschema.Draft202012Validator(
+        registry_schema, format_checker=format_checker
+    ).validate(registry)
     validate_semantics(spec, vectors)
+    validate_cryptographic_output_semantics(spec, vectors, cryptographic, registry)
+    validate_artifact_registry(registry, vectors, cryptographic)
     print("TypedTranscriptV1 structural transcripts: valid (no cryptographic closure asserted)")
 
 

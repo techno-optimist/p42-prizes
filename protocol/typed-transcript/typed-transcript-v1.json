@@ -22,6 +22,7 @@
       "profileId": 2,
       "fieldId": 2,
       "permutationId": 2,
+      "permutation": "outer-bn254-poseidon2-width3-v1",
       "modulus": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
       "width": 3,
       "rate": 2,
@@ -32,12 +33,74 @@
       "challengeField": "koalabear"
     }
   },
+  "permutations": {
+    "outer-bn254-poseidon2-width3-v1": {
+      "fieldModulus": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+      "width": 3,
+      "rate": 2,
+      "capacity": 1,
+      "sBoxExponent": 5,
+      "externalRounds": 8,
+      "internalRounds": 56,
+      "roundSchedule": "external-4-then-internal-56-then-external-4",
+      "externalMatrix": [
+        ["2", "1", "1"],
+        ["1", "2", "1"],
+        ["1", "1", "2"]
+      ],
+      "internalMatrix": [
+        ["2", "1", "1"],
+        ["1", "2", "1"],
+        ["1", "1", "3"]
+      ],
+      "roundConstants": {
+        "sourceTableRows": 64,
+        "sourceTableElements": 192,
+        "sourceTableEncoding": "row-major-64-rows-by-3-lanes-each-lane-canonical-32-byte-big-endian",
+        "sourceTableSha256": "sha256:c08ebd7b8765286f6933070d74e9a1859072e58fb7d18d17f9ca97872b93f4a2",
+        "effectiveElements": 80,
+        "effectiveEncoding": "round-order-first-4-external-all-3-lanes-then-56-internal-lane-0-only-then-last-4-external-all-3-lanes-each-lane-canonical-32-byte-big-endian",
+        "effectiveSha256": "sha256:f58a02b261e94419e962e7b72d759d7b4df69f02e25f56aea90f263dc4b03b37"
+      },
+      "upstreamSource": {
+        "repository": "https://github.com/HorizenLabs/poseidon2",
+        "commit": "055bde3f4782731ba5f5ce5888a440a94327eaf3",
+        "path": "plain_implementations/src/poseidon2/poseidon2_instance_bn256.rs",
+        "fileSha256": "sha256:7b34cc6574424ea4ea56af1a8b568f99c449e092ceaa372e5226c4308937e7ac",
+        "licenseExpression": "MIT OR Apache-2.0"
+      }
+    }
+  },
+  "extensionFields": {
+    "koalabear-binomial-degree4-v1": {
+      "rustType": "BinomialExtensionField<KoalaBear,4>",
+      "baseFieldModulus": "2130706433",
+      "degree": 4,
+      "definingPolynomial": "x^4-3",
+      "nonresidue": "3",
+      "coefficientOrder": "c0-c1-c2-c3",
+      "laneOrder": "element-major-then-coefficients-c0-c1-c2-c3",
+      "canonicalElement": "c0+c1*x+c2*x^2+c3*x^3",
+      "canonicalCoefficientEncoding": "each-ci-is-the-unique-decimal-integer-in-[0,2130706433)-no-modular-reduction",
+      "upstreamSource": {
+        "repository": "https://github.com/Plonky3/Plonky3",
+        "commit": "5fa5e044def35d9fb7b2d8f3296c23efd5b00306",
+        "paths": [
+          "koala-bear/src/extension.rs",
+          "field/src/extension/binomial_extension.rs"
+        ],
+        "licenseExpression": "MIT OR Apache-2.0"
+      }
+    }
+  },
   "outerChallengeExtraction": {
     "source": "bn254-rate-word",
     "scalarMethod": "bn254-mod-koalabear",
     "koalaBearModulus": 2130706433,
     "extensionDegree": 4,
-    "extensionBasis": "sp1-koalabear-extension4-pinned-by-successor-fork",
+    "extensionField": "koalabear-binomial-degree4-v1",
+    "extensionBasis": "1,x,x^2,x^3-mod-x^4-minus-3",
+    "extensionCoefficientOrder": "c0-c1-c2-c3",
     "bitsMethod": "low-bits",
     "minChallengeBits": 1,
     "maxChallengeBits": 30,
