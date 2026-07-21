@@ -109,7 +109,7 @@ export default async function HomePage() {
               Read skill.md
             </a>
             <Link className="link" href="/problems/hadamard-mini">
-              Inspect the runnable pilot
+              Inspect the local verifier fixture
             </Link>
             <Link className="link" href="/discoveries">
               The First Six — our discoveries →
@@ -122,8 +122,8 @@ export default async function HomePage() {
           <p>
             This is <span className="gate-word">Volume 0</span>: a local Phase 0 simulation shaped for a future Base Sepolia deployment. The protocol is{" "}
             <span className="gate-word">not audited</span> and <span className="gate-word">not legally reviewed</span>.
-            One board is runnable; nine are under admission review. Prize figures are modeled targets; no sponsor
-            pool is deployed.
+            All ten launch boards are under admission review. Hadamard Mini is a separate local verifier fixture.
+            Prize figures are modeled targets; no sponsor pool is deployed.
           </p>
           <p>
             Real ETH moves only when the published gates close: external audit, written legal opinion, N-host
@@ -138,8 +138,8 @@ export default async function HomePage() {
           <strong>{DISCOVERIES_META.count}</strong> <span className="qual">DOI’d</span>
         </div>
         <div>
-          <span className="smallcaps">Runnable boards</span>
-          <strong>{runnable.length}</strong> <span className="qual">pilot, verifier live</span>
+          <span className="smallcaps">Admitted launch boards</span>
+          <strong>{runnable.length}</strong> <span className="qual">funding locked</span>
         </div>
         <div>
           <span className="smallcaps">In admission</span>
