@@ -278,7 +278,7 @@ def _synthetic_v2_dossier(tmp_path: Path) -> tuple[Path, Path, dict[str, object]
         "base_bindings": {"path": "protocol/production-board-bindings-v1.json",
                           "sha256": _digest_bytes(base_path.read_bytes()),
                           "schema_version": "p42-prizes/production-board-bindings/v1",
-                          "schema_sha256": "sha256:8c88f88842c8c32dd8699b250ae339a454faa95fc112049cd24148c967869f98"},
+                          "schema_sha256": "sha256:eba2bd3c9f8a0870432c1b1f5cbb7d864a2cf9ac341f739a2d78615a79d19cad"},
         "authority_registry": {"path": "protocol/objective-proof-promotion-authorities-v1.json",
                                "sha256": registry_digest,
                                "pin_path": "protocol/objective-proof-promotion-authorities-v1.sha256"},
