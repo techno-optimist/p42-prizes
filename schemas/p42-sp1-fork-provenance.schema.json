@@ -1,0 +1,330 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.ai/schemas/p42-sp1-fork-provenance.schema.json",
+  "title": "P42 SP1 Fork Provenance v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "issue",
+    "activationEligible",
+    "upstream",
+    "fork",
+    "imports",
+    "typedTranscript",
+    "toolchain",
+    "wrappingKeys",
+    "requiredLanes",
+    "advisoryDatabase",
+    "advisories",
+    "cryptographicReview",
+    "supplyChain",
+    "activationBlockers"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "p42-sp1-fork-provenance/v1" },
+    "issue": { "$ref": "#/$defs/issue" },
+    "activationEligible": { "const": false },
+    "upstream": { "$ref": "#/$defs/upstream" },
+    "fork": { "$ref": "#/$defs/fork" },
+    "imports": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/import" }
+    },
+    "typedTranscript": { "$ref": "#/$defs/typedTranscript" },
+    "toolchain": { "$ref": "#/$defs/toolchain" },
+    "wrappingKeys": { "$ref": "#/$defs/wrappingKeys" },
+    "requiredLanes": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": { "$ref": "#/$defs/lane" }
+    },
+    "advisoryDatabase": { "$ref": "#/$defs/advisoryDatabase" },
+    "advisories": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/advisory" }
+    },
+    "cryptographicReview": { "$ref": "#/$defs/cryptographicReview" },
+    "supplyChain": { "$ref": "#/$defs/supplyChain" },
+    "activationBlockers": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "ADVISORIES_OPEN",
+          "BOOTSTRAP_ONLY_VULNERABLE_BASE",
+          "CRYPTOGRAPHIC_REVIEW_ABSENT",
+          "FORK_RELEASE_UNSEALED",
+          "LICENSE_EVIDENCE_INCOMPLETE",
+          "REQUIRED_LANES_INCOMPLETE",
+          "SBOM_MISSING",
+          "TOOLCHAIN_UNPINNED",
+          "TRANSCRIPT_SUCCESSOR_MISSING",
+          "WRAPPING_KEYS_MISSING"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "nullableCommit": { "oneOf": [{ "$ref": "#/$defs/commit" }, { "type": "null" }] },
+    "nullableSha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+    "nullableString": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "number", "url"],
+      "properties": {
+        "repository": { "const": "https://github.com/techno-optimist/p42-prizes" },
+        "number": { "const": 164 },
+        "url": { "const": "https://github.com/techno-optimist/p42-prizes/issues/164" }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "verified", "provider", "verifiedAt", "evidenceUrl", "reason"],
+      "properties": {
+        "status": { "enum": ["absent", "missing", "verified", "invalid"] },
+        "verified": { "type": "boolean" },
+        "provider": { "$ref": "#/$defs/nullableString" },
+        "verifiedAt": {
+          "oneOf": [
+            { "type": "string", "format": "date-time" },
+            { "type": "null" }
+          ]
+        },
+        "evidenceUrl": { "$ref": "#/$defs/nullableString" },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "commit"],
+      "properties": {
+        "repository": { "const": "https://github.com/succinctlabs/sp1" },
+        "tag": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "ref", "kind", "targetCommit", "signature"],
+          "properties": {
+            "name": { "const": "v6.3.1" },
+            "ref": { "const": "refs/tags/v6.3.1" },
+            "kind": { "const": "lightweight" },
+            "targetCommit": { "const": "8252c2905ce32964df68248117015c61ebb854db" },
+            "signature": { "$ref": "#/$defs/signature" }
+          }
+        },
+        "commit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sha", "parent", "signature"],
+          "properties": {
+            "sha": { "const": "8252c2905ce32964df68248117015c61ebb854db" },
+            "parent": { "const": "0ec8c4abbc206ed14754ff46525c6b85fe048fbc" },
+            "signature": { "$ref": "#/$defs/signature" }
+          }
+        }
+      }
+    },
+    "fork": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expectedRepository",
+        "expectedTag",
+        "expectedTagRef",
+        "immutabilityPolicy",
+        "forkCommit",
+        "annotatedTagObject",
+        "tagTargetCommit",
+        "tagSignature"
+      ],
+      "properties": {
+        "expectedRepository": { "const": "https://github.com/techno-optimist/p42-sp1" },
+        "expectedTag": { "const": "p42-sp1-v6.3.1-ttv1-v1" },
+        "expectedTagRef": { "const": "refs/tags/p42-sp1-v6.3.1-ttv1-v1" },
+        "immutabilityPolicy": { "const": "signed-annotated-tag-no-retargeting" },
+        "forkCommit": { "$ref": "#/$defs/nullableCommit" },
+        "annotatedTagObject": { "$ref": "#/$defs/nullableCommit" },
+        "tagTargetCommit": { "$ref": "#/$defs/nullableCommit" },
+        "tagSignature": { "$ref": "#/$defs/signature" }
+      }
+    },
+    "import": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "source", "checksum", "archiveSha256", "ancestry"],
+      "properties": {
+        "name": { "enum": ["p3-challenger", "p3-symmetric", "lru"] },
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$" },
+        "source": { "const": "registry+https://github.com/rust-lang/crates.io-index" },
+        "checksum": { "$ref": "#/$defs/sha256" },
+        "archiveSha256": { "$ref": "#/$defs/sha256" },
+        "ancestry": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository", "vcsCommit", "vcsParents", "pathInVcs", "cargoVcsDirty", "importedByCommit", "lockfilePath"],
+          "properties": {
+            "repository": { "type": "string", "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\\.git)?$" },
+            "vcsCommit": { "$ref": "#/$defs/commit" },
+            "vcsParents": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 2,
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/commit" }
+            },
+            "pathInVcs": { "type": "string" },
+            "cargoVcsDirty": { "type": "boolean" },
+            "importedByCommit": { "const": "8252c2905ce32964df68248117015c61ebb854db" },
+            "lockfilePath": { "const": "Cargo.lock" }
+          }
+        }
+      }
+    },
+    "typedTranscript": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["draft", "requiredSuccessor"],
+      "properties": {
+        "draft": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sourceCommit", "vectorDigest", "classification", "promotable", "sourceUrl"],
+          "properties": {
+            "sourceCommit": { "const": "57d7240f29b2d1cdbe72c8ee4fba6e38cda3b632" },
+            "vectorDigest": { "const": "sha256:3dab794af40f745fa95e77a0c52a58393d0734e73e2317f82f4d59d40a6a3935" },
+            "classification": { "const": "superseded" },
+            "promotable": { "const": false },
+            "sourceUrl": { "const": "https://github.com/techno-optimist/p42-prizes/pull/190" }
+          }
+        },
+        "requiredSuccessor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sourceCommit", "vectorDigest", "classification", "independentReviewDigest"],
+          "properties": {
+            "sourceCommit": { "$ref": "#/$defs/nullableCommit" },
+            "vectorDigest": { "$ref": "#/$defs/nullableSha256" },
+            "classification": { "enum": ["missing", "reviewed-release"] },
+            "independentReviewDigest": { "$ref": "#/$defs/nullableSha256" }
+          }
+        }
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "cargoProveExecutableSha256", "guestToolchainTreeSha256", "rustToolchain", "cudaToolkit"],
+      "properties": {
+        "status": { "enum": ["placeholder", "pinned"] },
+        "cargoProveExecutableSha256": { "$ref": "#/$defs/nullableSha256" },
+        "guestToolchainTreeSha256": { "$ref": "#/$defs/nullableSha256" },
+        "rustToolchain": { "$ref": "#/$defs/nullableString" },
+        "cudaToolkit": { "$ref": "#/$defs/nullableString" }
+      }
+    },
+    "wrappingKeys": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "recursionVkRootSha256", "groth16VkSha256", "plonkVkSha256"],
+      "properties": {
+        "status": { "enum": ["placeholder", "generated-reviewed"] },
+        "recursionVkRootSha256": { "$ref": "#/$defs/nullableSha256" },
+        "groth16VkSha256": { "$ref": "#/$defs/nullableSha256" },
+        "plonkVkSha256": { "$ref": "#/$defs/nullableSha256" }
+      }
+    },
+    "lane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "os", "osVersion", "architecture", "accelerator", "status", "evidenceDigest"],
+      "properties": {
+        "id": {
+          "enum": [
+            "ubuntu-22.04-x86_64-cpu",
+            "ubuntu-24.04-x86_64-cpu",
+            "ubuntu-24.04-arm64-cpu",
+            "ubuntu-22.04-x86_64-cuda",
+            "ubuntu-24.04-arm64-cuda"
+          ]
+        },
+        "os": { "const": "ubuntu" },
+        "osVersion": { "enum": ["22.04", "24.04"] },
+        "architecture": { "enum": ["x86_64", "arm64"] },
+        "accelerator": { "enum": ["cpu", "cuda"] },
+        "status": { "enum": ["required-not-run", "passed"] },
+        "evidenceDigest": { "$ref": "#/$defs/nullableSha256" }
+      }
+    },
+    "advisoryDatabase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "tree", "committedAt"],
+      "properties": {
+        "repository": { "const": "https://github.com/github/advisory-database" },
+        "commit": { "const": "314fa838bac2f27d35f27f10b244afb1cbaa6eff" },
+        "tree": { "const": "ac9ad0dbca843525755ebc29dc0d54d9ad3318fd" },
+        "committedAt": { "const": "2026-07-20T22:31:46Z" }
+      }
+    },
+    "advisory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "package", "severity", "status", "dispositionEvidenceDigest"],
+      "properties": {
+        "id": { "enum": ["GHSA-vj64-rjf3-w3v7", "GHSA-3g92-f9ch-qjcm", "GHSA-rhfx-m35p-ff5j"] },
+        "package": { "enum": ["p3-challenger", "p3-symmetric", "lru"] },
+        "severity": { "enum": ["low", "moderate", "high", "critical"] },
+        "status": { "enum": ["open", "fixed", "not-affected-reviewed"] },
+        "dispositionEvidenceDigest": { "$ref": "#/$defs/nullableSha256" }
+      }
+    },
+    "cryptographicReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reviewer", "reportDigest"],
+      "properties": {
+        "status": { "enum": ["missing", "approved"] },
+        "reviewer": { "$ref": "#/$defs/nullableString" },
+        "reportDigest": { "$ref": "#/$defs/nullableSha256" }
+      }
+    },
+    "supplyChain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["licenses", "sbom"],
+      "properties": {
+        "licenses": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "inventoryDigest", "textsIncluded", "noticesIncluded"],
+          "properties": {
+            "status": { "enum": ["missing", "complete-reviewed"] },
+            "inventoryDigest": { "$ref": "#/$defs/nullableSha256" },
+            "textsIncluded": { "type": "boolean" },
+            "noticesIncluded": { "type": "boolean" }
+          }
+        },
+        "sbom": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "format", "documentDigest"],
+          "properties": {
+            "status": { "enum": ["missing", "complete-reviewed"] },
+            "format": { "const": "CycloneDX-1.6-JSON" },
+            "documentDigest": { "$ref": "#/$defs/nullableSha256" }
+          }
+        }
+      }
+    }
+  }
+}

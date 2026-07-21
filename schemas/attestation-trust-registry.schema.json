@@ -20,6 +20,16 @@
       "type": "array",
       "minItems": 1,
       "items": { "$ref": "#/$defs/registration" }
+    },
+    "artifact_pins": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sp1_fork_authority_registry": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
     }
   },
   "$defs": {

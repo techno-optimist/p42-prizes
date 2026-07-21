@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.ai/prizes/protocol/p42-sp1-fork-provenance-v2.schema.json",
+  "title": "P42 SP1 Fork Provenance Successor v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "activationEligible", "issuedAtUtc", "maxEvidenceAgeSeconds", "bootstrapReceiptDigest", "authorityRegistry", "fork", "toolchain", "wrappingKeys", "typedTranscript", "advisoryDisposition", "cryptographicReview", "licenseInventory", "sbom", "successorIdentityDigest", "requiredLanes", "crossLaneOutputDigest"],
+  "properties": {
+    "schemaVersion": {"const": "p42-sp1-fork-provenance/v2"},
+    "activationEligible": {"const": true},
+    "issuedAtUtc": {"$ref": "#/$defs/time"},
+    "maxEvidenceAgeSeconds": {"type": "integer", "minimum": 1, "maximum": 2678400},
+    "bootstrapReceiptDigest": {"$ref": "#/$defs/digest"},
+    "authorityRegistry": {"$ref": "#/$defs/artifact"},
+    "fork": {"$ref": "#/$defs/fork"},
+    "toolchain": {"$ref": "#/$defs/toolchain"},
+    "wrappingKeys": {"$ref": "#/$defs/wrappingKeys"},
+    "typedTranscript": {"$ref": "#/$defs/transcript"},
+    "advisoryDisposition": {"$ref": "#/$defs/artifact"},
+    "cryptographicReview": {"$ref": "#/$defs/artifact"},
+    "licenseInventory": {"$ref": "#/$defs/artifact"},
+    "sbom": {"$ref": "#/$defs/artifact"},
+    "successorIdentityDigest": {"$ref": "#/$defs/digest"},
+    "requiredLanes": {"type": "array", "minItems": 5, "maxItems": 5, "items": {"$ref": "#/$defs/laneRef"}},
+    "crossLaneOutputDigest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "gitObjectId": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "identity": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$"},
+    "time": {"type": "string", "format": "date-time"},
+    "artifact": {
+      "type": "object", "additionalProperties": false, "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$"},
+        "sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "signature": {
+      "type": "object", "additionalProperties": false, "required": ["algorithm", "value"],
+      "properties": {"algorithm": {"const": "ed25519"}, "value": {"type": "string", "pattern": "^ed25519:[0-9a-f]{128}$"}}
+    },
+    "fork": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repository", "tag", "tagRef", "forkCommit", "annotatedTagObject", "tagObjectSha256", "tagObjectId", "tagTargetCommit", "repositoryEvidence", "signerIdentityId", "signature"],
+      "properties": {
+        "repository": {"const": "https://github.com/techno-optimist/p42-sp1"},
+        "tag": {"type": "string", "pattern": "^p42-sp1-v[0-9A-Za-z.-]+$"},
+        "tagRef": {"type": "string", "pattern": "^refs/tags/p42-sp1-v[0-9A-Za-z.-]+$"},
+        "forkCommit": {"$ref": "#/$defs/gitObjectId"},
+        "annotatedTagObject": {"$ref": "#/$defs/artifact"},
+        "tagObjectSha256": {"$ref": "#/$defs/digest"},
+        "tagObjectId": {"$ref": "#/$defs/gitObjectId"},
+        "tagTargetCommit": {"$ref": "#/$defs/gitObjectId"},
+        "repositoryEvidence": {"$ref": "#/$defs/artifact"},
+        "signerIdentityId": {"$ref": "#/$defs/identity"},
+        "signature": {"$ref": "#/$defs/signature"}
+      }
+    },
+    "toolchain": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cargoProveManifest", "guestToolchainManifest", "rustToolchainManifest", "cudaToolkitManifest"],
+      "properties": {
+        "cargoProveManifest": {"$ref": "#/$defs/artifact"},
+        "guestToolchainManifest": {"$ref": "#/$defs/artifact"},
+        "rustToolchainManifest": {"$ref": "#/$defs/artifact"},
+        "cudaToolkitManifest": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "wrappingKeys": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recursionVkRoot", "groth16Vk", "plonkVk"],
+      "properties": {
+        "recursionVkRoot": {"$ref": "#/$defs/artifact"},
+        "groth16Vk": {"$ref": "#/$defs/artifact"},
+        "plonkVk": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "transcript": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source", "vector", "independentReview"],
+      "properties": {
+        "source": {"$ref": "#/$defs/artifact"},
+        "vector": {"$ref": "#/$defs/artifact"},
+        "independentReview": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "laneRef": {
+      "type": "object", "additionalProperties": false, "required": ["id", "receipt"],
+      "properties": {
+        "id": {"enum": ["ubuntu-22.04-x86_64-cpu", "ubuntu-24.04-x86_64-cpu", "ubuntu-24.04-arm64-cpu", "ubuntu-22.04-x86_64-cuda", "ubuntu-24.04-arm64-cuda"]},
+        "receipt": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "laneReceipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "laneId", "successorIdentityDigest", "commandIdentity", "testVectorIdentity", "outputType", "operatorIdentityId", "operatorId", "operatorOrganization", "ownershipGroup", "hardwareIdentity", "hardwareFingerprint", "os", "osVersion", "architecture", "libc", "accelerator", "executionMode", "evidence", "outputDigest", "observedAtUtc", "artifactHash", "signature"],
+      "properties": {
+        "schemaVersion": {"const": "p42-sp1-native-lane-receipt/v1"},
+        "laneId": {"type": "string"},
+        "successorIdentityDigest": {"$ref": "#/$defs/digest"},
+        "commandIdentity": {"$ref": "#/$defs/digest"},
+        "testVectorIdentity": {"$ref": "#/$defs/digest"},
+        "outputType": {"const": "sp1-proof-artifact"},
+        "operatorIdentityId": {"$ref": "#/$defs/identity"},
+        "operatorId": {"$ref": "#/$defs/identity"},
+        "operatorOrganization": {"$ref": "#/$defs/identity"},
+        "ownershipGroup": {"$ref": "#/$defs/identity"},
+        "hardwareIdentity": {"$ref": "#/$defs/artifact"},
+        "hardwareFingerprint": {"$ref": "#/$defs/digest"},
+        "os": {"const": "ubuntu"},
+        "osVersion": {"enum": ["22.04", "24.04"]},
+        "architecture": {"enum": ["x86_64", "arm64"]},
+        "libc": {"type": "string", "pattern": "^glibc-[0-9]+\\.[0-9]+$"},
+        "accelerator": {"enum": ["cpu", "cuda"]},
+        "executionMode": {"const": "native"},
+        "evidence": {"$ref": "#/$defs/artifact"},
+        "outputDigest": {"$ref": "#/$defs/digest"},
+        "observedAtUtc": {"$ref": "#/$defs/time"},
+        "artifactHash": {"$ref": "#/$defs/digest"},
+        "signature": {"$ref": "#/$defs/signature"}
+      }
+    },
+    "laneEvidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "laneId", "successorIdentityDigest", "commandIdentity", "testVectorIdentity", "outputType", "observedAtUtc", "output", "outputDigest", "result"],
+      "properties": {
+        "schemaVersion": {"const": "p42-sp1-native-lane-evidence/v1"},
+        "laneId": {"type": "string"},
+        "successorIdentityDigest": {"$ref": "#/$defs/digest"},
+        "commandIdentity": {"$ref": "#/$defs/digest"},
+        "testVectorIdentity": {"$ref": "#/$defs/digest"},
+        "outputType": {"const": "sp1-proof-artifact"},
+        "observedAtUtc": {"$ref": "#/$defs/time"},
+        "output": {"$ref": "#/$defs/artifact"},
+        "outputDigest": {"$ref": "#/$defs/digest"},
+        "result": {"const": "passed"}
+      }
+    },
+    "toolchainManifest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "kind", "version", "payload"],
+      "properties": {
+        "schemaVersion": {"const": "p42-sp1-toolchain-manifest/v1"},
+        "kind": {"enum": ["cargo-prove", "guest-toolchain", "rust-toolchain", "cuda-toolkit"]},
+        "version": {"type": "string", "minLength": 3},
+        "payload": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "transcriptSource": {
+      "type": "object", "additionalProperties": false, "required": ["schemaVersion", "repository", "sourceCommit", "treeId"],
+      "properties": {"schemaVersion": {"const": "p42-sp1-transcript-source/v1"}, "repository": {"type": "string", "pattern": "^https://"}, "sourceCommit": {"$ref": "#/$defs/gitObjectId"}, "treeId": {"$ref": "#/$defs/gitObjectId"}}
+    },
+    "transcriptVector": {
+      "type": "object", "additionalProperties": false, "required": ["schemaVersion", "sourceCommit", "vectorId", "cases"],
+      "properties": {"schemaVersion": {"const": "p42-sp1-transcript-vector/v1"}, "sourceCommit": {"$ref": "#/$defs/gitObjectId"}, "vectorId": {"$ref": "#/$defs/identity"}, "cases": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}}
+    },
+    "transcriptReview": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "sourceCommit", "vectorSha256", "decision", "reviewerIdentityId", "artifactHash", "signature"],
+      "properties": {"schemaVersion": {"const": "p42-sp1-transcript-review/v1"}, "sourceCommit": {"$ref": "#/$defs/gitObjectId"}, "vectorSha256": {"$ref": "#/$defs/digest"}, "decision": {"const": "approve"}, "reviewerIdentityId": {"$ref": "#/$defs/identity"}, "artifactHash": {"$ref": "#/$defs/digest"}, "signature": {"$ref": "#/$defs/signature"}}
+    },
+    "advisoryDisposition": {
+      "type": "object", "additionalProperties": false, "required": ["schemaVersion", "advisoryDatabaseCommit", "findings"],
+      "properties": {"schemaVersion": {"const": "p42-sp1-advisory-disposition/v1"}, "advisoryDatabaseCommit": {"$ref": "#/$defs/gitObjectId"}, "findings": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "object", "additionalProperties": false, "required": ["id", "package", "status"], "properties": {"id": {"type": "string", "pattern": "^GHSA-"}, "package": {"type": "string", "minLength": 1}, "status": {"enum": ["fixed", "not-affected-reviewed"]}}}}}
+    },
+    "cryptographicReview": {
+      "type": "object", "additionalProperties": false, "required": ["schemaVersion", "forkCommit", "decision", "reviewerIdentityId", "artifactHash", "signature"],
+      "properties": {"schemaVersion": {"const": "p42-sp1-cryptographic-review/v1"}, "forkCommit": {"$ref": "#/$defs/gitObjectId"}, "decision": {"const": "approve"}, "reviewerIdentityId": {"$ref": "#/$defs/identity"}, "artifactHash": {"$ref": "#/$defs/digest"}, "signature": {"$ref": "#/$defs/signature"}}
+    },
+    "licenseInventory": {
+      "type": "object", "additionalProperties": false, "required": ["schemaVersion", "forkCommit", "packages", "textsIncluded", "noticesIncluded"],
+      "properties": {"schemaVersion": {"const": "p42-sp1-license-inventory/v1"}, "forkCommit": {"$ref": "#/$defs/gitObjectId"}, "packages": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}, "textsIncluded": {"const": true}, "noticesIncluded": {"const": true}}
+    },
+    "sbom": {
+      "type": "object", "additionalProperties": false, "required": ["schemaVersion", "bomFormat", "specVersion", "forkCommit", "components"],
+      "properties": {"schemaVersion": {"const": "p42-sp1-sbom/v1"}, "bomFormat": {"const": "CycloneDX"}, "specVersion": {"const": "1.6"}, "forkCommit": {"$ref": "#/$defs/gitObjectId"}, "components": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}}
+    },
+    "repositoryEvidence": {
+      "type": "object", "additionalProperties": false, "required": ["schemaVersion", "repository", "tagRef", "tagObjectId", "tagObject", "commitObjectId", "commitObject", "treeObjectId", "treeObject"],
+      "properties": {"schemaVersion": {"const": "p42-sp1-git-object-manifest/v1"}, "repository": {"const": "https://github.com/techno-optimist/p42-sp1"}, "tagRef": {"type": "string", "pattern": "^refs/tags/"}, "tagObjectId": {"$ref": "#/$defs/gitObjectId"}, "tagObject": {"$ref": "#/$defs/artifact"}, "commitObjectId": {"$ref": "#/$defs/gitObjectId"}, "commitObject": {"$ref": "#/$defs/artifact"}, "treeObjectId": {"$ref": "#/$defs/gitObjectId"}, "treeObject": {"$ref": "#/$defs/artifact"}}
+    },
+    "hardwareIdentity": {
+      "type": "object", "additionalProperties": false, "required": ["schemaVersion", "operatorOrganization", "ownershipGroup", "architecture", "cpuModel", "acceleratorModel", "hostSerialDigest"],
+      "properties": {"schemaVersion": {"const": "p42-sp1-host-hardware-identity/v1"}, "operatorOrganization": {"$ref": "#/$defs/identity"}, "ownershipGroup": {"$ref": "#/$defs/identity"}, "architecture": {"enum": ["x86_64", "arm64"]}, "cpuModel": {"type": "string", "minLength": 3}, "acceleratorModel": {"type": "string", "minLength": 3}, "hostSerialDigest": {"$ref": "#/$defs/digest"}}
+    }
+  }
+}

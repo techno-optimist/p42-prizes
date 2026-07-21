@@ -322,6 +322,7 @@
         "production_release_verification",
         "production_release_slate",
         "production_board_bindings",
+        "sp1_fork_provenance",
         "verifier_image_release",
         "verifier_image_publication_journal",
         "release_capsule",
@@ -342,7 +343,8 @@
         "operational_controls": { "$ref": "#/$defs/artifact" },
         "production_release_verification": { "$ref": "#/$defs/artifact" },
         "production_release_slate": { "$ref": "#/$defs/artifact" },
-        "production_board_bindings": { "$ref": "#/$defs/artifact" },
+        "production_board_bindings": { "$ref": "#/$defs/activationReadyBoardArtifact" },
+        "sp1_fork_provenance": { "$ref": "#/$defs/forkProvenanceArtifact" },
         "verifier_image_release": { "$ref": "#/$defs/artifact" },
         "verifier_image_publication_journal": { "$ref": "#/$defs/artifact" },
         "release_capsule": { "$ref": "#/$defs/artifact" },
@@ -353,6 +355,30 @@
         "activation_rpc_operator_registry": { "$ref": "#/$defs/artifact" },
         "production_timestamp_dossier": { "$ref": "#/$defs/artifact" },
         "service_probe_endpoint_registry": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "forkProvenanceArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "uri", "local_path", "sha256", "created_at_utc"],
+      "properties": {
+        "schema_version": {"const": "p42-sp1-fork-provenance/v2"},
+        "uri": {"type": "string", "minLength": 1},
+        "local_path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+"},
+        "sha256": {"$ref": "#/$defs/hash"},
+        "created_at_utc": {"type": "string", "format": "date-time"}
+      }
+    },
+    "activationReadyBoardArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "uri", "local_path", "sha256", "created_at_utc"],
+      "properties": {
+        "schema_version": {"const": "p42-prizes/production-board-bindings/v2"},
+        "uri": {"type": "string", "minLength": 1},
+        "local_path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+"},
+        "sha256": {"$ref": "#/$defs/hash"},
+        "created_at_utc": {"type": "string", "format": "date-time"}
       }
     },
     "problemReview": {

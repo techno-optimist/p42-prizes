@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
+import sys
 
 import jsonschema
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from attestation_helpers import AttestationFixture, attach_signatures
+from test_production_board_bindings import _make_activation_ready_exact_ten, _synthetic_v2_dossier
+import scripts.verify_production_board_bindings as board_bindings_module
 import p42_prizes.launch_authorization as launch_module
 from p42_prizes.launch_authorization import (
     LaunchAuthorizationError,
@@ -618,6 +622,7 @@ def test_launch_authorization_schema_resolves_canonical_binding_and_validates_in
         "security_audit", "legal_memo", "governance_signoff", "incident_drill",
         "adversarial_campaign", "operational_controls", "production_release_verification",
         "production_release_slate", "production_board_bindings", "release_capsule",
+        "sp1_fork_provenance",
         "verifier_image_release", "verifier_image_publication_journal",
         "deployment_manifest", "reconciliation_report", "explorer_dossier",
         "explorer_operator_policy", "activation_rpc_operator_registry", "production_timestamp_dossier",
@@ -632,7 +637,19 @@ def test_launch_authorization_schema_resolves_canonical_binding_and_validates_in
         "chain_id": 84532,
         "funding_mode": "testnet-only",
         "release_binding": release_binding,
-        "artifacts": {name: artifact for name in artifact_names},
+        "artifacts": {
+            name: (
+                artifact | {
+                    "schema_version": (
+                        "p42-sp1-fork-provenance/v2"
+                        if name == "sp1_fork_provenance"
+                        else "p42-prizes/production-board-bindings/v2"
+                    ),
+                }
+                if name in {"sp1_fork_provenance", "production_board_bindings"} else artifact
+            )
+            for name in artifact_names
+        },
         "problem_reviews": [
             {
                 "problem_id": str(index),
@@ -695,6 +712,168 @@ def test_launch_authorization_schema_resolves_canonical_binding_and_validates_in
     }
 
     _enforce_gate_schema(authorization, "production-launch-authorization.schema.json")
+
+
+def test_launch_authorization_schema_requires_pinned_sp1_successor() -> None:
+    schema = json.loads((ROOT / "schemas/production-launch-authorization.schema.json").read_text())
+    artifacts = schema["$defs"]["artifacts"]
+    assert "sp1_fork_provenance" in artifacts["required"]
+    assert (
+        schema["$defs"]["forkProvenanceArtifact"]["properties"]["schema_version"]["const"]
+        == "p42-sp1-fork-provenance/v2"
+    )
+    assert "authority_registry_sha256" not in schema["$defs"]["forkProvenanceArtifact"]["properties"]
+
+
+@pytest.mark.parametrize(
+    ("attack", "message"),
+    [
+        ("wrong-version", "requires pinned SP1 fork provenance v2"),
+        ("wrong-digest", "does not match resolved bytes"),
+        ("bootstrap-v1", "schema version does not match launch binding"),
+        ("non-eligible", "successor is ineligible"),
+    ],
+)
+def test_launch_authorization_rejects_sp1_successor_bypasses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attack: str,
+    message: str,
+) -> None:
+    fixture = AttestationFixture(tmp_path)
+    receipt = {
+        "schemaVersion": (
+            "p42-sp1-fork-provenance/v1" if attack == "bootstrap-v1"
+            else "p42-sp1-fork-provenance/v2"
+        ),
+        "activationEligible": attack != "non-eligible",
+    }
+    ref = fixture.artifact(
+        "sp1-successor", content=(canonical_json(receipt) + "\n").encode("ascii")
+    ) | {
+        "schema_version": (
+            "p42-sp1-fork-provenance/v1" if attack == "wrong-version"
+            else "p42-sp1-fork-provenance/v2"
+        )
+    }
+    if attack == "wrong-digest":
+        ref["sha256"] = "sha256:" + hashlib.sha256(b"wrong receipt bytes").hexdigest()
+    if attack != "non-eligible":
+        monkeypatch.setattr(
+            launch_module,
+            "run_bounded_process",
+            lambda *args, **kwargs: type("Result", (), {
+                "returncode": 0,
+                "stdout": "",
+                "stderr": "",
+            })(),
+        )
+    trust_registry = fixture.trust_registry(
+        "p42-production-launch-authorization/v1", [], include_capsule_authority=False
+    )
+    trust_registry["artifact_pins"] = {
+        "sp1_fork_authority_registry": "sha256:" + hashlib.sha256(b"trusted registry").hexdigest()
+    }
+    context = launch_module.build_attestation_context(
+        "p42-production-launch-authorization/v1",
+        trust_registry=trust_registry,
+        artifact_root=tmp_path,
+        chain_reader=None,
+        error_type=LaunchAuthorizationError,
+    )
+    with pytest.raises(LaunchAuthorizationError, match=message):
+        launch_module._validate_sp1_fork_provenance_for_launch(ref, context)
+
+
+def test_launch_rejects_successor_with_self_supplied_attacker_registry(tmp_path: Path) -> None:
+    root, _dossier_path, dossier = _synthetic_v2_dossier(tmp_path)
+    dependency_ref = dossier["records"][0]["promotion"]["dependency_security"]
+    dependency = json.loads((root / dependency_ref["path"]).read_text())
+    successor_ref = dependency["claims"]["fork_provenance"]
+    launch_ref = {
+        "schema_version": "p42-sp1-fork-provenance/v2",
+        "uri": "repo://" + successor_ref["path"],
+        "local_path": successor_ref["path"],
+        "sha256": successor_ref["sha256"],
+        "created_at_utc": "2026-07-19T12:00:00Z",
+    }
+    trust_registry = {
+        "schema_version": "p42-attestation-trust-registry/v1",
+        "environment": "test",
+        "registry_id": "trusted-launch-root",
+        "created_at_utc": "2026-07-01T00:00:00Z",
+        "registrations": [],
+        "artifact_pins": {
+            "sp1_fork_authority_registry": "sha256:" + hashlib.sha256(b"independent trusted registry").hexdigest()
+        },
+    }
+    context = build_attestation_context(
+        "p42-production-launch-authorization/v1", trust_registry=trust_registry,
+        artifact_root=root, chain_reader=None, error_type=LaunchAuthorizationError,
+    )
+    with pytest.raises(LaunchAuthorizationError, match="authority registry does not match"):
+        launch_module._validate_sp1_fork_provenance_for_launch(launch_ref, context)
+
+
+def test_launch_rejects_exit_zero_ineligible_v2_and_accepts_signed_activation_ready_exact_ten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, dossier_path, dossier = _synthetic_v2_dossier(tmp_path)
+    _make_activation_ready_exact_ten(root, dossier)
+    original = board_bindings_module.verify_board_bindings
+    slugs = [record["slug"] for record in dossier["records"]]
+
+    def fast(repo_root: Path, path: Path, **kwargs):
+        if Path(path).name == "production-board-bindings-v1.json":
+            return {slug: False for slug in slugs}
+        return original(repo_root, path, **kwargs)
+
+    monkeypatch.setattr(board_bindings_module, "verify_board_bindings", fast)
+    promotion = dossier["records"][0]["promotion"]
+    dependency = json.loads((root / promotion["dependency_security"]["path"]).read_text())
+    expected = dependency["claims"]["fork_provenance_receipt_digest"]
+    dossier["activation_state"] = "promotion-evidence"
+    for record in dossier["records"]:
+        record["activation_eligible"] = False
+    dossier_path.write_text(json.dumps(dossier))
+    assert not any(board_bindings_module.verify_board_bindings(root, dossier_path).values())
+    monkeypatch.setattr(
+        sys, "argv",
+        ["verify_production_board_bindings.py", "--repo-root", str(root),
+         "--dossier", str(dossier_path)],
+    )
+    assert board_bindings_module.main() == 0
+    with pytest.raises(LaunchAuthorizationError, match="activation-ready"):
+        launch_module._require_exact_ten_board_fork_provenance(dossier, root, expected)
+
+    dossier["activation_state"] = "activation-ready"
+    for record in dossier["records"]:
+        record["activation_eligible"] = True
+    dossier_path.write_text(json.dumps(dossier))
+    assert all(board_bindings_module.verify_board_bindings(
+        root, dossier_path, expected_fork_provenance_digest=expected,
+        require_activation_ready=True,
+    ).values())
+    monkeypatch.setattr(
+        sys, "argv",
+        ["verify_production_board_bindings.py", "--repo-root", str(root),
+         "--dossier", str(dossier_path), "--expected-fork-provenance-digest", expected,
+         "--require-activation-ready"],
+    )
+    assert board_bindings_module.main() == 0
+    launch_module._require_exact_ten_board_fork_provenance(dossier, root, expected)
+
+    substituted = copy.deepcopy(dossier)
+    release_ref = copy.deepcopy(substituted["records"][4]["promotion"]["release_receipt"])
+    release = json.loads((root / release_ref["path"]).read_text())
+    release["claims"]["fork_provenance_receipt_digest"] = "sha256:" + hashlib.sha256(b"other successor").hexdigest()
+    substituted_path = root / "evidence/release-substituted.json"
+    substituted_path.write_text(canonical_json(release) + "\n", encoding="ascii")
+    release_ref["path"] = substituted_path.relative_to(root).as_posix()
+    release_ref["sha256"] = "sha256:" + hashlib.sha256(substituted_path.read_bytes()).hexdigest()
+    substituted["records"][4]["promotion"]["release_receipt"] = release_ref
+    with pytest.raises(LaunchAuthorizationError, match="does not bind the launch"):
+        launch_module._require_exact_ten_board_fork_provenance(substituted, root, expected)
 
 
 def test_launch_composition_rejects_historical_v1_legal_memo() -> None:
@@ -1176,7 +1355,10 @@ def _math_review_packet(tmp_path: Path) -> tuple[dict, dict, object, dict]:
     return packet, row, context, registry
 
 
-def _image_release_for_problem_reviews(board_bindings: dict, slate_boards: list[dict]) -> dict:
+def _image_release_for_problem_reviews(
+    board_bindings: dict, slate_boards: list[dict], *, base_bindings: dict | None = None
+) -> dict:
+    source_records = (base_bindings or board_bindings)["records"]
     return {
         "verifier_source_commit": "2" * 40,
         "verifier_source_archive_digest": "sha256:" + "1" * 64,
@@ -1189,8 +1371,76 @@ def _image_release_for_problem_reviews(board_bindings: dict, slate_boards: list[
                 "version": record["verifier"]["version"],
                 "index_digest": slate["verifierImageDigest"],
             }
-            for record, slate in zip(board_bindings["records"], slate_boards, strict=True)
+            for record, slate in zip(source_records, slate_boards, strict=True)
         ],
+    }
+
+
+def _activation_ready_problem_review_fixture(tmp_path: Path) -> dict[str, object]:
+    root, dossier_path, board_bindings = _synthetic_v2_dossier(tmp_path)
+    _make_activation_ready_exact_ten(root, board_bindings)
+    dossier_path.write_text(json.dumps(board_bindings), encoding="utf-8")
+    base_bindings = json.loads(
+        (root / board_bindings["base_bindings"]["path"]).read_text(encoding="utf-8")
+    )
+    bindings_digest = sha256_bytes(canonical_json(board_bindings).encode("utf-8"))
+    reviews = []
+    admitted = []
+    deployed = []
+    slate_boards = []
+    for index, (activation_record, base_record) in enumerate(
+        zip(board_bindings["records"], base_bindings["records"], strict=True), start=1
+    ):
+        problem_id = str(index)
+        image_digest = "sha256:" + f"{100 + index:064x}"
+        matrix_digest = "sha256:" + f"{200 + index:064x}"
+        review_hash = "sha256:" + f"{300 + index:064x}"
+        reviews.append({
+            "problem_id": problem_id,
+            "problem_slug": activation_record["slug"],
+            "board_bindings_digest": bindings_digest,
+            "board_binding_hash": sha256_bytes(canonical_json(activation_record).encode("utf-8")),
+            "verifier_image_digest": image_digest,
+            "admission_matrix_digest": matrix_digest,
+            "math_review_artifact": {"review_hash": review_hash},
+            "review_status": "approved",
+            "review_hash": review_hash,
+        })
+        admitted.append({
+            "problemId": problem_id, "problemSlug": activation_record["slug"],
+            "matrixDigest": matrix_digest,
+        })
+        deployed.append({
+            "problemId": problem_id, "problemSlug": activation_record["slug"],
+            "verifierImageDigest": image_digest, "admissionMatrixDigest": matrix_digest,
+        })
+        slate_boards.append({
+            "problemId": problem_id,
+            "problemSlug": activation_record["slug"],
+            "problemPath": f"problems/{activation_record['slug']}",
+            "verifierVersion": base_record["verifier"]["version"],
+            "specHash": "0x" + base_record["specification"]["sha256"].removeprefix("sha256:"),
+            "verifierSourceDigest": base_record["verifier"]["source_tree_sha256"],
+            "verifierImageDigest": image_digest,
+        })
+
+    class Context:
+        artifact_root = root
+        chain_reader = None
+
+    return {
+        "root": root,
+        "dossier_path": dossier_path,
+        "board_bindings": board_bindings,
+        "base_bindings": base_bindings,
+        "reviews": reviews,
+        "release_report": {"sourceCommit": "1" * 40, "admittedBoards": admitted},
+        "release_slate": {"sourceCommit": "1" * 40, "boards": slate_boards},
+        "deployment_manifest": {"problems": deployed, "releaseEvidence": {}},
+        "image_release": _image_release_for_problem_reviews(
+            board_bindings, slate_boards, base_bindings=base_bindings
+        ),
+        "context": Context(),
     }
 
 
@@ -1228,7 +1478,7 @@ def test_launch_replay_rejects_supplied_board_packet_not_frozen(
     image_release, image_ref, context, journal_ref, release = _frozen_replay_fixture(tmp_path)
     snapshot = tmp_path / "snapshot"
     (snapshot / "protocol").mkdir(parents=True)
-    (snapshot / "protocol/production-board-bindings-v1.json").write_text('{"canonical":true}')
+    (snapshot / "protocol/production-board-bindings-v2.json").write_text('{"canonical":true}')
     monkeypatch.setattr(
         launch_module, "run_bounded_process",
         lambda *args, **kwargs: type("Result", (), {"returncode": 0})(),
@@ -1244,10 +1494,14 @@ def test_launch_replay_rejects_supplied_board_packet_not_frozen(
             image_release=image_release,
             image_release_ref=image_ref,
             publication_journal_ref=journal_ref,
-            board_bindings={"canonical": False},
+            board_bindings={
+                "schema_version": "p42-prizes/production-board-bindings/v2",
+                "activation_state": "activation-ready",
+            },
             release_report={"sourceCommit": release["sourceCommit"]},
             release_slate=release["slate"],
             context=context,
+            fork_provenance_digest="sha256:" + "4" * 64,
         )
 
 
@@ -1272,10 +1526,14 @@ def test_launch_replay_rejects_failed_exact_ten_frozen_checkout(
             image_release=image_release,
             image_release_ref=image_ref,
             publication_journal_ref=journal_ref,
-            board_bindings={},
+            board_bindings={
+                "schema_version": "p42-prizes/production-board-bindings/v2",
+                "activation_state": "activation-ready",
+            },
             release_report={"sourceCommit": release["sourceCommit"]},
             release_slate=release["slate"],
             context=context,
+            fork_provenance_digest="sha256:" + "4" * 64,
         )
 
 
@@ -1291,6 +1549,7 @@ def test_launch_replay_rejects_image_release_r_substitution(tmp_path: Path) -> N
             release_report={"sourceCommit": release["sourceCommit"]},
             release_slate=release["slate"],
             context=context,
+            fork_provenance_digest="sha256:" + "4" * 64,
         )
 
 
@@ -1627,111 +1886,120 @@ def test_math_review_rejects_incomplete_remediation_coverage(tmp_path: Path) -> 
         )
 
 
-def test_problem_reviews_bind_the_exact_canonical_claim_record(
-    monkeypatch: pytest.MonkeyPatch,
+def test_activation_ready_v2_exact_ten_composes_through_promotion_and_problem_reviews(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    board_bindings = json.loads(
-        (ROOT / "protocol/production-board-bindings-v1.json").read_text(encoding="utf-8")
-    )
-    bindings_digest = sha256_bytes(canonical_json(board_bindings).encode("utf-8"))
-    reviews = []
-    admitted = []
-    deployed = []
-    slate_boards = []
-    for index, record in enumerate(board_bindings["records"], start=1):
-        problem_id = str(index)
-        image_digest = "sha256:" + f"{100 + index:064x}"
-        matrix_digest = "sha256:" + f"{200 + index:064x}"
-        review_hash = "sha256:" + f"{300 + index:064x}"
-        reviews.append(
-            {
-                "problem_id": problem_id,
-                "problem_slug": record["slug"],
-                "board_bindings_digest": bindings_digest,
-                "board_binding_hash": sha256_bytes(canonical_json(record).encode("utf-8")),
-                "verifier_image_digest": image_digest,
-                "admission_matrix_digest": matrix_digest,
-                "math_review_artifact": {"review_hash": review_hash},
-                "review_status": "approved",
-                "review_hash": review_hash,
-            }
-        )
-        admitted.append(
-            {
-                "problemId": problem_id,
-                "problemSlug": record["slug"],
-                "matrixDigest": matrix_digest,
-            }
-        )
-        deployed.append(
-            {
-                "problemId": problem_id,
-                "problemSlug": record["slug"],
-                "verifierImageDigest": image_digest,
-                "admissionMatrixDigest": matrix_digest,
-            }
-        )
-        slate_boards.append(
-            {
-                "problemId": problem_id,
-                "problemSlug": record["slug"],
-                "problemPath": f"problems/{record['slug']}",
-                "verifierVersion": record["verifier"]["version"],
-                "specHash": "0x" + record["specification"]["sha256"].removeprefix("sha256:"),
-                    "verifierSourceDigest": record["verifier"]["source_tree_sha256"],
-                    "verifierImageDigest": image_digest,
-            }
-        )
+    fixture = _activation_ready_problem_review_fixture(tmp_path)
+    board_bindings = fixture["board_bindings"]
+    reviews = fixture["reviews"]
+    root = fixture["root"]
+    dossier_path = fixture["dossier_path"]
     monkeypatch.setattr(launch_module, "_read_json_artifact", lambda value, *args, **kwargs: value)
     monkeypatch.setattr(launch_module, "_validate_math_review", lambda *args, **kwargs: None)
     monkeypatch.setattr(launch_module, "build_attestation_context", lambda *args, **kwargs: None)
 
-    class Context:
-        artifact_root = ROOT
-        chain_reader = None
+    original = board_bindings_module.verify_board_bindings
+    slugs = [record["slug"] for record in board_bindings["records"]]
+
+    def fast(repo_root: Path, path: Path, **kwargs):
+        if Path(path).name == "production-board-bindings-v1.json":
+            return {slug: False for slug in slugs}
+        return original(repo_root, path, **kwargs)
+
+    monkeypatch.setattr(board_bindings_module, "verify_board_bindings", fast)
+    dependency_ref = board_bindings["records"][0]["promotion"]["dependency_security"]
+    dependency = json.loads((root / dependency_ref["path"]).read_text())
+    expected_fork_digest = dependency["claims"]["fork_provenance_receipt_digest"]
+    assert all(board_bindings_module.verify_board_bindings(
+        root, dossier_path,
+        expected_fork_provenance_digest=expected_fork_digest,
+        require_activation_ready=True,
+    ).values())
+    launch_module._require_exact_ten_board_fork_provenance(
+        board_bindings, root, expected_fork_digest
+    )
 
     _validate_problem_reviews(
         reviews,
-        release_report={"sourceCommit": "1" * 40, "admittedBoards": admitted},
-        release_slate={"sourceCommit": "1" * 40, "boards": slate_boards},
-        deployment_manifest={"problems": deployed, "releaseEvidence": {}},
+        release_report=fixture["release_report"],
+        release_slate=fixture["release_slate"],
+        deployment_manifest=fixture["deployment_manifest"],
         board_bindings=board_bindings,
-        image_release=_image_release_for_problem_reviews(board_bindings, slate_boards),
+        image_release=fixture["image_release"],
         trust_registry={},
-        context=Context(),
+        context=fixture["context"],
         issued=datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
     )
 
+    slate_boards = fixture["release_slate"]["boards"]
     original_source_digest = slate_boards[0]["verifierSourceDigest"]
     slate_boards[0]["verifierSourceDigest"] = "sha256:" + "9" * 64
     with pytest.raises(LaunchAuthorizationError, match="does not match release slate"):
         _validate_problem_reviews(
             reviews,
-            release_report={"sourceCommit": "1" * 40, "admittedBoards": admitted},
-            release_slate={"sourceCommit": "1" * 40, "boards": slate_boards},
-            deployment_manifest={"problems": deployed, "releaseEvidence": {}},
+            release_report=fixture["release_report"],
+            release_slate=fixture["release_slate"],
+            deployment_manifest=fixture["deployment_manifest"],
             board_bindings=board_bindings,
-            image_release=_image_release_for_problem_reviews(board_bindings, slate_boards),
+            image_release=fixture["image_release"],
             trust_registry={},
-            context=Context(),
+            context=fixture["context"],
             issued=datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
         )
     slate_boards[0]["verifierSourceDigest"] = original_source_digest
 
-    board_bindings["records"][0]["claim_scope"] += " substituted"
+    board_bindings["records"][0]["promotion"]["release_receipt"]["sha256"] = (
+        "sha256:" + "9" * 64
+    )
     substituted_digest = sha256_bytes(canonical_json(board_bindings).encode("utf-8"))
     for review in reviews:
         review["board_bindings_digest"] = substituted_digest
     with pytest.raises(LaunchAuthorizationError, match="board binding hash mismatch"):
         _validate_problem_reviews(
             reviews,
-            release_report={"sourceCommit": "1" * 40, "admittedBoards": admitted},
-            release_slate={"sourceCommit": "1" * 40, "boards": slate_boards},
-            deployment_manifest={"problems": deployed, "releaseEvidence": {}},
+            release_report=fixture["release_report"],
+            release_slate=fixture["release_slate"],
+            deployment_manifest=fixture["deployment_manifest"],
             board_bindings=board_bindings,
-            image_release=_image_release_for_problem_reviews(board_bindings, slate_boards),
+            image_release=fixture["image_release"],
             trust_registry={},
-            context=Context(),
+            context=fixture["context"],
+            issued=datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
+        )
+
+
+@pytest.mark.parametrize(
+    ("attack", "message"),
+    [
+        ("v1", "schema validation"),
+        ("promotion-evidence", "activation-ready"),
+        ("base-substitution", "does not bind its exact v1 base record"),
+    ],
+)
+def test_problem_review_composition_rejects_non_activation_v2_and_substitution(
+    tmp_path: Path, attack: str, message: str
+) -> None:
+    fixture = _activation_ready_problem_review_fixture(tmp_path)
+    board_bindings = copy.deepcopy(fixture["board_bindings"])
+    if attack == "v1":
+        board_bindings = copy.deepcopy(fixture["base_bindings"])
+    elif attack == "promotion-evidence":
+        board_bindings["activation_state"] = "promotion-evidence"
+        for record in board_bindings["records"]:
+            record["activation_eligible"] = False
+    else:
+        board_bindings["records"][0]["v1_record_sha256"] = "sha256:" + "9" * 64
+
+    with pytest.raises(LaunchAuthorizationError, match=message):
+        _validate_problem_reviews(
+            fixture["reviews"],
+            release_report=fixture["release_report"],
+            release_slate=fixture["release_slate"],
+            deployment_manifest=fixture["deployment_manifest"],
+            board_bindings=board_bindings,
+            image_release=fixture["image_release"],
+            trust_registry={},
+            context=fixture["context"],
             issued=datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
         )
 
@@ -1763,56 +2031,24 @@ def test_problem_reviews_reject_reordered_board_bindings(
 
 
 def test_problem_reviews_reject_reordered_review_packets(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    board_bindings = json.loads(
-        (ROOT / "protocol/production-board-bindings-v1.json").read_text(encoding="utf-8")
-    )
-    bindings_digest = sha256_bytes(canonical_json(board_bindings).encode("utf-8"))
-    reviews = []
-    admitted = []
-    deployed = []
-    slate_boards = []
-    for index, record in enumerate(board_bindings["records"], start=1):
-        problem_id = str(index)
-        image_digest = "sha256:" + f"{100 + index:064x}"
-        matrix_digest = "sha256:" + f"{200 + index:064x}"
-        review_hash = "sha256:" + f"{300 + index:064x}"
-        reviews.append({
-            "problem_id": problem_id,
-            "problem_slug": record["slug"],
-            "board_bindings_digest": bindings_digest,
-            "board_binding_hash": sha256_bytes(canonical_json(record).encode("utf-8")),
-            "verifier_image_digest": image_digest,
-            "admission_matrix_digest": matrix_digest,
-            "math_review_artifact": {"review_hash": review_hash},
-            "review_status": "approved",
-            "review_hash": review_hash,
-        })
-        admitted.append({"problemId": problem_id, "problemSlug": record["slug"], "matrixDigest": matrix_digest})
-        deployed.append({"problemId": problem_id, "problemSlug": record["slug"], "verifierImageDigest": image_digest, "admissionMatrixDigest": matrix_digest})
-        slate_boards.append({
-            "problemId": problem_id,
-            "problemSlug": record["slug"],
-            "problemPath": f"problems/{record['slug']}",
-            "verifierVersion": record["verifier"]["version"],
-            "specHash": "0x" + record["specification"]["sha256"].removeprefix("sha256:"),
-                "verifierSourceDigest": record["verifier"]["source_tree_sha256"],
-                "verifierImageDigest": image_digest,
-        })
+    fixture = _activation_ready_problem_review_fixture(tmp_path)
+    board_bindings = fixture["board_bindings"]
+    reviews = fixture["reviews"]
     reviews[0], reviews[1] = reviews[1], reviews[0]
     monkeypatch.setattr(launch_module, "_read_json_artifact", lambda value, *args, **kwargs: value)
 
     with pytest.raises(LaunchAuthorizationError, match="ordered canonical board binding"):
         _validate_problem_reviews(
             reviews,
-            release_report={"sourceCommit": "1" * 40, "admittedBoards": admitted},
-            release_slate={"sourceCommit": "1" * 40, "boards": slate_boards},
-            deployment_manifest={"problems": deployed, "releaseEvidence": {}},
+            release_report=fixture["release_report"],
+            release_slate=fixture["release_slate"],
+            deployment_manifest=fixture["deployment_manifest"],
             board_bindings=board_bindings,
-            image_release=_image_release_for_problem_reviews(board_bindings, slate_boards),
+            image_release=fixture["image_release"],
             trust_registry={},
-            context=None,
+            context=fixture["context"],
             issued=datetime(2026, 7, 8, 17, tzinfo=timezone.utc),
         )
 
@@ -2029,6 +2265,14 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
             "records": [],
         },
     )
+    artifacts["production_board_bindings"]["schema_version"] = (
+        "p42-prizes/production-board-bindings/v2"
+    )
+    artifacts["sp1_fork_provenance"] = fixture.artifact(
+        "sp1-fork-provenance-placeholder", content={"schemaVersion": "p42-sp1-fork-provenance/v2"}
+    ) | {
+        "schema_version": "p42-sp1-fork-provenance/v2",
+    }
     artifacts["verifier_image_release"] = fixture.artifact(
         "verifier-image-release", content={"schema_version": "test-image-release"}
     )

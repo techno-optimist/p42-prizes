@@ -15,10 +15,18 @@ from typing import Any, Mapping
 
 import jsonschema
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT / "src"))
+
 from p42_prizes.admission import compute_source_hash, run_verifier_once
 from p42_prizes.legal import _verify_ed25519, ethereum_keccak256
 from p42_prizes.problem import load_manifest
 from p42_prizes.verdict import canonical_json
+try:
+    from scripts.verify_sp1_fork_provenance import validate_successor_artifact
+except ModuleNotFoundError:  # Direct execution puts scripts/ first on sys.path.
+    from verify_sp1_fork_provenance import validate_successor_artifact
 
 
 class BoardBindingError(ValueError):
@@ -88,12 +96,13 @@ MAX_MATH_REVIEW_FIXTURES = 256
 MAX_MATH_REVIEW_FIXTURE_BYTES = 4 * 1024 * 1024
 V1_SCHEMA_VERSION = "p42-prizes/production-board-bindings/v1"
 V2_SCHEMA_VERSION = "p42-prizes/production-board-bindings/v2"
-CANONICAL_V1_BINDINGS_DIGEST = "sha256:680090532cc0ee0ebe9084abc32a2176942ee0865277d7fd5aef1ad443e38f7d"
+CANONICAL_V1_BINDINGS_DIGEST = "sha256:471e08fbc5d6d72b7e835d8acababdf2cbd16bf0cd925bac88138b5b1e70ab4a"
 CANONICAL_BOARD_SET_DIGEST = "sha256:1519ea83e14b780a3b0818890a5be45cc72a71b62cf1ed7b4b4d9582702b6cc8"
 CANONICAL_V1_SCHEMA_DIGEST = "sha256:8c88f88842c8c32dd8699b250ae339a454faa95fc112049cd24148c967869f98"
 AUTHORITY_REGISTRY_PATH = "protocol/objective-proof-promotion-authorities-v1.json"
 AUTHORITY_PIN_PATH = "protocol/objective-proof-promotion-authorities-v1.sha256"
 EVIDENCE_SCHEMA_PATH = "protocol/objective-proof-promotion-evidence-v2.schema.json"
+FORK_PROVENANCE_SCHEMA_PATH = "protocol/p42-sp1-fork-provenance-v2.schema.json"
 PROMOTION_SIGNATURE_DOMAIN = b"P42-OBJECTIVE-PROMOTION-V2\0"
 HOST_SIGNATURE_DOMAIN = b"P42-OBJECTIVE-HOST-ENTRY-V2\0"
 EVIDENCE_ROLE_BY_SCHEMA = {
@@ -529,8 +538,9 @@ def _verify_typed_promotion(
     evaluated_at: datetime,
     max_age_seconds: int,
     minimum_hosts: int,
+    authority_registry_digest: str,
     prefix: str,
-) -> None:
+) -> str:
     refs: dict[str, Mapping[str, Any]] = {
         "program_identity": promotion["program_identity"],
         "proof_receipt": promotion["proof_receipt"],
@@ -653,6 +663,26 @@ def _verify_typed_promotion(
     if runtime_claims["operator_id"] != runtime_identity["operator_id"]:
         raise BoardBindingError(f"{prefix} external runtime operator is not trusted")
 
+    dependency_claims = evidence["dependency_security"]["claims"]
+    provenance_ref = dependency_claims["fork_provenance"]
+    if provenance_ref["sha256"] != dependency_claims["fork_provenance_receipt_digest"]:
+        raise BoardBindingError(f"{prefix} dependency clearance fork-provenance digest is inconsistent")
+    provenance_path = _verify_ref(
+        root, provenance_ref, f"{prefix}.dependency_security.claims.fork_provenance"
+    )
+    provenance = _load_canonical_json(provenance_path, f"{prefix} SP1 fork provenance successor")
+    if provenance.get("schemaVersion") != dependency_claims["fork_provenance_schema_version"]:
+        raise BoardBindingError(f"{prefix} dependency clearance fork-provenance schema version mismatch")
+    provenance_schema = _load_json(root / FORK_PROVENANCE_SCHEMA_PATH, "SP1 fork provenance successor schema")
+    try:
+        validate_successor_artifact(
+            dict(provenance), dict(provenance_schema), root,
+            authorities=authorities,
+            expected_registry_digest=authority_registry_digest,
+        )
+    except ValueError as exc:
+        raise BoardBindingError(f"{prefix} SP1 fork provenance successor is ineligible: {exc}") from exc
+
     release_claims = release["claims"]
     expected_release_digests = {
         "proof_receipt_digest": proof_digest,
@@ -661,6 +691,7 @@ def _verify_typed_promotion(
         "economics_digest": evidence["economics"]["artifact_hash"],
         "host_matrix_digest": evidence["host_matrix"]["artifact_hash"],
         "dependency_security_digest": evidence["dependency_security"]["artifact_hash"],
+        "fork_provenance_receipt_digest": dependency_claims["fork_provenance_receipt_digest"],
         "external_runtime_digest": evidence["external_runtime"]["artifact_hash"],
     }
     for field, digest in expected_release_digests.items():
@@ -672,9 +703,19 @@ def _verify_typed_promotion(
 
     for name, value in evidence.items():
         _require_fresh(value["issued_at_utc"], f"{prefix}.{name}.issued_at_utc", evaluated_at, max_age_seconds)
+    return dependency_claims["fork_provenance_receipt_digest"]
 
 
-def _verify_v2_bindings(root: Path, dossier: Mapping[str, Any]) -> dict[str, bool]:
+def _verify_v2_bindings(
+    root: Path,
+    dossier: Mapping[str, Any],
+    *,
+    expected_fork_provenance_digest: str | None = None,
+    require_activation_ready: bool = False,
+) -> dict[str, bool]:
+    activation_ready = dossier["activation_state"] == "activation-ready"
+    if require_activation_ready and not activation_ready:
+        raise BoardBindingError("launch requires an activation-ready v2 exact-ten dossier")
     if dossier["base_bindings"]["sha256"] != CANONICAL_V1_BINDINGS_DIGEST:
         raise BoardBindingError("v2 base bindings digest is not the pinned canonical v1 digest")
     if dossier["board_set"]["sha256"] != CANONICAL_BOARD_SET_DIGEST:
@@ -715,25 +756,44 @@ def _verify_v2_bindings(root: Path, dossier: Mapping[str, Any]) -> dict[str, boo
     evidence_schema = _load_json(root / EVIDENCE_SCHEMA_PATH, "objective-proof typed evidence schema")
     evaluated_at = _utc_timestamp(dossier["evaluated_at_utc"], "evaluated_at_utc")
     eligibility: dict[str, bool] = {}
+    promotion_fork_digests: list[str] = []
     for index, (record, base_record) in enumerate(zip(records, base_records, strict=True)):
         prefix = f"records[{index}] ({record['slug']}).promotion"
         if record["v1_record_sha256"] != _canonical_digest(base_record):
             raise BoardBindingError(f"records[{index}].v1_record_sha256 substitutes the canonical v1 record")
+        if activation_ready and record["promotion"] is None:
+            raise BoardBindingError(f"records[{index}] activation-ready state requires a signed promotion")
         if record["promotion"] is not None:
-            _verify_typed_promotion(
+            promotion_fork_digests.append(_verify_typed_promotion(
                 root, record["slug"], record["promotion"], authorities, evidence_schema,
                 evaluated_at=evaluated_at,
                 max_age_seconds=dossier["max_evidence_age_seconds"],
                 minimum_hosts=dossier["minimum_independent_hosts"],
+                authority_registry_digest=dossier["authority_registry"]["sha256"],
                 prefix=prefix,
+            ))
+        if record["activation_eligible"] is not activation_ready:
+            raise BoardBindingError(
+                f"records[{index}].activation_eligible does not match the verified v2 activation state"
             )
-        if record["activation_eligible"] is not False:
-            raise BoardBindingError(f"records[{index}].activation_eligible must remain false until cryptographic replay v3")
-        eligibility[record["slug"]] = False
+        eligibility[record["slug"]] = activation_ready
+    if activation_ready and len(promotion_fork_digests) != len(records):
+        raise BoardBindingError("activation-ready v2 dossier requires exact-ten signed objective-proof promotions")
+    if expected_fork_provenance_digest is not None:
+        if len(promotion_fork_digests) != len(records):
+            raise BoardBindingError("launch-bound v2 dossier requires exact-ten objective-proof promotions")
+        if set(promotion_fork_digests) != {expected_fork_provenance_digest}:
+            raise BoardBindingError("production promotions do not bind the expected fork-provenance digest")
     return eligibility
 
 
-def verify_board_bindings(root: Path, dossier_path: Path) -> dict[str, bool]:
+def verify_board_bindings(
+    root: Path,
+    dossier_path: Path,
+    *,
+    expected_fork_provenance_digest: str | None = None,
+    require_activation_ready: bool = False,
+) -> dict[str, bool]:
     root = root.resolve()
     dossier = _load_json(dossier_path, "production board bindings")
     version = dossier.get("schema_version") if isinstance(dossier, Mapping) else None
@@ -752,7 +812,14 @@ def verify_board_bindings(root: Path, dossier_path: Path) -> dict[str, bool]:
         raise BoardBindingError(f"production board bindings schema validation failed: {exc.message}") from exc
 
     if version == V2_SCHEMA_VERSION:
-        return _verify_v2_bindings(root, dossier)
+        return _verify_v2_bindings(
+            root, dossier,
+            expected_fork_provenance_digest=expected_fork_provenance_digest,
+            require_activation_ready=require_activation_ready,
+        )
+
+    if require_activation_ready:
+        raise BoardBindingError("launch requires activation-ready production board bindings v2")
 
     board_set_path = _verify_ref(root, dossier["board_set"], "board_set")
     board_set = _load_json(board_set_path, "production board set")
@@ -873,6 +940,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Verify the exact-ten production board source dossier")
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--dossier", default="protocol/production-board-bindings-v1.json")
+    parser.add_argument("--expected-fork-provenance-digest")
+    parser.add_argument("--require-activation-ready", action="store_true")
     parser.add_argument(
         "--refresh-source-digests",
         action="store_true",
@@ -888,7 +957,12 @@ def main() -> int:
             refresh_source_digests(root, dossier)
             print("REFRESHED: exact-ten production board source identities")
         else:
-            verify_board_bindings(root, dossier)
+            verify_board_bindings(
+                root,
+                dossier,
+                expected_fork_provenance_digest=args.expected_fork_provenance_digest,
+                require_activation_ready=args.require_activation_ready,
+            )
     except (BoardBindingError, KeyError, TypeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

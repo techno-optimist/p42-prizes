@@ -670,6 +670,7 @@ def normalize_launch_authorization(
     expected_artifacts = {
         *GATE_NORMALIZERS,
         "production_release_verification", "production_release_slate", "production_board_bindings",
+        "sp1_fork_provenance",
         "verifier_image_release", "verifier_image_publication_journal", "release_capsule",
         "deployment_manifest", "reconciliation_report", "explorer_dossier",
         "explorer_operator_policy", "activation_rpc_operator_registry", "production_timestamp_dossier",
@@ -714,6 +715,9 @@ def normalize_launch_authorization(
         context,
     )
     _validate_release_report(release_report, release_binding)
+    fork_provenance_digest = _validate_sp1_fork_provenance_for_launch(
+        artifacts["sp1_fork_provenance"], context
+    )
     release_slate = _read_json_artifact(
         artifacts["production_release_slate"],
         "authorization.artifacts.production_release_slate",
@@ -732,10 +736,21 @@ def normalize_launch_authorization(
         authorization.get("operational_wallet_recheck"), operational_report,
         release_binding, issued, context,
     )
+    board_ref = artifacts["production_board_bindings"]
+    if (
+        not isinstance(board_ref, Mapping)
+        or board_ref.get("schema_version") != "p42-prizes/production-board-bindings/v2"
+    ):
+        raise LaunchAuthorizationError(
+            "launch requires an explicitly activation-ready v2 production board artifact"
+        )
     board_bindings = _read_json_artifact(
-        artifacts["production_board_bindings"],
+        board_ref,
         "authorization.artifacts.production_board_bindings",
         context,
+    )
+    _require_exact_ten_board_fork_provenance(
+        board_bindings, Path(artifact_root), fork_provenance_digest
     )
     image_release_ref = _validate_artifact_reference(
         artifacts["verifier_image_release"],
@@ -761,6 +776,7 @@ def normalize_launch_authorization(
         board_bindings=board_bindings,
         release_report=release_report,
         release_slate=release_slate,
+        fork_provenance_digest=fork_provenance_digest,
         context=context,
     )
     manifest = _read_json_artifact(artifacts["deployment_manifest"], "authorization.artifacts.deployment_manifest", context)
@@ -859,6 +875,111 @@ def _require_production_legal_memo(report: Mapping[str, Any]) -> None:
         raise LaunchAuthorizationError(
             f"legal_memo must use {PRODUCTION_LEGAL_MEMO_SCHEMA_VERSION} for production launch composition"
         )
+
+
+def _validate_sp1_fork_provenance_for_launch(
+    value: Any,
+    context: AttestationValidationContext,
+) -> str:
+    prefix = "authorization.artifacts.sp1_fork_provenance"
+    ref = _validate_artifact_reference(value, prefix, LaunchAuthorizationError, context)
+    if ref.get("schema_version") != "p42-sp1-fork-provenance/v2":
+        raise LaunchAuthorizationError("launch authorization requires pinned SP1 fork provenance v2")
+    pins = context.trust_registry.get("artifact_pins")
+    registry_digest = pins.get("sp1_fork_authority_registry") if isinstance(pins, Mapping) else None
+    if not isinstance(registry_digest, str):
+        raise LaunchAuthorizationError(
+            "trusted launch registry must pin the SP1 fork authority-registry digest"
+        )
+    payload = context.resolved_artifacts[(ref["local_path"], ref["sha256"])]
+    try:
+        receipt = loads_strict_json(payload)
+        canonical = (canonical_json(receipt) + "\n").encode("ascii")
+    except (TypeError, ValueError, UnicodeDecodeError, UnicodeEncodeError) as exc:
+        raise LaunchAuthorizationError("SP1 fork provenance receipt is not canonical JSON") from exc
+    if not isinstance(receipt, dict) or payload != canonical:
+        raise LaunchAuthorizationError("SP1 fork provenance receipt bytes are not exact canonical JSON")
+    if receipt.get("schemaVersion") != ref["schema_version"]:
+        raise LaunchAuthorizationError("SP1 fork provenance receipt schema version does not match launch binding")
+    validator_root = _SCHEMA_DIR.parent
+    script = validator_root / "scripts" / "verify_sp1_fork_provenance.py"
+    schema = validator_root / "protocol" / "p42-sp1-fork-provenance-v2.schema.json"
+    artifact = Path(context.artifact_root) / ref["local_path"]
+    try:
+        result = run_bounded_process(
+            [
+                sys.executable, str(script), "--artifact", str(artifact),
+                "--schema", str(schema), "--artifact-root", str(context.artifact_root),
+                "--expected-authority-registry-digest", registry_digest,
+            ],
+            cwd=validator_root,
+            env={"PATH": os.environ.get("PATH", os.defpath), "PYTHONPATH": str(validator_root / "src")},
+            timeout=30,
+            stdout_limit=64 * 1024,
+            stderr_limit=64 * 1024,
+        )
+    except (OSError, OutputLimitExceeded, subprocess.TimeoutExpired) as exc:
+        raise LaunchAuthorizationError("SP1 fork provenance validator could not complete") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise LaunchAuthorizationError(f"SP1 fork provenance successor is ineligible: {detail}")
+    return ref["sha256"]
+
+
+def _require_exact_ten_board_fork_provenance(
+    board_bindings: Mapping[str, Any], artifact_root: Path, expected_digest: str
+) -> None:
+    if board_bindings.get("schema_version") != "p42-prizes/production-board-bindings/v2":
+        raise LaunchAuthorizationError("launch requires v2 production board promotion bindings")
+    if board_bindings.get("activation_state") != "activation-ready":
+        raise LaunchAuthorizationError("launch requires activation-ready v2 production board bindings")
+    records = board_bindings.get("records")
+    if not isinstance(records, list) or len(records) != 10:
+        raise LaunchAuthorizationError("launch requires exact-ten production board promotions")
+
+    def load_ref(ref: Any, label: str) -> Mapping[str, Any]:
+        if not isinstance(ref, Mapping) or set(ref) != {"path", "sha256"}:
+            raise LaunchAuthorizationError(f"{label} must be an exact board artifact reference")
+        relative = Path(str(ref["path"]))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise LaunchAuthorizationError(f"{label} escapes the launch artifact root")
+        try:
+            path = (artifact_root / relative).resolve(strict=True)
+            path.relative_to(artifact_root.resolve())
+        except (OSError, ValueError) as exc:
+            raise LaunchAuthorizationError(f"{label} is not locally resolved") from exc
+        payload = path.read_bytes()
+        if sha256_bytes(payload) != ref["sha256"]:
+            raise LaunchAuthorizationError(f"{label} resolved-byte digest mismatch")
+        try:
+            value = loads_strict_json(payload)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise LaunchAuthorizationError(f"{label} is not strict JSON") from exc
+        if not isinstance(value, Mapping) or payload != (canonical_json(dict(value)) + "\n").encode("ascii"):
+            raise LaunchAuthorizationError(f"{label} is not canonical JSON")
+        return value
+
+    for index, record in enumerate(records):
+        if not isinstance(record, Mapping) or record.get("activation_eligible") is not True:
+            raise LaunchAuthorizationError(
+                f"production board {index} is not explicitly activation eligible"
+            )
+        promotion = record.get("promotion") if isinstance(record, Mapping) else None
+        if not isinstance(promotion, Mapping):
+            raise LaunchAuthorizationError(f"production board {index} has no objective-proof promotion")
+        dependency = load_ref(promotion.get("dependency_security"), f"board[{index}].dependency_security")
+        release = load_ref(promotion.get("release_receipt"), f"board[{index}].release_receipt")
+        dependency_claims = dependency.get("claims")
+        release_claims = release.get("claims")
+        if (
+            not isinstance(dependency_claims, Mapping)
+            or dependency_claims.get("fork_provenance_receipt_digest") != expected_digest
+            or not isinstance(release_claims, Mapping)
+            or release_claims.get("fork_provenance_receipt_digest") != expected_digest
+        ):
+            raise LaunchAuthorizationError(
+                f"production board {index} does not bind the launch SP1 fork-provenance receipt"
+            )
 
 
 def _read_json_artifact(value: Any, prefix: str, context: AttestationValidationContext) -> dict[str, Any]:
@@ -1505,6 +1626,7 @@ def _validate_frozen_board_release(
     board_bindings: Mapping[str, Any],
     release_report: Mapping[str, Any],
     release_slate: Mapping[str, Any],
+    fork_provenance_digest: str,
     context: AttestationValidationContext,
 ) -> None:
     release_commit = image_release.get("release_config_commit")
@@ -1524,9 +1646,21 @@ def _validate_frozen_board_release(
 
     def verify_snapshot(snapshot: Path) -> None:
         script = validator_root / "scripts" / "verify_production_board_bindings.py"
+        if (
+            board_bindings.get("schema_version") != "p42-prizes/production-board-bindings/v2"
+            or board_bindings.get("activation_state") != "activation-ready"
+        ):
+            raise AdmissionError("launch replay requires activation-ready production board bindings v2")
+        bindings_name = "production-board-bindings-v2.json"
+        command = [
+            sys.executable, str(script), "--repo-root", str(snapshot),
+            "--dossier", f"protocol/{bindings_name}",
+            "--require-activation-ready",
+            "--expected-fork-provenance-digest", fork_provenance_digest,
+        ]
         try:
             result = run_bounded_process(
-                [sys.executable, str(script), "--repo-root", str(snapshot)],
+                command,
                 cwd=validator_root,
                 env={
                     "PATH": os.environ.get("PATH", os.defpath),
@@ -1540,7 +1674,7 @@ def _validate_frozen_board_release(
             raise AdmissionError("exact-ten frozen board replay failed")
         try:
             frozen_bindings = loads_strict_json(
-                (snapshot / "protocol" / "production-board-bindings-v1.json").read_bytes()
+                (snapshot / "protocol" / bindings_name).read_bytes()
             )
         except (OSError, ValueError, UnicodeDecodeError) as exc:
             raise AdmissionError("frozen canonical board bindings are unreadable") from exc
@@ -1585,14 +1719,23 @@ def _validate_problem_reviews(
         raise LaunchAuthorizationError("problem_reviews must contain exactly ten approvals")
     try:
         bindings_schema = json.loads(
-            (_SCHEMA_DIR / "production-board-bindings.schema.json").read_text(encoding="utf-8")
+            (_SCHEMA_DIR.parent / "protocol/production-board-bindings-v2.schema.json").read_text(
+                encoding="utf-8"
+            )
         )
-        jsonschema.Draft202012Validator(bindings_schema).validate(board_bindings)
+        jsonschema.Draft202012Validator(
+            bindings_schema, format_checker=jsonschema.FormatChecker()
+        ).validate(board_bindings)
     except (OSError, ValueError, jsonschema.ValidationError) as exc:
         raise LaunchAuthorizationError(f"production board bindings failed schema validation: {exc}") from exc
     admitted = {row["problemId"]: row for row in release_report["admittedBoards"]}
-    if set(board_bindings) != {"schema_version", "board_set", "records"} or board_bindings.get("schema_version") != "p42-prizes/production-board-bindings/v1":
-        raise LaunchAuthorizationError("production board bindings have invalid shape or version")
+    if (
+        board_bindings.get("schema_version") != "p42-prizes/production-board-bindings/v2"
+        or board_bindings.get("activation_state") != "activation-ready"
+    ):
+        raise LaunchAuthorizationError(
+            "problem-review composition requires activation-ready production board bindings v2"
+        )
     binding_records = board_bindings.get("records")
     if not isinstance(binding_records, list) or len(binding_records) != 10:
         raise LaunchAuthorizationError("production board bindings must contain exactly ten records")
@@ -1603,6 +1746,43 @@ def _validate_problem_reviews(
     }
     if len(binding_by_slug) != 10:
         raise LaunchAuthorizationError("production board bindings must have ten unique slugs")
+    if any(record.get("activation_eligible") is not True for record in binding_records):
+        raise LaunchAuthorizationError("problem-review composition requires ten activation-eligible records")
+
+    base_ref = board_bindings["base_bindings"]
+    if context is None or context.artifact_root is None:
+        raise LaunchAuthorizationError("production board v2 base bindings require an artifact root")
+    base_relative = Path(base_ref["path"])
+    try:
+        base_path = (Path(context.artifact_root) / base_relative).resolve(strict=True)
+        base_path.relative_to(Path(context.artifact_root).resolve())
+        base_payload = base_path.read_bytes()
+    except (OSError, ValueError) as exc:
+        raise LaunchAuthorizationError("production board v2 base bindings are not locally resolved") from exc
+    if sha256_bytes(base_payload) != base_ref["sha256"]:
+        raise LaunchAuthorizationError("production board v2 base bindings digest mismatch")
+    try:
+        base_bindings = loads_strict_json(base_payload)
+        base_schema = json.loads(
+            (_SCHEMA_DIR / "production-board-bindings.schema.json").read_text(encoding="utf-8")
+        )
+        jsonschema.Draft202012Validator(base_schema).validate(base_bindings)
+    except (OSError, ValueError, UnicodeDecodeError, jsonschema.ValidationError) as exc:
+        raise LaunchAuthorizationError(f"production board v2 base bindings are invalid: {exc}") from exc
+    base_records = base_bindings.get("records") if isinstance(base_bindings, Mapping) else None
+    if not isinstance(base_records, list) or len(base_records) != 10:
+        raise LaunchAuthorizationError("production board v2 base bindings must contain exactly ten records")
+    for position, (binding_record, base_record) in enumerate(
+        zip(binding_records, base_records, strict=True), start=1
+    ):
+        if (
+            binding_record["slug"] != base_record.get("slug")
+            or binding_record["v1_record_sha256"]
+            != sha256_bytes(canonical_json(base_record).encode("utf-8"))
+        ):
+            raise LaunchAuthorizationError(
+                f"production board activation record {position} does not bind its exact v1 base record"
+            )
     slate_boards = release_slate.get("boards")
     if release_slate.get("sourceCommit") != release_report.get("sourceCommit"):
         raise LaunchAuthorizationError("production board bindings release source does not match verified release")
@@ -1615,16 +1795,16 @@ def _validate_problem_reviews(
         or len(image_boards) != 10
     ):
         raise LaunchAuthorizationError("verifier image release does not match the exact deployment release")
-    for position, (binding_record, slate_board, image_board) in enumerate(
-        zip(binding_records, slate_boards, image_boards, strict=True), start=1
+    for position, (binding_record, base_record, slate_board, image_board) in enumerate(
+        zip(binding_records, base_records, slate_boards, image_boards, strict=True), start=1
     ):
         if not isinstance(slate_board, Mapping):
             raise LaunchAuthorizationError("production release slate contains an invalid board")
         if (
             not isinstance(image_board, Mapping)
             or image_board.get("slug") != binding_record["slug"]
-            or image_board.get("source_hash") != binding_record["verifier"]["source_tree_sha256"]
-            or image_board.get("version") != binding_record["verifier"]["version"]
+            or image_board.get("source_hash") != base_record["verifier"]["source_tree_sha256"]
+            or image_board.get("version") != base_record["verifier"]["version"]
             or image_board.get("index_digest") != slate_board.get("verifierImageDigest")
         ):
             raise LaunchAuthorizationError(
@@ -1634,9 +1814,9 @@ def _validate_problem_reviews(
             "problemId": str(position),
             "problemSlug": binding_record["slug"],
             "problemPath": f"problems/{binding_record['slug']}",
-            "verifierVersion": binding_record["verifier"]["version"],
-            "specHash": "0x" + binding_record["specification"]["sha256"].removeprefix("sha256:"),
-            "verifierSourceDigest": binding_record["verifier"]["source_tree_sha256"],
+            "verifierVersion": base_record["verifier"]["version"],
+            "specHash": "0x" + base_record["specification"]["sha256"].removeprefix("sha256:"),
+            "verifierSourceDigest": base_record["verifier"]["source_tree_sha256"],
         }
         for field, expected in expected_slate_binding.items():
             if slate_board.get(field) != expected:
@@ -1688,6 +1868,7 @@ def _validate_problem_reviews(
         binding_record = binding_by_slug.get(slug)
         if binding_record is None:
             raise LaunchAuthorizationError(f"problem review {problem_id} has no production board binding")
+        base_record = base_records[binding_position - 1]
         if image_by_slug.get(slug, {}).get("index_digest") != review.get("verifier_image_digest"):
             raise LaunchAuthorizationError(f"problem review {problem_id} does not match exact verifier image release")
         board_binding_hash = sha256_bytes(canonical_json(binding_record).encode("utf-8"))
@@ -1730,7 +1911,7 @@ def _validate_problem_reviews(
             review_context,
             issued,
             deployed_release_binding=deployed_release_binding,
-            board_binding=binding_record,
+            board_binding=base_record,
         )
         if review.get("review_hash") != packet.get("review_hash"):
             raise LaunchAuthorizationError(f"problem review {problem_id} hash mismatch")
