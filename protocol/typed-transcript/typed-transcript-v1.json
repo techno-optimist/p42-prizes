@@ -1,0 +1,219 @@
+{
+  "$schema": "./typed-transcript-v1.schema.json",
+  "artifactStatus": "design-only-non-activating",
+  "remediatesIssue164": false,
+  "protocolId": "p42.sp1.typed-transcript",
+  "version": 1,
+  "fieldProfiles": {
+    "inner-koalabear-v1": {
+      "profileId": 1,
+      "fieldId": 1,
+      "permutationId": 1,
+      "modulus": "2130706433",
+      "width": 16,
+      "rate": 8,
+      "capacity": 8,
+      "maxSqueezeBits": 30,
+      "supportsSqueezeExtension": true,
+      "rateField": "koalabear",
+      "challengeField": "koalabear"
+    },
+    "outer-bn254-rate-koalabear-v1": {
+      "profileId": 2,
+      "fieldId": 2,
+      "permutationId": 2,
+      "permutation": "outer-bn254-poseidon2-width3-v1",
+      "modulus": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+      "width": 3,
+      "rate": 2,
+      "capacity": 1,
+      "maxSqueezeBits": 30,
+      "supportsSqueezeExtension": true,
+      "rateField": "bn254",
+      "challengeField": "koalabear"
+    }
+  },
+  "permutations": {
+    "outer-bn254-poseidon2-width3-v1": {
+      "fieldModulus": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+      "width": 3,
+      "rate": 2,
+      "capacity": 1,
+      "sBoxExponent": 5,
+      "externalRounds": 8,
+      "internalRounds": 56,
+      "roundSchedule": "external-4-then-internal-56-then-external-4",
+      "externalMatrix": [
+        ["2", "1", "1"],
+        ["1", "2", "1"],
+        ["1", "1", "2"]
+      ],
+      "internalMatrix": [
+        ["2", "1", "1"],
+        ["1", "2", "1"],
+        ["1", "1", "3"]
+      ],
+      "roundConstants": {
+        "sourceTableRows": 64,
+        "sourceTableElements": 192,
+        "sourceTableEncoding": "row-major-64-rows-by-3-lanes-each-lane-canonical-32-byte-big-endian",
+        "sourceTableSha256": "sha256:c08ebd7b8765286f6933070d74e9a1859072e58fb7d18d17f9ca97872b93f4a2",
+        "effectiveElements": 80,
+        "effectiveEncoding": "round-order-first-4-external-all-3-lanes-then-56-internal-lane-0-only-then-last-4-external-all-3-lanes-each-lane-canonical-32-byte-big-endian",
+        "effectiveSha256": "sha256:f58a02b261e94419e962e7b72d759d7b4df69f02e25f56aea90f263dc4b03b37"
+      },
+      "upstreamSource": {
+        "repository": "https://github.com/HorizenLabs/poseidon2",
+        "commit": "055bde3f4782731ba5f5ce5888a440a94327eaf3",
+        "path": "plain_implementations/src/poseidon2/poseidon2_instance_bn256.rs",
+        "fileSha256": "sha256:7b34cc6574424ea4ea56af1a8b568f99c449e092ceaa372e5226c4308937e7ac",
+        "licenseExpression": "MIT OR Apache-2.0"
+      }
+    }
+  },
+  "extensionFields": {
+    "koalabear-binomial-degree4-v1": {
+      "rustType": "BinomialExtensionField<KoalaBear,4>",
+      "baseFieldModulus": "2130706433",
+      "degree": 4,
+      "definingPolynomial": "x^4-3",
+      "nonresidue": "3",
+      "coefficientOrder": "c0-c1-c2-c3",
+      "laneOrder": "element-major-then-coefficients-c0-c1-c2-c3",
+      "canonicalElement": "c0+c1*x+c2*x^2+c3*x^3",
+      "canonicalCoefficientEncoding": "each-ci-is-the-unique-decimal-integer-in-[0,2130706433)-no-modular-reduction",
+      "upstreamSource": {
+        "repository": "https://github.com/Plonky3/Plonky3",
+        "commit": "5fa5e044def35d9fb7b2d8f3296c23efd5b00306",
+        "paths": [
+          "koala-bear/src/extension.rs",
+          "field/src/extension/binomial_extension.rs"
+        ],
+        "licenseExpression": "MIT OR Apache-2.0"
+      }
+    }
+  },
+  "outerChallengeExtraction": {
+    "source": "bn254-rate-word",
+    "scalarMethod": "bn254-mod-koalabear",
+    "koalaBearModulus": 2130706433,
+    "extensionDegree": 4,
+    "extensionField": "koalabear-binomial-degree4-v1",
+    "extensionBasis": "1,x,x^2,x^3-mod-x^4-minus-3",
+    "extensionCoefficientOrder": "c0-c1-c2-c3",
+    "bitsMethod": "low-bits",
+    "minChallengeBits": 1,
+    "maxChallengeBits": 30,
+    "nativeBn254Challenges": false
+  },
+  "versionEnvelope": {
+    "wireLengthBytes": 16,
+    "wireMagicHex": "0x5034325454563100",
+    "wireIntegerByteOrder": "big-endian",
+    "fieldWordBytes": 2,
+    "fieldWordByteOrder": "big-endian",
+    "reservedFinalByte": 0
+  },
+  "constants": {
+    "protocolMagic": 1345597953,
+    "frameEnd": 1162757121,
+    "blockControlBase": 1073741824,
+    "profileShift": 23,
+    "phaseShift": 21,
+    "finalShift": 20,
+    "occupiedShift": 16,
+    "blockIndexBits": 16,
+    "lengthRadix": 65536,
+    "lengthLimbs": 4,
+    "koalaBearPackingRadix": 2147483648,
+    "koalaBearValuesPerBn254Word": 8
+  },
+  "phases": {
+    "absorbFrame": 1,
+    "squeezeContinuation": 2
+  },
+  "eventTags": {
+    "protocolInit": 1,
+    "baseField": 16,
+    "extensionField": 17,
+    "digest": 18,
+    "commitment": 19,
+    "sliceBegin": 32,
+    "sliceEnd": 33,
+    "containerBegin": 34,
+    "containerEnd": 35,
+    "squeezeField": 48,
+    "squeezeBits": 49,
+    "squeezeExtension": 50
+  },
+  "encodingTags": {
+    "none": 0,
+    "koalaBearDirect": 1,
+    "koalaBearPacked8": 2,
+    "extension4KoalaBearDirect": 3,
+    "extension4KoalaBearPacked8": 4,
+    "koalaBearDigest8": 5,
+    "container": 7,
+    "squeezeRequest": 8,
+    "koalaBearDigest8Packed8": 9,
+    "versionEnvelopeU16": 10
+  },
+  "proofModeRouting": {
+    "core": {"v0Decoder": "legacy-v0-core", "v1Decoder": "typed-v1-core", "v1Profile": "inner-koalabear-v1", "gateway": "none"},
+    "compressed": {"v0Decoder": "legacy-v0-compressed", "v1Decoder": "typed-v1-compressed", "v1Profile": "inner-koalabear-v1", "gateway": "none"},
+    "shrink": {"v0Decoder": "legacy-v0-shrink", "v1Decoder": "typed-v1-shrink", "v1Profile": "inner-koalabear-v1", "gateway": "none"},
+    "wrap": {"v0Decoder": "legacy-v0-wrap", "v1Decoder": "typed-v1-wrap", "v1Profile": "outer-bn254-rate-koalabear-v1", "gateway": "none"},
+    "groth16": {"v0Decoder": "legacy-v0-groth16", "v1Decoder": "p42-v1-gateway-groth16", "v1Profile": "outer-bn254-rate-koalabear-v1", "gateway": "validate-select-check-strip-call"},
+    "plonk": {"v0Decoder": "legacy-v0-plonk", "v1Decoder": "p42-v1-gateway-plonk", "v1Profile": "outer-bn254-rate-koalabear-v1", "gateway": "validate-select-check-strip-call"}
+  },
+  "proofWire": {
+    "scope": "decoder-only-synthetic-grammar",
+    "appliesToGateway": false,
+    "legacyShape": "selector4-mode1-length2-payload",
+    "v1Shape": "envelope16-selector4-mode1-length2-payload",
+    "selectorBytes": 4,
+    "modeBytes": 1,
+    "payloadLengthBytes": 2,
+    "payloadLengthByteOrder": "big-endian",
+    "modeTags": {"core": 1, "compressed": 2, "shrink": 3, "wrap": 4},
+    "structuralTestSelectors": {
+      "core": "0x01000001",
+      "compressed": "0x02000002",
+      "shrink": "0x03000003",
+      "wrap": "0x04000004"
+    }
+  },
+  "gateway": {
+    "name": "p42-v1",
+    "outerEnvelopeBytes": 16,
+    "selectorBytes": 4,
+    "outerProfile": "outer-bn254-rate-koalabear-v1",
+    "wireShape": "envelope16-selector4-opaque-payload",
+    "forwardedShape": "selector4-opaque-payload",
+    "payloadSemantics": "opaque",
+    "trustedConfigSource": "authenticated-deployment-config-only",
+    "preVerificationEnvelopeBindingCheck": false,
+    "bindingSource": "pinned-successor-circuit-vk-or-authenticated-public-input",
+    "stripAfterValidationOnly": true,
+    "silentSdkStrippingAllowed": false,
+    "legacyVerifierPinning": "separate-mode-specific-pin",
+    "structuralTestPins": {
+      "groth16": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "plonk": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      }
+    }
+  }
+}

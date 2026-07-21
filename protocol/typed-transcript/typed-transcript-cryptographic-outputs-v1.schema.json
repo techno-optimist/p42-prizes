@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.world/protocol/typed-transcript/typed-transcript-cryptographic-outputs-v1.schema.json",
+  "title": "TypedTranscriptV1 outer cryptographic output vectors",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifactStatus", "cryptographicOutputsIncluded", "protocolId", "version", "designParameters", "implementationUnderTest", "independentOracle", "permutationStates", "continuationStates", "extractedOutputs"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "artifactStatus": {"const": "design-only-non-activating"},
+    "cryptographicOutputsIncluded": {"type": "boolean"},
+    "protocolId": {"const": "p42.sp1.typed-transcript"},
+    "version": {"const": 1},
+    "designParameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["designPath", "outerPermutation", "extensionField", "structuralCorpusPath"],
+      "properties": {
+        "designPath": {"const": "typed-transcript-v1.json"},
+        "outerPermutation": {"const": "outer-bn254-poseidon2-width3-v1"},
+        "extensionField": {"const": "koalabear-binomial-degree4-v1"},
+        "structuralCorpusPath": {"const": "typed-transcript-vectors-v1.json"}
+      }
+    },
+    "implementationUnderTest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/implementation"}]},
+    "independentOracle": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/oracle"}]},
+    "permutationStates": {"type": "array", "items": {"$ref": "#/$defs/permutationState"}},
+    "continuationStates": {"type": "array", "items": {"$ref": "#/$defs/continuationState"}},
+    "extractedOutputs": {"type": "array", "items": {"$ref": "#/$defs/extractedOutput"}}
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "cryptographicOutputsIncluded": {"const": false},
+        "implementationUnderTest": {"type": "null"},
+        "independentOracle": {"type": "null"},
+        "permutationStates": {"maxItems": 0},
+        "continuationStates": {"maxItems": 0},
+        "extractedOutputs": {"maxItems": 0}
+      }
+    },
+    {
+      "properties": {
+        "cryptographicOutputsIncluded": {"const": true},
+        "implementationUnderTest": {"$ref": "#/$defs/implementation"},
+        "independentOracle": {"$ref": "#/$defs/oracle"},
+        "permutationStates": {"minItems": 1},
+        "continuationStates": {"type": "array"},
+        "extractedOutputs": {"minItems": 1}
+      }
+    }
+  ],
+  "$defs": {
+    "decimal": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"},
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "registryId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*$"},
+    "outerProfile": {"const": "outer-bn254-rate-koalabear-v1"},
+    "outerState": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"$ref": "#/$defs/decimal"}
+    },
+    "sourceIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["registryId", "repository", "commit", "path", "sha256"],
+      "properties": {
+        "registryId": {"$ref": "#/$defs/registryId"},
+        "repository": {"type": "string", "format": "uri"},
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "toolIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["registryId", "name", "version", "uri", "sha256"],
+      "properties": {
+        "registryId": {"$ref": "#/$defs/registryId"},
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "uri": {"type": "string", "format": "uri"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "implementation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementationName", "source", "toolchain", "executable"],
+      "properties": {
+        "implementationName": {"type": "string", "minLength": 1},
+        "source": {"$ref": "#/$defs/sourceIdentity"},
+        "toolchain": {"$ref": "#/$defs/toolIdentity"},
+        "executable": {"$ref": "#/$defs/toolIdentity"}
+      }
+    },
+    "inputCorpus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"const": "typed-transcript-vectors-v1.json"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "resultIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["registryId", "path", "sha256"],
+      "properties": {
+        "registryId": {"$ref": "#/$defs/registryId"},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "runIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["registryId", "path", "sha256"],
+      "properties": {
+        "registryId": {"$ref": "#/$defs/registryId"},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "secondImplementation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "implementation", "generationCommand", "inputCorpus", "resultArtifact", "runManifest", "generatedAt"],
+      "properties": {
+        "kind": {"const": "second-implementation"},
+        "implementation": {"$ref": "#/$defs/implementation"},
+        "generationCommand": {"type": "string", "minLength": 1},
+        "inputCorpus": {"$ref": "#/$defs/inputCorpus"},
+        "resultArtifact": {"$ref": "#/$defs/resultIdentity"},
+        "runManifest": {"$ref": "#/$defs/runIdentity"},
+        "generatedAt": {"type": "string", "format": "date-time"}
+      }
+    },
+    "signedReviewerEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "registryId", "reviewerId", "reviewedResultSha256", "signatureAlgorithm", "publicKey", "signature"],
+      "properties": {
+        "kind": {"const": "signed-reviewer-evidence"},
+        "registryId": {"$ref": "#/$defs/registryId"},
+        "reviewerId": {"type": "string", "minLength": 1},
+        "reviewedResultSha256": {"$ref": "#/$defs/sha256"},
+        "signatureAlgorithm": {"enum": ["ed25519", "minisign"]},
+        "publicKey": {"type": "string", "minLength": 16},
+        "signature": {"type": "string", "minLength": 16}
+      }
+    },
+    "oracle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementationName", "source", "toolchain", "executable", "generationCommand", "inputCorpus", "resultArtifact", "runManifest", "generatedAt", "corroboration"],
+      "properties": {
+        "implementationName": {"type": "string", "minLength": 1},
+        "source": {"$ref": "#/$defs/sourceIdentity"},
+        "toolchain": {"$ref": "#/$defs/toolIdentity"},
+        "executable": {"$ref": "#/$defs/toolIdentity"},
+        "generationCommand": {"type": "string", "minLength": 1},
+        "inputCorpus": {"$ref": "#/$defs/inputCorpus"},
+        "resultArtifact": {"$ref": "#/$defs/resultIdentity"},
+        "runManifest": {"$ref": "#/$defs/runIdentity"},
+        "generatedAt": {"type": "string", "format": "date-time"},
+        "corroboration": {
+          "oneOf": [
+            {"$ref": "#/$defs/secondImplementation"},
+            {"$ref": "#/$defs/signedReviewerEvidence"}
+          ]
+        }
+      }
+    },
+    "permutationState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "profile", "transcriptId", "stepIndex", "blockIndex", "inputState", "outputState"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "profile": {"$ref": "#/$defs/outerProfile"},
+        "transcriptId": {"$ref": "#/$defs/id"},
+        "stepIndex": {"type": "integer", "minimum": 0},
+        "blockIndex": {"type": "integer", "minimum": 0, "maximum": 65535},
+        "inputState": {"$ref": "#/$defs/outerState"},
+        "outputState": {"$ref": "#/$defs/outerState"}
+      }
+    },
+    "continuationState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "profile", "transcriptId", "stepIndex", "continuationIndex", "final", "afterControlBeforePermutation", "outputState"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "profile": {"$ref": "#/$defs/outerProfile"},
+        "transcriptId": {"$ref": "#/$defs/id"},
+        "stepIndex": {"type": "integer", "minimum": 0},
+        "continuationIndex": {"type": "integer", "minimum": 0, "maximum": 65535},
+        "final": {"type": "boolean"},
+        "afterControlBeforePermutation": {"$ref": "#/$defs/outerState"},
+        "outputState": {"$ref": "#/$defs/outerState"}
+      }
+    },
+    "sourceLane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stateId", "laneIndex"],
+      "properties": {
+        "stateId": {"$ref": "#/$defs/id"},
+        "laneIndex": {"type": "integer", "minimum": 0, "maximum": 1}
+      }
+    },
+    "extractedOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "profile", "transcriptId", "stepIndex", "outputIndex", "kind", "sourceLanes", "sourceRateWords", "consumedRateWords"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "profile": {"$ref": "#/$defs/outerProfile"},
+        "transcriptId": {"$ref": "#/$defs/id"},
+        "stepIndex": {"type": "integer", "minimum": 0},
+        "outputIndex": {"type": "integer", "minimum": 0},
+        "kind": {"enum": ["scalar", "extension", "bits"]},
+        "sourceLanes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/sourceLane"}},
+        "sourceRateWords": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/decimal"}},
+        "consumedRateWords": {"type": "integer", "minimum": 1},
+        "expectedScalar": {"$ref": "#/$defs/decimal"},
+        "expectedCoefficients": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"$ref": "#/$defs/decimal"}},
+        "requestedBits": {"type": "integer", "minimum": 1, "maximum": 30},
+        "expectedBitsLittleEndian": {"type": "array", "minItems": 1, "maxItems": 30, "items": {"enum": [0, 1]}}
+      },
+      "oneOf": [
+        {"required": ["expectedScalar"], "properties": {"kind": {"const": "scalar"}, "consumedRateWords": {"const": 1}, "sourceLanes": {"minItems": 1, "maxItems": 1}, "sourceRateWords": {"minItems": 1, "maxItems": 1}}, "not": {"anyOf": [{"required": ["expectedCoefficients"]}, {"required": ["requestedBits"]}, {"required": ["expectedBitsLittleEndian"]}]}},
+        {"required": ["expectedCoefficients"], "properties": {"kind": {"const": "extension"}, "consumedRateWords": {"const": 4}, "sourceLanes": {"minItems": 4, "maxItems": 4}, "sourceRateWords": {"minItems": 4, "maxItems": 4}}, "not": {"anyOf": [{"required": ["expectedScalar"]}, {"required": ["requestedBits"]}, {"required": ["expectedBitsLittleEndian"]}]}},
+        {"required": ["requestedBits", "expectedBitsLittleEndian"], "properties": {"kind": {"const": "bits"}, "consumedRateWords": {"const": 1}, "sourceLanes": {"minItems": 1, "maxItems": 1}, "sourceRateWords": {"minItems": 1, "maxItems": 1}}, "not": {"anyOf": [{"required": ["expectedScalar"]}, {"required": ["expectedCoefficients"]}]}}
+      ]
+    }
+  }
+}

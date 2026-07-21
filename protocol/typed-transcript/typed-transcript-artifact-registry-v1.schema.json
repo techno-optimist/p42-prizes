@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.world/protocol/typed-transcript/typed-transcript-artifact-registry-v1.schema.json",
+  "title": "TypedTranscriptV1 design and vector artifact registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifactStatus", "cryptographicOutputsIncluded", "protocolId", "version", "baseHead", "designArtifacts", "vectorCorpora", "provenanceArtifacts"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "artifactStatus": {"const": "design-only-non-activating"},
+    "cryptographicOutputsIncluded": {"type": "boolean"},
+    "protocolId": {"const": "p42.sp1.typed-transcript"},
+    "version": {"const": 1},
+    "baseHead": {"const": "56ad82bba566294f674cc621275020f334031743"},
+    "designArtifacts": {
+      "type": "array",
+      "minItems": 5,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/artifact"}
+    },
+    "vectorCorpora": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {"$ref": "#/$defs/corpus"}
+    },
+    "provenanceArtifacts": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "oneOf": [
+          {"$ref": "#/$defs/sourceArtifact"},
+          {"$ref": "#/$defs/toolArtifact"},
+          {"$ref": "#/$defs/resultArtifact"},
+          {"$ref": "#/$defs/runArtifact"},
+          {"$ref": "#/$defs/reviewerEvidenceArtifact"}
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "registryId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*$"},
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "byteLength", "sha256"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]+$"},
+        "byteLength": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "countMap": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "corpus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "byteLength", "sha256", "recordCounts"],
+      "properties": {
+        "path": {"enum": ["typed-transcript-vectors-v1.json", "typed-transcript-cryptographic-outputs-v1.json"]},
+        "byteLength": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "recordCounts": {"$ref": "#/$defs/countMap"}
+      }
+    },
+    "sourceArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "role", "name", "repository", "commit", "path", "sha256"],
+      "properties": {
+        "id": {"$ref": "#/$defs/registryId"},
+        "kind": {"const": "source"},
+        "role": {"enum": ["implementation-under-test", "primary-oracle", "secondary-oracle"]},
+        "name": {"type": "string", "minLength": 1},
+        "repository": {"type": "string", "format": "uri"},
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "toolArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "role", "name", "version", "uri", "sha256"],
+      "properties": {
+        "id": {"$ref": "#/$defs/registryId"},
+        "kind": {"const": "tool"},
+        "role": {"enum": ["toolchain", "executable"]},
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "uri": {"type": "string", "format": "uri"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "reviewerEvidenceArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "reviewerId", "path", "sha256", "signatureAlgorithm", "publicKey", "signature"],
+      "properties": {
+        "id": {"$ref": "#/$defs/registryId"},
+        "kind": {"const": "reviewer-evidence"},
+        "reviewerId": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "signatureAlgorithm": {"enum": ["ed25519", "minisign"]},
+        "publicKey": {"type": "string", "minLength": 16},
+        "signature": {"type": "string", "minLength": 16}
+      }
+    },
+    "resultArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "role", "path", "sha256"],
+      "properties": {
+        "id": {"$ref": "#/$defs/registryId"},
+        "kind": {"const": "oracle-result"},
+        "role": {"enum": ["primary-oracle", "secondary-oracle"]},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "runArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "role", "path", "sha256", "generationCommand", "inputCorpusPath", "inputCorpusSha256", "resultArtifactId", "resultSha256", "generatedAt"],
+      "properties": {
+        "id": {"$ref": "#/$defs/registryId"},
+        "kind": {"const": "oracle-run"},
+        "role": {"enum": ["primary-oracle", "secondary-oracle"]},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "generationCommand": {"type": "string", "minLength": 1},
+        "inputCorpusPath": {"const": "typed-transcript-vectors-v1.json"},
+        "inputCorpusSha256": {"$ref": "#/$defs/sha256"},
+        "resultArtifactId": {"$ref": "#/$defs/registryId"},
+        "resultSha256": {"$ref": "#/$defs/sha256"},
+        "generatedAt": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}
