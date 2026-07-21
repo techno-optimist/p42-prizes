@@ -4,9 +4,10 @@
   "title": "P42 production board proof-promotion bindings v2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "board_set", "base_bindings", "authority_registry", "evaluated_at_utc", "max_evidence_age_seconds", "minimum_independent_hosts", "records"],
+  "required": ["schema_version", "activation_state", "board_set", "base_bindings", "authority_registry", "evaluated_at_utc", "max_evidence_age_seconds", "minimum_independent_hosts", "records"],
   "properties": {
     "schema_version": {"const": "p42-prizes/production-board-bindings/v2"},
+    "activation_state": {"enum": ["promotion-evidence", "activation-ready"]},
     "board_set": {"$ref": "#/$defs/boardSet"},
     "base_bindings": {"$ref": "#/$defs/baseBindings"},
     "authority_registry": {"$ref": "#/$defs/authorityRegistry"},
@@ -15,6 +16,16 @@
     "minimum_independent_hosts": {"type": "integer", "minimum": 3, "maximum": 64},
     "records": {"type": "array", "minItems": 10, "maxItems": 10, "items": {"$ref": "#/$defs/record"}}
   },
+  "allOf": [
+    {
+      "if": {"properties": {"activation_state": {"const": "promotion-evidence"}}, "required": ["activation_state"]},
+      "then": {"properties": {"records": {"items": {"properties": {"activation_eligible": {"const": false}}}}}}
+    },
+    {
+      "if": {"properties": {"activation_state": {"const": "activation-ready"}}, "required": ["activation_state"]},
+      "then": {"properties": {"records": {"items": {"properties": {"activation_eligible": {"const": true}, "promotion": {"$ref": "#/$defs/promotion"}}}}}}
+    }
+  ],
   "$defs": {
     "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "artifact": {
@@ -34,7 +45,7 @@
       "type": "object", "additionalProperties": false, "required": ["path", "sha256", "schema_version", "schema_sha256"],
       "properties": {
         "path": {"const": "protocol/production-board-bindings-v1.json"},
-        "sha256": {"const": "sha256:680090532cc0ee0ebe9084abc32a2176942ee0865277d7fd5aef1ad443e38f7d"},
+        "sha256": {"const": "sha256:471e08fbc5d6d72b7e835d8acababdf2cbd16bf0cd925bac88138b5b1e70ab4a"},
         "schema_version": {"const": "p42-prizes/production-board-bindings/v1"},
         "schema_sha256": {"const": "sha256:8c88f88842c8c32dd8699b250ae339a454faa95fc112049cd24148c967869f98"}
       }
@@ -53,7 +64,7 @@
       "properties": {
         "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
         "v1_record_sha256": {"$ref": "#/$defs/digest"},
-        "activation_eligible": {"const": false},
+        "activation_eligible": {"type": "boolean"},
         "promotion": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/promotion"}]}
       }
     },

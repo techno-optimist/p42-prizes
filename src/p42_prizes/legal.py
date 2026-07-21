@@ -887,6 +887,16 @@ def _validate_trust_registry(registry: Mapping[str, Any], error_type: type[Value
     registrations = registry.get("registrations")
     if not isinstance(registrations, (list, tuple)):
         raise error_type("trust_registry.registrations must be an array")
+    artifact_pins = registry.get("artifact_pins")
+    if artifact_pins is not None:
+        if not isinstance(artifact_pins, Mapping) or set(artifact_pins) - {"sp1_fork_authority_registry"}:
+            raise error_type("trust_registry.artifact_pins has unsupported trust roots")
+        if "sp1_fork_authority_registry" in artifact_pins:
+            _require_sha256(
+                artifact_pins["sp1_fork_authority_registry"],
+                "trust_registry.artifact_pins.sp1_fork_authority_registry",
+                error_type,
+            )
     seen: set[tuple[str, str, tuple[tuple[str, str], ...], str, datetime, datetime | None]] = set()
     for index, registration in enumerate(registrations):
         prefix = f"trust_registry.registrations[{index}]"
