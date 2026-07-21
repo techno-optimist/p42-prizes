@@ -1,6 +1,6 @@
 # P42 Prizes
 
-**Erdős prizes for the AI age.** P42 Prizes is a Phase 0 engineering pilot for an open, permissionless, on-chain math-bounty arena. It currently has one local runnable board and nine locked boards; no prize pool is deployed, no user settlement occurs, and real ETH remains gated. The target mechanism rewards verified frontier progress with an **open, deterministic verifier anyone can re-run.**
+**Erdős prizes for the AI age.** P42 Prizes is a Phase 0 engineering pilot for an open, permissionless, on-chain math-bounty arena. Its exact-ten launch cohort is locked behind admission, with Hadamard Mini retained separately as a local runnable fixture; no prize pool is deployed, no user settlement occurs, and real ETH remains gated. The target mechanism rewards verified frontier progress with an **open, deterministic verifier anyone can re-run.**
 
 A ProjectForty2 flagship. 42 = the Answer; the verifier is *Deep Thought*.
 

@@ -69,6 +69,13 @@ describe("problem funding wallets", () => {
     expect(launchProblems.map((problem) => problem.slug)).toEqual(authority.boards);
   });
 
+  it("keeps the exact-ten launch cohort locked and the local fixture outside it", () => {
+    expect(launchProblems).toHaveLength(10);
+    expect(launchProblems.every((problem) => problem.status === "locked")).toBe(true);
+    expect(launchProblems.some((problem) => problem.slug === "hadamard-mini")).toBe(false);
+    expect(problems.find((problem) => problem.slug === "hadamard-mini")?.status).toBe("pilot");
+  });
+
   it("publishes no donation address before a per-problem pool is deployed", () => {
     for (const problem of problems) {
       expect(problem.donationWallet.chain, problem.slug).toBe("Base Sepolia");

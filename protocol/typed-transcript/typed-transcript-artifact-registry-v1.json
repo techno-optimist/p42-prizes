@@ -1,0 +1,65 @@
+{
+  "$schema": "./typed-transcript-artifact-registry-v1.schema.json",
+  "artifactStatus": "design-only-non-activating",
+  "cryptographicOutputsIncluded": false,
+  "protocolId": "p42.sp1.typed-transcript",
+  "version": 1,
+  "baseHead": "56ad82bba566294f674cc621275020f334031743",
+  "designArtifacts": [
+    {
+      "path": "typed-transcript-v1.json",
+      "byteLength": 8155,
+      "sha256": "sha256:3922258d121f45b10c58a2261184475f4a25bcaf007d16788debd3a4f712504b"
+    },
+    {
+      "path": "typed-transcript-v1.schema.json",
+      "byteLength": 13472,
+      "sha256": "sha256:bb4307b77b472b451308b515e7cdc7317e4c9f054352f1a88b15654e049ee135"
+    },
+    {
+      "path": "typed-transcript-vectors-v1.schema.json",
+      "byteLength": 13859,
+      "sha256": "sha256:d449cd6c64deb5b95107187b5eb7aa1f6381ecb10c8d3033923542420987177f"
+    },
+    {
+      "path": "typed-transcript-cryptographic-outputs-v1.schema.json",
+      "byteLength": 11445,
+      "sha256": "sha256:cb5d63e52dac625c8b3b05b7696920c32b47d67fb7e3c2a5765bdc687f8c990d"
+    },
+    {
+      "path": "typed-transcript-artifact-registry-v1.schema.json",
+      "byteLength": 5770,
+      "sha256": "sha256:3206cb56512e3197979a42d38345cc5cfe3706223dfba7af66a84c68c854362b"
+    }
+  ],
+  "vectorCorpora": [
+    {
+      "path": "typed-transcript-vectors-v1.json",
+      "byteLength": 133791,
+      "sha256": "sha256:9932703d78b8f5ad99900a59750edf338f2466927ee731aeac72cbdf0f511379",
+      "recordCounts": {
+        "idRegistry": 120,
+        "positiveTranscripts": 2,
+        "collisionNegativeTranscripts": 5,
+        "rejectionVectors": 16,
+        "outerChallengeExtractionVectors": 7,
+        "proofDecodingVectors": 64,
+        "gatewayVectors": 26,
+        "independentStateTransitionRegressions": 3,
+        "hostileCorpusMutations": 2,
+        "hostileOutcomeMutations": 2
+      }
+    },
+    {
+      "path": "typed-transcript-cryptographic-outputs-v1.json",
+      "byteLength": 623,
+      "sha256": "sha256:5c94b09a6fd21bd824fbe9a210b0da827d796f70ef308a2383a020cda958e0b4",
+      "recordCounts": {
+        "permutationStates": 0,
+        "continuationStates": 0,
+        "extractedOutputs": 0
+      }
+    }
+  ],
+  "provenanceArtifacts": []
+}
