@@ -542,6 +542,107 @@ async function assertPinnedSubmissionFactoryRuntime(ethers) {
   if (!challengeArtifact.deployedBytecode.toLowerCase().includes(PINNED_SUBMISSION_FACTORY_RUNTIME_HASH.slice(2))) throw new Error("compiled challenge factory runtime does not contain its submission factory hash pin");
 }
 
+export function buildPendingMultiBoardManifest({
+  ethers,
+  config,
+  deploymentCommit,
+  releaseMode,
+  releaseEvidence,
+  rootDeployments,
+  rootAddresses,
+  boards,
+  setupTransactions,
+  firstBlock,
+  network,
+  deployerAddress,
+  deployedAt,
+  completeReleaseEvidence = null,
+}) {
+  const manifestBody = JSON.parse(jsonStringify({
+    schema: MULTIBOARD_MANIFEST_SCHEMA,
+    status: PENDING_SETUP_STATUS,
+    deployedAt,
+    deploymentCommit,
+    releaseMode,
+    releaseEvidence,
+    network,
+    governance: {
+      ownershipModel: "P42MultisigTimelock",
+      timelock: rootAddresses.timelock,
+      signers: config.governance.signers,
+      threshold: config.governance.threshold.toString(),
+      overrideThreshold: config.governance.overrideThreshold.toString(),
+      delaySeconds: config.governance.delaySeconds.toString(),
+      overrideDelaySeconds: config.governance.overrideDelaySeconds.toString(),
+      operationGracePeriodSeconds: config.governance.operationGracePeriodSeconds.toString(),
+      guardian: config.governance.guardian,
+    },
+    roles: {
+      deployer: deployerAddress,
+      owner: rootAddresses.timelock,
+      treasury: config.roles.treasury,
+      productionLaunchAuthority: config.roles.productionLaunchAuthority,
+      independentSecurityAuthority: config.roles.independentSecurityAuthority,
+      governanceAuthority: config.roles.governanceAuthority,
+      resolver: rootAddresses.resolverQuorum,
+      objectiveVerifier: rootAddresses.objectiveVerifier,
+      objectiveVerifierCodehash: rootDeployments.objectiveVerifier.manifest.runtimeCodeHash,
+      guardian: config.governance.guardian,
+    },
+    parameters: config.parameters,
+    contracts: {
+      timelock: rootDeployments.timelock.manifest,
+      registry: rootDeployments.registry.manifest,
+      rolloverVault: rootDeployments.rolloverVault.manifest,
+      submissionManagerFactory: rootDeployments.submissionManagerFactory.manifest,
+      challengeManagerFactory: rootDeployments.challengeManagerFactory.manifest,
+      objectiveVerifier: rootDeployments.objectiveVerifier.manifest,
+      resolverQuorum: rootDeployments.resolverQuorum.manifest,
+    },
+    governanceSetup: {
+      status: "pending",
+      completedAt: null,
+      completionBlock: null,
+      checks: [],
+    },
+    setupTransactions,
+    problems: boards.map(({ problem, deployments }) =>
+      multiBoardManifestProblem(ethers, rootAddresses.registry, problem, deployments)
+    ),
+    sourceVerification: {
+      status: "pending",
+      requiredExplorer: "https://sepolia.basescan.org",
+      dossierDigest: null,
+      contracts: {
+        timelock: null,
+        registry: null,
+        rolloverVault: null,
+        submissionManagerFactory: null,
+        challengeManagerFactory: null,
+        objectiveVerifier: null,
+        resolverQuorum: null,
+        boards: boards.map(({ problem }) => ({
+          problemId: String(problem.problemId),
+          pool: null,
+          ledger: null,
+          submissions: null,
+          challenges: null,
+        })),
+      },
+    },
+    indexer: {
+      startBlock: firstBlock,
+      finalityPolicy: config.finalityPolicy,
+      indexedThroughBlock: null,
+      reconciliationReport: null,
+    },
+  }));
+  if (completeReleaseEvidence !== null) {
+    Object.assign(manifestBody.releaseEvidence, completeReleaseEvidence(manifestBody));
+  }
+  return bindDeploymentConfigHash(manifestBody);
+}
+
 async function deployLegacyTestOnlyCeremony(ethers) {
   requiredEnv("BASE_SEPOLIA_PRIVATE_KEY");
   const [deployer] = await ethers.getSigners();
@@ -1001,98 +1102,36 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
     ...Object.values(rootDeployments).map((entry) => entry.manifest.blockNumber),
     ...boards.flatMap(({ deployments }) => Object.values(deployments).map((entry) => entry.manifest.blockNumber)),
   );
-  let manifestBody = JSON.parse(jsonStringify({
-    schema: MULTIBOARD_MANIFEST_SCHEMA,
-    status: PENDING_SETUP_STATUS,
-    deployedAt: new Date().toISOString(),
+  const releaseEvidence = release ? {
+    mode: "production", slateDigest: release.slate.slateDigest, capsuleDigest: release.capsule.capsuleDigest,
+    finalityPolicy: BASE_SEPOLIA_FINALITY_POLICY,
+    configDigest: reservationIdentity.configDigest,
+    releaseBindingDigest: productionReleaseBindingDigest({ deploymentCommit, configDigest: reservationIdentity.configDigest, slateDigest: release.slate.slateDigest, capsuleDigest: release.capsule.capsuleDigest }),
+    boardSetDigest: immutableBoardSetDigest, operationPlanDigest: `sha256:${"0".repeat(64)}`,
+    contractCount: 47, boardCount: 10, operationCount: 110,
+  } : null;
+  const manifest = buildPendingMultiBoardManifest({
+    ethers,
+    config,
     deploymentCommit,
     releaseMode,
-    releaseEvidence: release ? {
-      mode: "production", slateDigest: release.slate.slateDigest, capsuleDigest: release.capsule.capsuleDigest,
-      finalityPolicy: BASE_SEPOLIA_FINALITY_POLICY,
-      configDigest: reservationIdentity.configDigest,
-      releaseBindingDigest: productionReleaseBindingDigest({ deploymentCommit, configDigest: reservationIdentity.configDigest, slateDigest: release.slate.slateDigest, capsuleDigest: release.capsule.capsuleDigest }),
-      boardSetDigest: immutableBoardSetDigest, operationPlanDigest: `sha256:${"0".repeat(64)}`,
-      contractCount: 47, boardCount: 10, operationCount: 110,
-    } : null,
+    releaseEvidence,
+    rootDeployments,
+    rootAddresses,
+    boards,
+    setupTransactions,
+    firstBlock,
     network: {
       name: "baseSepolia",
       chainId: Number(BASE_SEPOLIA_CHAIN_ID),
       explorerBaseUrl: "https://sepolia.basescan.org",
     },
-    governance: {
-      ownershipModel: "P42MultisigTimelock",
-      timelock: rootAddresses.timelock,
-      signers: config.governance.signers,
-      threshold: config.governance.threshold.toString(),
-      overrideThreshold: config.governance.overrideThreshold.toString(),
-      delaySeconds: config.governance.delaySeconds.toString(),
-      overrideDelaySeconds: config.governance.overrideDelaySeconds.toString(),
-      operationGracePeriodSeconds: config.governance.operationGracePeriodSeconds.toString(),
-      guardian: config.governance.guardian,
-    },
-    roles: {
-      deployer: deployer.address,
-      owner: rootAddresses.timelock,
-      treasury: config.roles.treasury,
-      productionLaunchAuthority: config.roles.productionLaunchAuthority,
-      independentSecurityAuthority: config.roles.independentSecurityAuthority,
-      governanceAuthority: config.roles.governanceAuthority,
-      resolver: rootAddresses.resolverQuorum,
-      objectiveVerifier: rootAddresses.objectiveVerifier,
-      objectiveVerifierCodehash: rootDeployments.objectiveVerifier.manifest.runtimeCodeHash,
-      guardian: config.governance.guardian,
-    },
-    parameters: config.parameters,
-    contracts: {
-      timelock: rootDeployments.timelock.manifest,
-      registry: rootDeployments.registry.manifest,
-      rolloverVault: rootDeployments.rolloverVault.manifest,
-      submissionManagerFactory: rootDeployments.submissionManagerFactory.manifest,
-      challengeManagerFactory: rootDeployments.challengeManagerFactory.manifest,
-      objectiveVerifier: rootDeployments.objectiveVerifier.manifest,
-      resolverQuorum: rootDeployments.resolverQuorum.manifest,
-    },
-    governanceSetup: {
-      status: "pending",
-      completedAt: null,
-      completionBlock: null,
-      checks: [],
-    },
-    setupTransactions,
-    problems: boards.map(({ problem, deployments }) =>
-      multiBoardManifestProblem(ethers, rootAddresses.registry, problem, deployments)
-    ),
-    sourceVerification: {
-      status: "pending",
-      requiredExplorer: "https://sepolia.basescan.org",
-      dossierDigest: null,
-      contracts: {
-        timelock: null,
-        registry: null,
-        rolloverVault: null,
-        submissionManagerFactory: null,
-        challengeManagerFactory: null,
-        objectiveVerifier: null,
-        resolverQuorum: null,
-        boards: boards.map(({ problem }) => ({
-          problemId: String(problem.problemId),
-          pool: null,
-          ledger: null,
-          submissions: null,
-          challenges: null,
-        })),
-      },
-    },
-    indexer: {
-      startBlock: firstBlock,
-      finalityPolicy: config.finalityPolicy,
-      indexedThroughBlock: null,
-      reconciliationReport: null,
-    },
-  }));
-  if (release) Object.assign(manifestBody.releaseEvidence, computeProductionReleaseEvidence(manifestBody, { productionSlate: release.slate }));
-  const manifest = bindDeploymentConfigHash(manifestBody);
+    deployerAddress: deployer.address,
+    deployedAt: new Date().toISOString(),
+    completeReleaseEvidence: release
+      ? (manifestBody) => computeProductionReleaseEvidence(manifestBody, { productionSlate: release.slate })
+      : null,
+  });
   validateManifestEvidence(manifest, {
     productionSlate: release?.slate,
     capsuleResolver: (digest) => digest === release?.capsule.capsuleDigest ? release.capsule : null,
@@ -1143,7 +1182,7 @@ async function readMultiBoardContractSet(ethers, manifest) {
   return { timelock, registry, resolverQuorum, boards };
 }
 
-async function collectMultiBoardOperationEvidence(timelock, operations, startBlock, checkedBlock) {
+export async function collectMultiBoardOperationEvidence(timelock, operations, startBlock, checkedBlock) {
   const events = await timelock.queryFilter(timelock.filters.Executed(), startBlock, checkedBlock);
   const eventsById = new Map();
   for (const event of events) {
