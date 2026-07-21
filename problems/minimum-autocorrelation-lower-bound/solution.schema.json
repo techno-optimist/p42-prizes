@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/problems/minimum-autocorrelation-lower-bound/solution.schema.json",
+  "x-p42-max-bytes": 1048576,
+  "type": "object",
+  "required": ["grid_width", "height_numerators"],
+  "additionalProperties": false,
+  "properties": {
+    "grid_width": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*(/[1-9][0-9]*)?$",
+      "maxLength": 39
+    },
+    "height_numerators": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 1000000000000
+      }
+    },
+    "claimed_score": {"type": "string", "maxLength": 512},
+    "claimed_improvement": {"type": "string", "maxLength": 512},
+    "source": {"type": "string", "maxLength": 512}
+  }
+}

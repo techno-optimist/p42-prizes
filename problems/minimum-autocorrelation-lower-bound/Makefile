@@ -1,5 +1,5 @@
 PYTHON ?= python3
-SOLUTION ?= examples/lnzwz-n512-repaired.json
+SOLUTION ?= tests/seed-b23f2d3.json
 PYTHONPATH := ../../src
 
 .PHONY: verify verify-seed verify-open-witness lint test
