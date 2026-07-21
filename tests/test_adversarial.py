@@ -268,7 +268,7 @@ def valid_campaign_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dic
         "invariants_checked": {
             "claim_capped_by_final_entitlement": True,
             "bond_uses_pool_at_submission": True,
-            "da_bound_at_commit_and_finalize": True,
+            "da_bound_at_commit_and_reveal": True,
             "resolver_transcript_required": True,
             "invalid_verifier_alerted": True,
             "sybil_split_not_profitable": True,
@@ -341,6 +341,16 @@ def test_adversarial_v2_schema_runtime_environment_parity_and_reachability(tmp_p
         report["environment"] = environment
         normalized = normalize(report, fixture, registry)
         jsonschema.validate(normalized, schema, format_checker=jsonschema.FormatChecker())
+
+
+def test_adversarial_v2_rejects_superseded_finalize_da_invariant(tmp_path: Path) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    report["invariants_checked"]["da_bound_at_commit_and_finalize"] = True
+    schema = json.loads((ROOT / "schemas" / "adversarial-campaign.schema.json").read_text())
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(report, schema, format_checker=jsonschema.FormatChecker())
+    with pytest.raises(AdversarialCampaignError, match="exactly the current invariant keys"):
+        normalize(report, fixture, registry)
 
 
 def test_adversarial_v2_rejects_local_rehearsal_with_migration_message(tmp_path: Path) -> None:

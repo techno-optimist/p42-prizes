@@ -44,7 +44,7 @@
       "required": [
         "claim_capped_by_final_entitlement",
         "bond_uses_pool_at_submission",
-        "da_bound_at_commit_and_finalize",
+        "da_bound_at_commit_and_reveal",
         "resolver_transcript_required",
         "invalid_verifier_alerted",
         "sybil_split_not_profitable",
@@ -54,7 +54,7 @@
       "properties": {
         "claim_capped_by_final_entitlement": { "const": true },
         "bond_uses_pool_at_submission": { "const": true },
-        "da_bound_at_commit_and_finalize": { "const": true },
+        "da_bound_at_commit_and_reveal": { "const": true },
         "resolver_transcript_required": { "const": true },
         "invalid_verifier_alerted": { "const": true },
         "sybil_split_not_profitable": { "const": true },

@@ -177,7 +177,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:5103228b298dcf50acf579f5a1695581b7184522521337c5c35a6d88bbb8de70",
+        "source_tree_sha256": "sha256:ab36e05a82d94587b630caf4b501d34b8b72c50dd5c943c62849e207858fcc39",
         "version": "0.1.0"
       }
     },
@@ -280,7 +280,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:c221270d4c3d9e6d373d0ee3f20286a2dff7b3158db9deb9585acebd4866ced5",
+        "source_tree_sha256": "sha256:3003d3ab9803832e729cc3377181f831a9617e08e23942884ef96bbf219d9b57",
         "version": "0.1.1"
       }
     },
@@ -383,7 +383,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:4ac3c41dcbb52ebce3a2b3b740a8a915a61e31b9a0972e4a64c87f309ca90750",
+        "source_tree_sha256": "sha256:b8dd9d39a7d35aee4b1e7cf07a97462801e3eadcf34326d98addef1a647500d7",
         "version": "0.1.2"
       }
     },
@@ -486,7 +486,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:fd04e81e00b40edaf87caedc072628bada04d45bde0819e83469ef818edadfbd",
+        "source_tree_sha256": "sha256:0ba39a214bef3c31ff97dc610ca86943d5bcfde8691ee72723d38f1f38f70996",
         "version": "0.2.0"
       }
     },
@@ -589,7 +589,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:9478b9d4c919dd25d7660f5de859eefea4c2651a66feec9c8affde243fb3d8dd",
+        "source_tree_sha256": "sha256:a76698187c9b713cfc01eb9cb4ac3bef13cf6e1de93d3cb1fd9b493d7ba16d91",
         "version": "0.1.1"
       }
     },
@@ -692,7 +692,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:6cfee82fed1c448bba6af0557b025c9bda31e141cdeb2531b097a886d4c7b29a",
+        "source_tree_sha256": "sha256:87aa743beefb135e409a892ff4172980d331794d21d57d678e72cca9f6364a0f",
         "version": "0.1.1"
       }
     },
@@ -869,7 +869,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:a3ebc173d3c6ad408258a5bf1d897ca7d509bfe28ed7e81e3bf5eaca16272f04",
+        "source_tree_sha256": "sha256:a0054c8200868bfb2b81e4787adc7b3ac222a233582b0d200534c557d8e14e8d",
         "version": "0.1.0"
       }
     },
@@ -961,7 +961,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:39ebd288de6c7763433b8f427b94b8652b40564087026a56b88da4f57ee66c71",
+        "source_tree_sha256": "sha256:bb0653e42c03fa5f19e843c0d363f1e41932625f523599b5288876fc0af59b69",
         "version": "0.1.1"
       }
     },
@@ -1064,7 +1064,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:f0551715c38d7e5b5c3350d019f29b4580b42a9df52212bdfe40234d86c63175",
+        "source_tree_sha256": "sha256:ab55b80ed01dfcd3202d2ef54458e7ddad1542b5f6e82d3420520456f2acb363",
         "version": "0.1.2"
       }
     },
@@ -1176,7 +1176,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:583cf6e59ad3daece59a61ee98668275cd0b00d8a328819594fda456de20f9c0",
+        "source_tree_sha256": "sha256:01551d88b9f05e7c31fc93dd4b422bc391e60c2afb6ea466cb74b390db03668f",
         "version": "0.1.2"
       }
     }
