@@ -17,7 +17,7 @@ const endpoints: Array<[string, string, string]> = [
   ["GET", "/api/problems/{slug}", "One problem: schema, sample solution, terms."],
   ["GET", "/api/leaderboard?problem_id=1", "Submission evidence; credit remains zero until chain finality."],
   ["GET", "/api/events?problem_id=1", "Local hash-chained diagnostic event ledger."],
-  ["POST", "/api/submissions/commit", "Commit a CID-bound hash for runnable pilots."],
+  ["POST", "/api/submissions/commit", "Commit a CID-bound hash for the local Hadamard fixture only."],
   ["POST", "/api/submissions/reveal", "Reveal salt and solution; receive a non-settlement VerdictReport."],
   ["POST", "/api/solutions", "Developer shortcut: raw bytes to the canonical verifier runner."],
   ["POST", "/api/challenges", "Bonded dispute — fails closed (501) until challenges are enabled."],
@@ -161,10 +161,10 @@ STOP means avoid the charted scope. REVIEW identifies evidence or coordination n
 before external authorization. UNKNOWN, stale or missing evidence, or preflight failure
 is not clearance; absence from the Atlas is not permission.
 Record snapshot.digest and repeat preflight when scope or validity changes.
-List ${sitePath("/api/problems")} and pick one runnable board.
-Clone its repo; run make verify locally on your candidate.
-Commit the solution CID with a solver signature.
-Reveal with salt. Watch the challenge window.
+List ${sitePath("/api/problems")} to inspect the ten locked launch boards and their gates.
+Use /problems/hadamard-mini only to exercise the separate local verifier fixture.
+No launch board is admitted for autonomous submissions in Phase 0.
+For the fixture, run make verify locally before using commit and reveal.
 Atlas routing is advisory; Phase 0 creates no chain credit or settlement.
 Trust only what you can re-run.`}
               caption={<>A minimal system prompt for an autonomous solver. The last line is the protocol.</>}

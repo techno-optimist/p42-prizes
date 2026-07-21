@@ -23,7 +23,8 @@ What P42 has that no scam can counterfeit:
 2. **Reproducible artifacts.** Canonical `VerdictReport`s, sha256 solution hashes, the payout
    simulator's exact wei output, the `make verify` command. Every one of them can be re-derived by
    the reader. A forger's hashes resolve to nothing.
-3. **Radical candor.** One runnable board, nine locked behind published admission gates,
+3. **Radical candor.** Ten launch boards locked behind published admission gates,
+   with Hadamard Mini shown separately as a local runnable fixture,
    testnet-only, not audited, real ETH gated. Scams cannot afford to lead with what is not live;
    we can, and therefore must.
 
@@ -57,7 +58,8 @@ Derived from the evidence audit; these bind copy and layout, not just intent.
    (Base Sepolia)*. No summed "TVL"-shaped headline. Never sum pools in floating point; the previous
    `Number(...).toFixed(2)` headline is banned (a protocol preaching exact rationals may not compute
    its own headline in floats).
-3. **1 runnable, 9 in admission** is the headline stat — a pipeline with public acceptance criteria
+3. **0 admitted, 10 in admission** is the launch-cohort headline stat; the separate
+   local fixture demonstrates the verifier loop without implying board admission
    reads stronger than ten fake-live markets.
 4. **Sample data is labeled at the row.** Seeded walkthrough submissions carry a visible
    "worked example" label (`sample: true` in data). Invented traction is the one thing this site

@@ -7,26 +7,33 @@ a canonical Base Sepolia settlement pilot on the current source. Not externally
 audited. Not legally reviewed. No real ETH should be accepted until every Gate 2
 item in this ledger is green.
 
-July 20 snapshot: PR #188 merged the hardening candidate to `main` at
-`12501870647aa362eb79bebdf786573a74321562`; its exact-main run exposed a
-UTC-midnight resolver-test defect. PR #192 fixed that defect and merged at
-`30ff480af66332a03c8ecc42d3b11fc0029dbf61` after all seven PR-head jobs passed.
-Its exact-main push run `29718185198` passed all seven jobs. With Render
-autodeploy disabled, explicit deploy `dep-d9f47461a83c73de9tjg` then published
-that exact `30ff480...` commit. The authenticated guard bound branch head,
-runtime ancestry, live commit, board projection
-`sha256:ec42d67bc8d67d3732fc363b371b6c2e4acffa256c107df887ad3501cb6a0137`,
-32/32 healthy direct/proxy observations, and all ten null funding targets. The
-present release train expands the guard to 57 mandatory observations:
-the signed source-release v1 authority subset remains exactly 32, while 25
-supplemental observations cover database readiness plus agent and
-problem-detail shutdown surfaces.
+July 20 snapshot: PR #196 merged the release-guard correction to `main` at
+`84f0669967baa06c3845073e3e603d186e8133c6`. Exact-main push run
+[`29784883518`](https://github.com/techno-optimist/p42-prizes/actions/runs/29784883518)
+passed the ordered seven-job gate, including both Ubuntu objective-program
+producers and the cross-image reproducibility aggregator. The correction is
+tooling-only; the live application remains the explicit Render deploy
+`dep-d9f8j6l7vvec73alevdg` of application release
+`8cbfc838e9be9bcba74422b02bb4d826ab56f9ad`, completed at
+`2026-07-20T20:49:52Z`. Direct and public health both return the exact
+database-ready response. The corrected guard retains the signed source-release
+v1 authority subset at exactly 32 observations and adds 25 mandatory
+supplemental observations for database readiness plus agent and problem-detail
+shutdown surfaces. Its retained replay against that live application passed
+32/32 authority and 25/25 supplemental observations with board projection
+`sha256:e63bb870ab1833cc02166e6482be6dce4294ccac3e51013b02a1150a86878159`.
+The regression proves the safe sentence `Continue only when
+mutations.available is true` no longer triggers the funding-language guard,
+while actionable funding patterns remain rejected.
 All ten funding endpoints remain exact v3 `target: null`; launch authorization
 v1 cannot publish funding, and the general problem APIs omit actionable chain
 identifiers. Build Week is absent from navigation while its direct historical
-route remains available. The current public portal is live and fail-closed, but
-the expanded release train is not yet merged or deployed and neither release is
-funding authorization. The current source still lacks a fresh canonical
+route remains available. The current public portal is live and fail-closed,
+but neither its application release nor the corrected release-guard tooling is
+funding authorization. Objective-proof and funding activation also remain
+stopped by
+the SP1 TypedTranscript security finding tracked in issue #164. The current
+source still lacks a fresh canonical
 47-contract deployment, current manifest/reconciliation, live agent wallet
 run, immutable registry images, trusted four-host verifier matrices, strict
 open-witness launch boards, external audit, and counsel approval. Historical
@@ -60,8 +67,8 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 
 | Gate | Current status | Evidence today | Exit criteria |
 | --- | --- | --- | --- |
-| Gate 0: Public repo / unfunded portal | Current exact main is live and fail-closed; expanded hardening train and externally ratified v3 source authority remain open | Exact-main run `29718185198` passed all seven jobs for `30ff480...`; explicit deploy `dep-d9f47461a83c73de9tjg` is live; the authenticated 32/32 guard bound direct/public equivalence, board projection, and ten null targets. The next train adds a local 57-observation guard whose signed 32-observation authority subset is unchanged while 25 supplemental checks cover database readiness and shutdown surfaces. This authorizes no testnet settlement or real ETH. | Pass and merge the expanded train, repeat exact-main CI and explicit deployment, retain its fresh 57-observation live guard, and independently replay artifacts; establish the externally pinned and threshold-ratified v3 source-release chain; upgrade the private repository/account tier or make the repository public so protected branch/ruleset enforcement is available; enable private vulnerability reporting through a supported GitHub surface |
-| Gate 1: Base Sepolia testnet | Open - no current canonical DA-refactored deployment or current reconciliation | Python reference model, portal-local commit/reveal, local DA/permanence evidence validator, DGX/Hermes verifier-runner runbook plus burst-drill validator, local Hardhat contract scaffold tests for registry/pool/payout/submission/challenge/resolver invariants plus seeded payout/bond property checks, Base Sepolia deployment-manifest scaffold, read-only reconciliation script, and stale historical Base Sepolia evidence for old bytecode | Fresh deployed verified DA-refactored contracts, current testnet addresses, current manifest, current indexer reconciliation, on-chain-at-reveal DA verified on that deployment, live agent wallet/operator run, DGX reveal-watcher dry run, integrated resolver transcript, runner burst report, strict open-witness launch-board evidence, and a fresh adversarial campaign report |
+| Gate 0: Public repo / unfunded portal | Exact `84f0669` main passes the complete hosted gate; application release `8cbfc83` is live and fail-closed; protected-release enforcement, private reporting, and externally ratified v3 source authority remain open | Exact-main run `29784883518` passed all seven jobs; explicit deploy `dep-d9f8j6l7vvec73alevdg` remains the live application release because PR #196 changed release-guard tooling only; direct/public health is database-ready; the corrected guard passed 32/32 authority plus 25/25 supplemental observations and ten null targets. This authorizes no testnet settlement or real ETH. | Establish the externally pinned and threshold-ratified v3 source-release chain; upgrade the private repository/account tier or make the repository public so protected branch/ruleset enforcement is available; enable private vulnerability reporting through a supported GitHub surface |
+| Gate 1: Base Sepolia testnet | Open - objective-proof activation is stopped by issue #164 and there is no current canonical deployment or reconciliation | Local source/tests and ceremony tooling exist, but the pinned SP1 line retains vulnerable challenger/symmetric transcript semantics, exact-ten genuine proofs are incomplete, and historical Base Sepolia evidence binds old bytecode only | Complete and independently review a maintained TypedTranscript proof-system migration, regenerate the exact-ten proof identities/evidence, then publish admitted images/matrices and execute the fresh 47-contract/110-operation Base Sepolia ceremony, reconciliation, live agent/resolver/DA/burst flows, strict open-witness packets, and adversarial campaign |
 | Gate 2: Real ETH pilot | Blocked | Conservative copy, gate docs, tested admission tooling, immutable-image `admit-ready` scaffold, signed exact-ten host collector, draft wallet/session policy, opt-in mutation API-key gate, and legal memo validator | External audit, counsel-signed legal memo, KYC/sanctions/ToS approval, immutable registry image digests, collected trusted four-host verifier matrix, named multisig/guardian, distributed state/abuse controls, incident drill, bug bounty |
 | Gate 3: Scale | Blocked by Gate 1/2 | Spec only | Fraud-proof/equivalent verifier execution proof, independent monitoring, censorship fallback, incident-free caps review |
 
@@ -79,7 +86,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 | Solver winnings reinvestment | Source-complete, deployment pending | A solver may atomically direct a matured award into another active pool in the same frozen canonical registry. The source claim rolls back on any destination failure, the destination sponsorship remains attributed to the solver, and frontier/title records are unchanged. The autonomous agent accepts only manifest-bound destinations, preflights armed/open/cap/deadline state, waits without exhausting its retry budget, and falls back to an ordinary claim during the final 24 hours before expiry rather than destroy an award. Multi-board checkpoints bind the source settlement to the destination sponsorship by transaction, solver, both pools, gross award, fee, and net amount. Economically this is recycled sponsorship, including the destination's ordinary zero-credit refund policy, rather than an irrevocable charitable gift | Deploy, externally audit, reconcile, and expose only authorization-bound production destinations |
 | Portal state/rate limits/idempotency/events | Pass on live Render PostgreSQL 18.4 for the unfunded portal; provider-superuser authority remains an operational precondition | [`portal-db-cutover-2026-07-18.json`](evidence/portal-db-cutover-2026-07-18.json) binds source `6a2aa37`, live deploy `dep-d9djfhcvikkc73b7qbpg`, the preprovisioned `p42_portal` schema, distinct owner/runtime credentials, the empty-state import checksum, and the fail-closed start command that runs migration then unsets the owner URL before launching Next.js. Render jobs passed all 26 migration/tamper cases and the production concurrency rehearsal: two state-lock connections, direct history mutation and truncate denial, stale-transition rejection, 10,000 acceptances, six simultaneous exact readers with zero mutual blockers, one observed transition blocker, 2 ms release latency against a 2,000 ms ceiling, and eight atomic rate-limit increments. The authenticated live guard then bound branch/runtime/live commit, board projection `sha256:ec42d67bc8d67d3732fc363b371b6c2e4acffa256c107df887ad3501cb6a0137`, 32/32 routes, and all-null funding targets. PostgreSQL provider superusers remain outside application ACL control, and any restore, provider upgrade, role-graph change, or schema migration invalidates this receipt until replayed. | Retain the final exact-head CI and source-release v3 authorization chain; monitor role/schema/function/OID drift and rerun provisioning checks, migration integration, concurrency rehearsal, and the live guard after every relevant provider or source change. Do not publish a funding target from this unfunded receipt. |
 | Security disclosure text | Pass in repo | `SECURITY.md` | Repo owner must enable GitHub private vulnerability reporting |
-| GitHub Actions workflow | Current exact-main source/deploy pass; expanded release train pending; production receipt blocked on external v3 ratification | `.github/workflows/ci.yml` is published. Exact-main push run [`29718185198`](https://github.com/techno-optimist/p42-prizes/actions/runs/29718185198) passed the ordered seven-job gate for `30ff480af66332a03c8ecc42d3b11fc0029dbf61`. With Render autodeploy disabled, explicit deploy `dep-d9f47461a83c73de9tjg` published that exact commit; the authenticated release guard then bound branch head, runtime ancestry, live commit, board projection `sha256:ec42d67bc8d67d3732fc363b371b6c2e4acffa256c107df887ad3501cb6a0137`, 32/32 healthy direct/proxy observations, and all ten exact v3 `target: null` funding responses. The expanded train adds 25 mandatory database-readiness and shutdown observations without reinterpreting the signed 32-observation v1 authority subset. This is current unfunded-portal evidence, not testnet settlement, real-ETH authorization, or an externally ratified v3 source-release receipt. | Pass and merge the expanded train, retain its exact-main seven-job push run, deploy only that exact commit explicitly, and retain a fresh 57-observation live guard. Provision the externally pinned source-release v3 policy/trust root, independently review and threshold-sign every required migration interval, and publish the chained v3 receipt. Private branch protection/rulesets and private vulnerability reporting remain repo-owner/account-tier blockers. |
+| GitHub Actions workflow | Exact `84f0669` main passes; application release `8cbfc83` and the corrected 57-observation live guard pass; production v3 receipt remains open | `.github/workflows/ci.yml` is published. Exact-main push run [`29784883518`](https://github.com/techno-optimist/p42-prizes/actions/runs/29784883518) passed the ordered seven-job gate for `84f0669967baa06c3845073e3e603d186e8133c6`. PR #196 changed release-guard tooling only, so explicit deploy `dep-d9f8j6l7vvec73alevdg` remains the live application release at `8cbfc838e9be9bcba74422b02bb4d826ab56f9ad`. Direct/public health is database-ready, all ten exact v3 funding responses remain `target: null`, and the corrected guard retained 32/32 authority plus 25/25 supplemental checks against that live release. This is current unfunded-portal evidence, not testnet settlement, real-ETH authorization, or an externally ratified v3 source-release receipt. | Provision the externally pinned source-release v3 policy/trust root, independently review and threshold-sign every required migration interval, and publish the chained v3 receipt. Private branch protection/rulesets and private vulnerability reporting remain repo-owner/account-tier blockers. |
 | Owner/external action register | Pass in repo | `docs/HUMAN_ACTIONS.md` | Keep updated whenever a credential, owner setting, audit, legal, governance, or deployment action blocks a gate |
 
 ## Gate 1 Blockers

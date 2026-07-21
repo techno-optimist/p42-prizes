@@ -1,0 +1,18 @@
+{
+  "$schema": "./typed-transcript-cryptographic-outputs-v1.schema.json",
+  "artifactStatus": "design-only-non-activating",
+  "cryptographicOutputsIncluded": false,
+  "protocolId": "p42.sp1.typed-transcript",
+  "version": 1,
+  "designParameters": {
+    "designPath": "typed-transcript-v1.json",
+    "outerPermutation": "outer-bn254-poseidon2-width3-v1",
+    "extensionField": "koalabear-binomial-degree4-v1",
+    "structuralCorpusPath": "typed-transcript-vectors-v1.json"
+  },
+  "implementationUnderTest": null,
+  "independentOracle": null,
+  "permutationStates": [],
+  "continuationStates": [],
+  "extractedOutputs": []
+}

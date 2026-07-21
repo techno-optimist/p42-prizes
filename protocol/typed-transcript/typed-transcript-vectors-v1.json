@@ -1,0 +1,4849 @@
+{
+  "$schema": "./typed-transcript-vectors-v1.schema.json",
+  "artifactStatus": "design-only-non-activating",
+  "cryptographicOutputsIncluded": false,
+  "protocolId": "p42.sp1.typed-transcript",
+  "version": 1,
+  "idRegistry": [
+    "compressed-v0-malformed",
+    "compressed-v0-to-v1",
+    "compressed-v0-trailing-byte",
+    "compressed-v0-valid",
+    "compressed-v0-wrong-length",
+    "compressed-v0-wrong-mode",
+    "compressed-v1-downgrade-fallback-forbidden",
+    "compressed-v1-malformed",
+    "compressed-v1-to-v0",
+    "compressed-v1-trailing-byte",
+    "compressed-v1-valid",
+    "compressed-v1-wrong-length",
+    "compressed-v1-wrong-magic",
+    "compressed-v1-wrong-mode",
+    "compressed-v1-wrong-version",
+    "compressed-v1-wrong-version-fallback-forbidden",
+    "core-v0-malformed",
+    "core-v0-to-v1",
+    "core-v0-trailing-byte",
+    "core-v0-valid",
+    "core-v0-wrong-length",
+    "core-v0-wrong-mode",
+    "core-v1-downgrade-fallback-forbidden",
+    "core-v1-malformed",
+    "core-v1-to-v0",
+    "core-v1-trailing-byte",
+    "core-v1-valid",
+    "core-v1-wrong-length",
+    "core-v1-wrong-magic",
+    "core-v1-wrong-mode",
+    "core-v1-wrong-version",
+    "core-v1-wrong-version-fallback-forbidden",
+    "counter-gap",
+    "declared-child-count",
+    "direct-trailing-zero",
+    "flat-nested-boundary",
+    "gateway-groth16-cross-mode-config",
+    "gateway-groth16-envelope-missing",
+    "gateway-groth16-legacy-without-v1-envelope",
+    "gateway-groth16-opaque-routing-like-payload",
+    "gateway-groth16-parameter-substitution",
+    "gateway-groth16-profile-substitution",
+    "gateway-groth16-valid",
+    "gateway-groth16-wrong-address",
+    "gateway-groth16-wrong-circuit",
+    "gateway-groth16-wrong-codehash",
+    "gateway-groth16-wrong-configured-selector",
+    "gateway-groth16-wrong-vk",
+    "gateway-groth16-wrong-wire-selector",
+    "gateway-plonk-cross-mode-config",
+    "gateway-plonk-envelope-missing",
+    "gateway-plonk-legacy-without-v1-envelope",
+    "gateway-plonk-opaque-routing-like-payload",
+    "gateway-plonk-parameter-substitution",
+    "gateway-plonk-profile-substitution",
+    "gateway-plonk-valid",
+    "gateway-plonk-wrong-address",
+    "gateway-plonk-wrong-circuit",
+    "gateway-plonk-wrong-codehash",
+    "gateway-plonk-wrong-configured-selector",
+    "gateway-plonk-wrong-vk",
+    "gateway-plonk-wrong-wire-selector",
+    "inner-ordered-lifecycle",
+    "inner-squeeze-bits-overflow",
+    "inner-squeeze-bits-zero",
+    "legacy-envelope-version",
+    "missing-envelope",
+    "noncanonical-envelope-hex",
+    "outer-bits30",
+    "outer-bits31-rejected",
+    "outer-extension-four-coefficients",
+    "outer-native-bn254-pcs-forbidden",
+    "outer-ordered-lifecycle",
+    "outer-rate-word-noncanonical",
+    "outer-scalar-exhausted",
+    "outer-scalar-modulus-reduction",
+    "outer-scalar-zero",
+    "outer-squeeze-bits-overflow",
+    "packed-noncanonical-digit",
+    "packed-trailing-zero",
+    "packed-undeclared-high-digit",
+    "parameter-substitution",
+    "profile-substitution",
+    "repeated-versus-batched-squeeze",
+    "scalar-extension-type",
+    "shrink-v0-malformed",
+    "shrink-v0-to-v1",
+    "shrink-v0-trailing-byte",
+    "shrink-v0-valid",
+    "shrink-v0-wrong-length",
+    "shrink-v0-wrong-mode",
+    "shrink-v1-downgrade-fallback-forbidden",
+    "shrink-v1-malformed",
+    "shrink-v1-to-v0",
+    "shrink-v1-trailing-byte",
+    "shrink-v1-valid",
+    "shrink-v1-wrong-length",
+    "shrink-v1-wrong-magic",
+    "shrink-v1-wrong-mode",
+    "shrink-v1-wrong-version",
+    "shrink-v1-wrong-version-fallback-forbidden",
+    "squeeze-inside-container",
+    "squeeze-inside-slice",
+    "unmatched-slice-end",
+    "wrap-v0-malformed",
+    "wrap-v0-to-v1",
+    "wrap-v0-trailing-byte",
+    "wrap-v0-valid",
+    "wrap-v0-wrong-length",
+    "wrap-v0-wrong-mode",
+    "wrap-v1-downgrade-fallback-forbidden",
+    "wrap-v1-malformed",
+    "wrap-v1-to-v0",
+    "wrap-v1-trailing-byte",
+    "wrap-v1-valid",
+    "wrap-v1-wrong-length",
+    "wrap-v1-wrong-magic",
+    "wrap-v1-wrong-mode",
+    "wrap-v1-wrong-version",
+    "wrap-v1-wrong-version-fallback-forbidden"
+  ],
+  "positiveTranscripts": [
+    {
+      "id": "inner-ordered-lifecycle",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001010101081000",
+      "expectedInitial": {
+        "mode": "uninitialized",
+        "nextCounter": 0,
+        "collectionStack": [],
+        "permutationStateStatus": "exact",
+        "permutationState": [
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0"
+        ]
+      },
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": [
+            "7"
+          ]
+        },
+        {
+          "tag": "containerBegin",
+          "encoding": "container",
+          "counter": 2,
+          "logicalLength": 2,
+          "payload": []
+        },
+        {
+          "tag": "sliceBegin",
+          "encoding": "container",
+          "counter": 3,
+          "logicalLength": 2,
+          "payload": []
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 4,
+          "logicalLength": 1,
+          "payload": [
+            "5"
+          ]
+        },
+        {
+          "tag": "extensionField",
+          "encoding": "extension4KoalaBearDirect",
+          "counter": 5,
+          "logicalLength": 1,
+          "payload": [
+            "1",
+            "2",
+            "3",
+            "4"
+          ]
+        },
+        {
+          "tag": "sliceEnd",
+          "encoding": "container",
+          "counter": 6,
+          "logicalLength": 0,
+          "payload": []
+        },
+        {
+          "tag": "digest",
+          "encoding": "koalaBearDigest8",
+          "counter": 7,
+          "logicalLength": 1,
+          "payload": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ]
+        },
+        {
+          "tag": "containerEnd",
+          "encoding": "container",
+          "counter": 8,
+          "logicalLength": 0,
+          "payload": []
+        },
+        {
+          "tag": "squeezeField",
+          "encoding": "squeezeRequest",
+          "counter": 9,
+          "logicalLength": 10,
+          "payload": []
+        },
+        {
+          "tag": "squeezeField",
+          "encoding": "squeezeRequest",
+          "counter": 10,
+          "logicalLength": 1,
+          "payload": []
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 11,
+          "logicalLength": 2,
+          "payload": [
+            "9",
+            "0"
+          ]
+        },
+        {
+          "tag": "squeezeBits",
+          "encoding": "squeezeRequest",
+          "counter": 12,
+          "logicalLength": 30,
+          "payload": []
+        }
+      ],
+      "expectedSteps": [
+        {
+          "index": 0,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "uninitialized",
+            "nextCounter": 0,
+            "collectionStack": [],
+            "permutationStateStatus": "exact",
+            "permutationState": [
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "0"
+            ]
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "1",
+            "10",
+            "0",
+            "0",
+            "0",
+            "0",
+            "16",
+            "0",
+            "0",
+            "0",
+            "8",
+            "0",
+            "0",
+            "0",
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "1",
+                "10",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "16",
+                "0",
+                "0",
+                "0",
+                "8",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751874",
+              "rateWords": [
+                "20532",
+                "12884",
+                "21590",
+                "12544",
+                "1",
+                "257",
+                "264",
+                "4096"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341699",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 1,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 1,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 1,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "16",
+            "1",
+            "1",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "7",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "16",
+                "1",
+                "1",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "1",
+                "0",
+                "0",
+                "0",
+                "1",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 2,
+              "final": true,
+              "control": "1085407234",
+              "rateWords": [
+                "7",
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 2,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 2,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 2,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "34",
+            "7",
+            "2",
+            "0",
+            "0",
+            "0",
+            "2",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "34",
+                "7",
+                "2",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "2",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341698",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 3,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 0
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 3,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 3,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 0
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "32",
+            "7",
+            "3",
+            "0",
+            "0",
+            "0",
+            "2",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "32",
+                "7",
+                "3",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "2",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341698",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 4,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              },
+              {
+                "kind": "slice",
+                "declaredChildren": 2,
+                "observedChildren": 0
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 4,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 4,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              },
+              {
+                "kind": "slice",
+                "declaredChildren": 2,
+                "observedChildren": 0
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "16",
+            "1",
+            "4",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "5",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "16",
+                "1",
+                "4",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "1",
+                "0",
+                "0",
+                "0",
+                "1",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 2,
+              "final": true,
+              "control": "1085407234",
+              "rateWords": [
+                "5",
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 5,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              },
+              {
+                "kind": "slice",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 5,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 5,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              },
+              {
+                "kind": "slice",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "17",
+            "3",
+            "5",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "4",
+            "0",
+            "0",
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "17",
+                "3",
+                "5",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "1",
+                "0",
+                "0",
+                "0",
+                "4",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 5,
+              "final": true,
+              "control": "1085603842",
+              "rateWords": [
+                "1",
+                "2",
+                "3",
+                "4",
+                "1162757121",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 6,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              },
+              {
+                "kind": "slice",
+                "declaredChildren": 2,
+                "observedChildren": 2
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 6,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 6,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              },
+              {
+                "kind": "slice",
+                "declaredChildren": 2,
+                "observedChildren": 2
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "33",
+            "7",
+            "6",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "33",
+                "7",
+                "6",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341698",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 7,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 7,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 7,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 1
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "18",
+            "5",
+            "7",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "8",
+            "0",
+            "0",
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "18",
+                "5",
+                "7",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "1",
+                "0",
+                "0",
+                "0",
+                "8",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751874",
+              "rateWords": [
+                "1",
+                "2",
+                "3",
+                "4",
+                "5",
+                "6",
+                "7",
+                "8"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341699",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 8,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 2
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 8,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 8,
+            "collectionStack": [
+              {
+                "kind": "container",
+                "declaredChildren": 2,
+                "observedChildren": 2
+              }
+            ],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "35",
+            "7",
+            "8",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "35",
+                "7",
+                "8",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341698",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 9,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 9,
+          "transitionKind": "squeeze",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 9,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "48",
+            "8",
+            "9",
+            "0",
+            "0",
+            "0",
+            "10",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "48",
+                "8",
+                "9",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "10",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341698",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [
+            {
+              "index": 0,
+              "occupied": 0,
+              "final": true,
+              "control": "1087373312",
+              "rateWords": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 10,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 10,
+          "transitionKind": "squeeze",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 10,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "48",
+            "8",
+            "10",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "48",
+                "8",
+                "10",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "1",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341698",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 11,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 11,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 11,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "16",
+            "1",
+            "11",
+            "0",
+            "0",
+            "0",
+            "2",
+            "0",
+            "0",
+            "0",
+            "2",
+            "0",
+            "0",
+            "0",
+            "9",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "16",
+                "1",
+                "11",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "2",
+                "0",
+                "0",
+                "0",
+                "2",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 3,
+              "final": true,
+              "control": "1085472770",
+              "rateWords": [
+                "9",
+                "0",
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 12,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 12,
+          "transitionKind": "squeeze",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 12,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "49",
+            "8",
+            "12",
+            "0",
+            "0",
+            "0",
+            "30",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751872",
+              "rateWords": [
+                "1345597953",
+                "1",
+                "49",
+                "8",
+                "12",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 8,
+              "final": false,
+              "control": "1084751873",
+              "rateWords": [
+                "30",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 1,
+              "final": true,
+              "control": "1085341698",
+              "rateWords": [
+                "1162757121",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 13,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        }
+      ],
+      "expectedFinal": {
+        "mode": "absorbing",
+        "nextCounter": 13,
+        "collectionStack": [],
+        "permutationStateStatus": "not-generated",
+        "permutationState": null
+      }
+    },
+    {
+      "id": "outer-ordered-lifecycle",
+      "profile": "outer-bn254-rate-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001020202020300",
+      "expectedInitial": {
+        "mode": "uninitialized",
+        "nextCounter": 0,
+        "collectionStack": [],
+        "permutationStateStatus": "exact",
+        "permutationState": [
+          "0",
+          "0",
+          "0"
+        ]
+      },
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearPacked8",
+          "counter": 1,
+          "logicalLength": 2,
+          "payload": [
+            "4294967297"
+          ]
+        },
+        {
+          "tag": "extensionField",
+          "encoding": "extension4KoalaBearPacked8",
+          "counter": 2,
+          "logicalLength": 1,
+          "payload": [
+            "39614081270967226856349106177"
+          ]
+        },
+        {
+          "tag": "squeezeField",
+          "encoding": "squeezeRequest",
+          "counter": 3,
+          "logicalLength": 3,
+          "payload": []
+        },
+        {
+          "tag": "squeezeExtension",
+          "encoding": "squeezeRequest",
+          "counter": 4,
+          "logicalLength": 1,
+          "payload": []
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearPacked8",
+          "counter": 5,
+          "logicalLength": 1,
+          "payload": [
+            "7"
+          ]
+        },
+        {
+          "tag": "squeezeBits",
+          "encoding": "squeezeRequest",
+          "counter": 6,
+          "logicalLength": 30,
+          "payload": []
+        }
+      ],
+      "expectedSteps": [
+        {
+          "index": 0,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "uninitialized",
+            "nextCounter": 0,
+            "collectionStack": [],
+            "permutationStateStatus": "exact",
+            "permutationState": [
+              "0",
+              "0",
+              "0"
+            ]
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "1",
+            "10",
+            "0",
+            "0",
+            "0",
+            "0",
+            "16",
+            "0",
+            "0",
+            "0",
+            "8",
+            "0",
+            "0",
+            "0",
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747264",
+              "rateWords": [
+                "1345597953",
+                "1"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747265",
+              "rateWords": [
+                "1",
+                "10"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747266",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747267",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 4,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747268",
+              "rateWords": [
+                "16",
+                "0"
+              ]
+            },
+            {
+              "index": 5,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747269",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 6,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747270",
+              "rateWords": [
+                "8",
+                "0"
+              ]
+            },
+            {
+              "index": 7,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747271",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 8,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747272",
+              "rateWords": [
+                "20532",
+                "12884"
+              ]
+            },
+            {
+              "index": 9,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747273",
+              "rateWords": [
+                "21590",
+                "12544"
+              ]
+            },
+            {
+              "index": 10,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747274",
+              "rateWords": [
+                "1",
+                "514"
+              ]
+            },
+            {
+              "index": 11,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747275",
+              "rateWords": [
+                "514",
+                "768"
+              ]
+            },
+            {
+              "index": 12,
+              "occupied": 1,
+              "final": true,
+              "control": "1093730316",
+              "rateWords": [
+                "1162757121",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 1,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 1,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 1,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "16",
+            "2",
+            "1",
+            "0",
+            "0",
+            "0",
+            "2",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "4294967297",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747264",
+              "rateWords": [
+                "1345597953",
+                "1"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747265",
+              "rateWords": [
+                "16",
+                "2"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747266",
+              "rateWords": [
+                "1",
+                "0"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747267",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 4,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747268",
+              "rateWords": [
+                "2",
+                "0"
+              ]
+            },
+            {
+              "index": 5,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747269",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 6,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747270",
+              "rateWords": [
+                "1",
+                "0"
+              ]
+            },
+            {
+              "index": 7,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747271",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 8,
+              "occupied": 2,
+              "final": true,
+              "control": "1093795848",
+              "rateWords": [
+                "4294967297",
+                "1162757121"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 2,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 2,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 2,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "17",
+            "4",
+            "2",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "39614081270967226856349106177",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747264",
+              "rateWords": [
+                "1345597953",
+                "1"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747265",
+              "rateWords": [
+                "17",
+                "4"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747266",
+              "rateWords": [
+                "2",
+                "0"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747267",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 4,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747268",
+              "rateWords": [
+                "1",
+                "0"
+              ]
+            },
+            {
+              "index": 5,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747269",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 6,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747270",
+              "rateWords": [
+                "1",
+                "0"
+              ]
+            },
+            {
+              "index": 7,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747271",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 8,
+              "occupied": 2,
+              "final": true,
+              "control": "1093795848",
+              "rateWords": [
+                "39614081270967226856349106177",
+                "1162757121"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 3,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 3,
+          "transitionKind": "squeeze",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 3,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "48",
+            "8",
+            "3",
+            "0",
+            "0",
+            "0",
+            "3",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747264",
+              "rateWords": [
+                "1345597953",
+                "1"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747265",
+              "rateWords": [
+                "48",
+                "8"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747266",
+              "rateWords": [
+                "3",
+                "0"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747267",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 4,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747268",
+              "rateWords": [
+                "3",
+                "0"
+              ]
+            },
+            {
+              "index": 5,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747269",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 6,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747270",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 7,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747271",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 8,
+              "occupied": 1,
+              "final": true,
+              "control": "1093730312",
+              "rateWords": [
+                "1162757121",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [
+            {
+              "index": 0,
+              "occupied": 0,
+              "final": true,
+              "control": "1095761920",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 4,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 4,
+          "transitionKind": "squeeze",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 4,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "50",
+            "8",
+            "4",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747264",
+              "rateWords": [
+                "1345597953",
+                "1"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747265",
+              "rateWords": [
+                "50",
+                "8"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747266",
+              "rateWords": [
+                "4",
+                "0"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747267",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 4,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747268",
+              "rateWords": [
+                "1",
+                "0"
+              ]
+            },
+            {
+              "index": 5,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747269",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 6,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747270",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 7,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747271",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 8,
+              "occupied": 1,
+              "final": true,
+              "control": "1093730312",
+              "rateWords": [
+                "1162757121",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [
+            {
+              "index": 0,
+              "occupied": 0,
+              "final": true,
+              "control": "1095761920",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            }
+          ],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 5,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 5,
+          "transitionKind": "absorb",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 5,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "16",
+            "2",
+            "5",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "7",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747264",
+              "rateWords": [
+                "1345597953",
+                "1"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747265",
+              "rateWords": [
+                "16",
+                "2"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747266",
+              "rateWords": [
+                "5",
+                "0"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747267",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 4,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747268",
+              "rateWords": [
+                "1",
+                "0"
+              ]
+            },
+            {
+              "index": 5,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747269",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 6,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747270",
+              "rateWords": [
+                "1",
+                "0"
+              ]
+            },
+            {
+              "index": 7,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747271",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 8,
+              "occupied": 2,
+              "final": true,
+              "control": "1093795848",
+              "rateWords": [
+                "7",
+                "1162757121"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 6,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        },
+        {
+          "index": 6,
+          "transitionKind": "squeeze",
+          "expectedBefore": {
+            "mode": "absorbing",
+            "nextCounter": 6,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          },
+          "expectedFrameWords": [
+            "1345597953",
+            "1",
+            "49",
+            "8",
+            "6",
+            "0",
+            "0",
+            "0",
+            "30",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "1162757121"
+          ],
+          "expectedAbsorbBlocks": [
+            {
+              "index": 0,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747264",
+              "rateWords": [
+                "1345597953",
+                "1"
+              ]
+            },
+            {
+              "index": 1,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747265",
+              "rateWords": [
+                "49",
+                "8"
+              ]
+            },
+            {
+              "index": 2,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747266",
+              "rateWords": [
+                "6",
+                "0"
+              ]
+            },
+            {
+              "index": 3,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747267",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 4,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747268",
+              "rateWords": [
+                "30",
+                "0"
+              ]
+            },
+            {
+              "index": 5,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747269",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 6,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747270",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 7,
+              "occupied": 2,
+              "final": false,
+              "control": "1092747271",
+              "rateWords": [
+                "0",
+                "0"
+              ]
+            },
+            {
+              "index": 8,
+              "occupied": 1,
+              "final": true,
+              "control": "1093730312",
+              "rateWords": [
+                "1162757121",
+                "0"
+              ]
+            }
+          ],
+          "expectedSqueezeContinuations": [],
+          "expectedAfter": {
+            "mode": "absorbing",
+            "nextCounter": 7,
+            "collectionStack": [],
+            "permutationStateStatus": "not-generated",
+            "permutationState": null
+          }
+        }
+      ],
+      "expectedFinal": {
+        "mode": "absorbing",
+        "nextCounter": 7,
+        "collectionStack": [],
+        "permutationStateStatus": "not-generated",
+        "permutationState": null
+      }
+    }
+  ],
+  "collisionNegativeTranscripts": [
+    {
+      "id": "packed-trailing-zero",
+      "profile": "outer-bn254-rate-koalabear-v1",
+      "left": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearPacked8",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": [
+            "7"
+          ]
+        }
+      ],
+      "right": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearPacked8",
+          "counter": 1,
+          "logicalLength": 2,
+          "payload": [
+            "7"
+          ]
+        }
+      ],
+      "reason": "The packed integer aliases, but the ordered frame binds logical length."
+    },
+    {
+      "id": "direct-trailing-zero",
+      "profile": "inner-koalabear-v1",
+      "left": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": [
+            "5"
+          ]
+        }
+      ],
+      "right": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 1,
+          "logicalLength": 2,
+          "payload": [
+            "5",
+            "0"
+          ]
+        }
+      ],
+      "reason": "Lane occupancy and logical length distinguish a trailing zero."
+    },
+    {
+      "id": "scalar-extension-type",
+      "profile": "outer-bn254-rate-koalabear-v1",
+      "left": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearPacked8",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": [
+            "42"
+          ]
+        }
+      ],
+      "right": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "extensionField",
+          "encoding": "extension4KoalaBearPacked8",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": [
+            "39614081270967226856349106177"
+          ]
+        }
+      ],
+      "reason": "A KoalaBear scalar and an SP1 extension use distinct typed event tags and payload shapes."
+    },
+    {
+      "id": "flat-nested-boundary",
+      "profile": "inner-koalabear-v1",
+      "left": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 1,
+          "logicalLength": 2,
+          "payload": [
+            "5",
+            "6"
+          ]
+        }
+      ],
+      "right": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "sliceBegin",
+          "encoding": "container",
+          "counter": 1,
+          "logicalLength": 2,
+          "payload": []
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 2,
+          "logicalLength": 1,
+          "payload": [
+            "5"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 3,
+          "logicalLength": 1,
+          "payload": [
+            "6"
+          ]
+        },
+        {
+          "tag": "sliceEnd",
+          "encoding": "container",
+          "counter": 4,
+          "logicalLength": 0,
+          "payload": []
+        }
+      ],
+      "reason": "A flat vector and an ordered slice have different event boundaries."
+    },
+    {
+      "id": "repeated-versus-batched-squeeze",
+      "profile": "inner-koalabear-v1",
+      "left": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "squeezeField",
+          "encoding": "squeezeRequest",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": []
+        },
+        {
+          "tag": "squeezeField",
+          "encoding": "squeezeRequest",
+          "counter": 2,
+          "logicalLength": 1,
+          "payload": []
+        }
+      ],
+      "right": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "squeezeField",
+          "encoding": "squeezeRequest",
+          "counter": 1,
+          "logicalLength": 2,
+          "payload": []
+        }
+      ],
+      "reason": "Repeated scalar squeezes and one batched squeeze are distinct transcripts."
+    }
+  ],
+  "rejectionVectors": [
+    {
+      "id": "missing-envelope",
+      "kind": "envelope",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": null,
+      "events": [],
+      "expectedErrorCode": "ENVELOPE_MISSING"
+    },
+    {
+      "id": "legacy-envelope-version",
+      "kind": "envelope",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000000010101081000",
+      "events": [],
+      "expectedErrorCode": "ENVELOPE_VERSION"
+    },
+    {
+      "id": "profile-substitution",
+      "kind": "envelope",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001020202020300",
+      "events": [],
+      "expectedErrorCode": "ENVELOPE_PROFILE"
+    },
+    {
+      "id": "parameter-substitution",
+      "kind": "envelope",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001010101071000",
+      "events": [],
+      "expectedErrorCode": "ENVELOPE_PARAMETERS"
+    },
+    {
+      "id": "noncanonical-envelope-hex",
+      "kind": "envelope",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0X50343254545631000001010101081000",
+      "events": [],
+      "expectedErrorCode": "ENVELOPE_CANONICAL"
+    },
+    {
+      "id": "counter-gap",
+      "kind": "transcript",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001010101081000",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 2,
+          "logicalLength": 1,
+          "payload": [
+            "1"
+          ]
+        }
+      ],
+      "expectedErrorCode": "COUNTER"
+    },
+    {
+      "id": "unmatched-slice-end",
+      "kind": "transcript",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001010101081000",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "sliceEnd",
+          "encoding": "container",
+          "counter": 1,
+          "logicalLength": 0,
+          "payload": []
+        }
+      ],
+      "expectedErrorCode": "NESTING"
+    },
+    {
+      "id": "declared-child-count",
+      "kind": "transcript",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001010101081000",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "sliceBegin",
+          "encoding": "container",
+          "counter": 1,
+          "logicalLength": 2,
+          "payload": []
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearDirect",
+          "counter": 2,
+          "logicalLength": 1,
+          "payload": [
+            "1"
+          ]
+        },
+        {
+          "tag": "sliceEnd",
+          "encoding": "container",
+          "counter": 3,
+          "logicalLength": 0,
+          "payload": []
+        }
+      ],
+      "expectedErrorCode": "CHILD_COUNT"
+    },
+    {
+      "id": "squeeze-inside-container",
+      "kind": "transcript",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001010101081000",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "containerBegin",
+          "encoding": "container",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": []
+        },
+        {
+          "tag": "squeezeField",
+          "encoding": "squeezeRequest",
+          "counter": 2,
+          "logicalLength": 1,
+          "payload": []
+        }
+      ],
+      "expectedErrorCode": "SQUEEZE_IN_CONTAINER"
+    },
+    {
+      "id": "inner-squeeze-bits-zero",
+      "kind": "transcript",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001010101081000",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "squeezeBits",
+          "encoding": "squeezeRequest",
+          "counter": 1,
+          "logicalLength": 0,
+          "payload": []
+        }
+      ],
+      "expectedErrorCode": "EVENT_SHAPE"
+    },
+    {
+      "id": "inner-squeeze-bits-overflow",
+      "kind": "transcript",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001010101081000",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "squeezeBits",
+          "encoding": "squeezeRequest",
+          "counter": 1,
+          "logicalLength": 31,
+          "payload": []
+        }
+      ],
+      "expectedErrorCode": "SQUEEZE_BITS_RANGE"
+    },
+    {
+      "id": "outer-squeeze-bits-overflow",
+      "kind": "transcript",
+      "profile": "outer-bn254-rate-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001020202020300",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "squeezeBits",
+          "encoding": "squeezeRequest",
+          "counter": 1,
+          "logicalLength": 31,
+          "payload": []
+        }
+      ],
+      "expectedErrorCode": "SQUEEZE_BITS_RANGE"
+    },
+    {
+      "id": "outer-native-bn254-pcs-forbidden",
+      "kind": "transcript",
+      "profile": "outer-bn254-rate-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001020202020300",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "commitment",
+          "encoding": "bn254Native",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": [
+            "42"
+          ]
+        }
+      ],
+      "expectedErrorCode": "EVENT_SHAPE"
+    },
+    {
+      "id": "packed-noncanonical-digit",
+      "kind": "transcript",
+      "profile": "outer-bn254-rate-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001020202020300",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearPacked8",
+          "counter": 1,
+          "logicalLength": 2,
+          "payload": [
+            "4575657223555907585"
+          ]
+        }
+      ],
+      "expectedErrorCode": "NONCANONICAL_KB_DIGIT"
+    },
+    {
+      "id": "packed-undeclared-high-digit",
+      "kind": "transcript",
+      "profile": "outer-bn254-rate-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001020202020300",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "514",
+            "514",
+            "768"
+          ]
+        },
+        {
+          "tag": "baseField",
+          "encoding": "koalaBearPacked8",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": [
+            "2147483648"
+          ]
+        }
+      ],
+      "expectedErrorCode": "UNDECLARED_PACKED_DIGIT"
+    },
+    {
+      "id": "squeeze-inside-slice",
+      "kind": "transcript",
+      "profile": "inner-koalabear-v1",
+      "envelopeHex": "0x50343254545631000001010101081000",
+      "events": [
+        {
+          "tag": "protocolInit",
+          "encoding": "versionEnvelopeU16",
+          "counter": 0,
+          "logicalLength": 16,
+          "payload": [
+            "20532",
+            "12884",
+            "21590",
+            "12544",
+            "1",
+            "257",
+            "264",
+            "4096"
+          ]
+        },
+        {
+          "tag": "sliceBegin",
+          "encoding": "container",
+          "counter": 1,
+          "logicalLength": 1,
+          "payload": []
+        },
+        {
+          "tag": "squeezeField",
+          "encoding": "squeezeRequest",
+          "counter": 2,
+          "logicalLength": 1,
+          "payload": []
+        }
+      ],
+      "expectedErrorCode": "SQUEEZE_IN_CONTAINER"
+    }
+  ],
+  "independentStateTransitionRegressions": [
+    {
+      "id": "slice-squeeze-rejection-is-atomic",
+      "profile": "inner-koalabear-v1",
+      "before": {
+        "mode": "absorbing",
+        "nextCounter": 2,
+        "collectionStack": [
+          {
+            "kind": "slice",
+            "declaredChildren": 1,
+            "observedChildren": 0
+          }
+        ],
+        "permutationStateStatus": "not-generated",
+        "permutationState": null
+      },
+      "event": {
+        "tag": "squeezeField",
+        "encoding": "squeezeRequest",
+        "counter": 2,
+        "logicalLength": 1,
+        "payload": []
+      },
+      "expectedErrorCode": "SQUEEZE_IN_CONTAINER",
+      "expectedAfter": {
+        "mode": "absorbing",
+        "nextCounter": 2,
+        "collectionStack": [
+          {
+            "kind": "slice",
+            "declaredChildren": 1,
+            "observedChildren": 0
+          }
+        ],
+        "permutationStateStatus": "not-generated",
+        "permutationState": null
+      },
+      "expectedSqueezeContinuations": []
+    },
+    {
+      "id": "container-squeeze-rejection-is-atomic",
+      "profile": "inner-koalabear-v1",
+      "before": {
+        "mode": "absorbing",
+        "nextCounter": 7,
+        "collectionStack": [
+          {
+            "kind": "container",
+            "declaredChildren": 2,
+            "observedChildren": 1
+          }
+        ],
+        "permutationStateStatus": "not-generated",
+        "permutationState": null
+      },
+      "event": {
+        "tag": "squeezeBits",
+        "encoding": "squeezeRequest",
+        "counter": 7,
+        "logicalLength": 30,
+        "payload": []
+      },
+      "expectedErrorCode": "SQUEEZE_IN_CONTAINER",
+      "expectedAfter": {
+        "mode": "absorbing",
+        "nextCounter": 7,
+        "collectionStack": [
+          {
+            "kind": "container",
+            "declaredChildren": 2,
+            "observedChildren": 1
+          }
+        ],
+        "permutationStateStatus": "not-generated",
+        "permutationState": null
+      },
+      "expectedSqueezeContinuations": []
+    },
+    {
+      "id": "outer-bits30-single-output-transition",
+      "profile": "outer-bn254-rate-koalabear-v1",
+      "before": {
+        "mode": "absorbing",
+        "nextCounter": 5,
+        "collectionStack": [],
+        "permutationStateStatus": "not-generated",
+        "permutationState": null
+      },
+      "event": {
+        "tag": "squeezeBits",
+        "encoding": "squeezeRequest",
+        "counter": 5,
+        "logicalLength": 30,
+        "payload": []
+      },
+      "expectedErrorCode": null,
+      "expectedSqueezeContinuations": [],
+      "expectedAfter": {
+        "mode": "absorbing",
+        "nextCounter": 6,
+        "collectionStack": [],
+        "permutationStateStatus": "not-generated",
+        "permutationState": null
+      }
+    }
+  ],
+  "hostileCorpusMutations": [
+    {
+      "id": "duplicate-positive-into-collision",
+      "sourceCategory": "positive",
+      "sourceIndex": 0,
+      "targetCategory": "collision-negative",
+      "targetIndex": 0,
+      "expectedErrorCode": "DUPLICATE_VECTOR_ID"
+    },
+    {
+      "id": "duplicate-rejection-into-positive",
+      "sourceCategory": "rejection",
+      "sourceIndex": 0,
+      "targetCategory": "positive",
+      "targetIndex": 1,
+      "expectedErrorCode": "DUPLICATE_VECTOR_ID"
+    }
+  ],
+  "outerChallengeExtractionVectors": [
+    {
+      "id": "outer-scalar-zero",
+      "kind": "scalar",
+      "rateWords": [
+        "0"
+      ],
+      "bits": null,
+      "expectedValues": [
+        "0"
+      ],
+      "expectedConsumedRateWords": 1,
+      "expectedErrorCode": null
+    },
+    {
+      "id": "outer-scalar-modulus-reduction",
+      "kind": "scalar",
+      "rateWords": [
+        "2130706433"
+      ],
+      "bits": null,
+      "expectedValues": [
+        "0"
+      ],
+      "expectedConsumedRateWords": 1,
+      "expectedErrorCode": null
+    },
+    {
+      "id": "outer-extension-four-coefficients",
+      "kind": "extension",
+      "rateWords": [
+        "1",
+        "2130706435",
+        "3",
+        "4"
+      ],
+      "bits": null,
+      "expectedValues": [
+        "1",
+        "2",
+        "3",
+        "4"
+      ],
+      "expectedConsumedRateWords": 4,
+      "expectedErrorCode": null
+    },
+    {
+      "id": "outer-bits30",
+      "kind": "bits",
+      "rateWords": [
+        "2147483647"
+      ],
+      "bits": 30,
+      "expectedValues": [
+        "1073741823"
+      ],
+      "expectedConsumedRateWords": 1,
+      "expectedErrorCode": null
+    },
+    {
+      "id": "outer-bits31-rejected",
+      "kind": "bits",
+      "rateWords": [
+        "1"
+      ],
+      "bits": 31,
+      "expectedValues": [],
+      "expectedConsumedRateWords": null,
+      "expectedErrorCode": "SQUEEZE_BITS_RANGE"
+    },
+    {
+      "id": "outer-rate-word-noncanonical",
+      "kind": "scalar",
+      "rateWords": [
+        "21888242871839275222246405745257275088548364400416034343698204186575808495617"
+      ],
+      "bits": null,
+      "expectedValues": [],
+      "expectedConsumedRateWords": null,
+      "expectedErrorCode": "NONCANONICAL_BN254_RATE_WORD"
+    },
+    {
+      "id": "outer-scalar-exhausted",
+      "kind": "scalar",
+      "rateWords": [],
+      "bits": null,
+      "expectedValues": [],
+      "expectedConsumedRateWords": null,
+      "expectedErrorCode": "EXTRACTION_EXHAUSTED"
+    }
+  ],
+  "proofDecodingVectors": [
+    {
+      "id": "core-v0-valid",
+      "proofMode": "core",
+      "decoderVersion": "v0",
+      "wireHex": "0x01000001010003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "legacy-v0-core",
+        "version": "v0",
+        "mode": "core",
+        "selectorHex": "0x01000001",
+        "payloadHex": "0xdead01"
+      },
+      "expectedErrorCode": null,
+      "case": "v0-valid"
+    },
+    {
+      "id": "core-v1-valid",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100001000001010003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "typed-v1-core",
+        "version": "v1",
+        "mode": "core",
+        "selectorHex": "0x01000001",
+        "payloadHex": "0xdead01"
+      },
+      "expectedErrorCode": null,
+      "case": "v1-valid"
+    },
+    {
+      "id": "core-v0-to-v1",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x01000001010003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v0-to-v1"
+    },
+    {
+      "id": "core-v1-to-v0",
+      "proofMode": "core",
+      "decoderVersion": "v0",
+      "wireHex": "0x5034325454563100000101010108100001000001010003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V1_TO_V0_DECODER",
+      "case": "v1-to-v0"
+    },
+    {
+      "id": "core-v0-malformed",
+      "proofMode": "core",
+      "decoderVersion": "v0",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-malformed"
+    },
+    {
+      "id": "core-v1-malformed",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-malformed"
+    },
+    {
+      "id": "core-v0-trailing-byte",
+      "proofMode": "core",
+      "decoderVersion": "v0",
+      "wireHex": "0x01000001010003dead01ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v0-trailing-byte"
+    },
+    {
+      "id": "core-v1-trailing-byte",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100001000001010003dead01ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v1-trailing-byte"
+    },
+    {
+      "id": "core-v1-wrong-magic",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x5134325454563100000101010108100001000001010003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MAGIC",
+      "case": "v1-wrong-magic"
+    },
+    {
+      "id": "core-v1-wrong-version",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000201010108100001000001010003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version"
+    },
+    {
+      "id": "core-v0-wrong-mode",
+      "proofMode": "core",
+      "decoderVersion": "v0",
+      "wireHex": "0x01000001020003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v0-wrong-mode"
+    },
+    {
+      "id": "core-v1-wrong-mode",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100001000001020003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v1-wrong-mode"
+    },
+    {
+      "id": "core-v0-wrong-length",
+      "proofMode": "core",
+      "decoderVersion": "v0",
+      "wireHex": "0x01000001010004dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-wrong-length"
+    },
+    {
+      "id": "core-v1-wrong-length",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100001000001010004dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-wrong-length"
+    },
+    {
+      "id": "core-v1-downgrade-fallback-forbidden",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x01000001010003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v1-downgrade-fallback-forbidden"
+    },
+    {
+      "id": "core-v1-wrong-version-fallback-forbidden",
+      "proofMode": "core",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000201010108100001000001010003dead01",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version-fallback-forbidden"
+    },
+    {
+      "id": "compressed-v0-valid",
+      "proofMode": "compressed",
+      "decoderVersion": "v0",
+      "wireHex": "0x02000002020003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "legacy-v0-compressed",
+        "version": "v0",
+        "mode": "compressed",
+        "selectorHex": "0x02000002",
+        "payloadHex": "0xdead02"
+      },
+      "expectedErrorCode": null,
+      "case": "v0-valid"
+    },
+    {
+      "id": "compressed-v1-valid",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100002000002020003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "typed-v1-compressed",
+        "version": "v1",
+        "mode": "compressed",
+        "selectorHex": "0x02000002",
+        "payloadHex": "0xdead02"
+      },
+      "expectedErrorCode": null,
+      "case": "v1-valid"
+    },
+    {
+      "id": "compressed-v0-to-v1",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x02000002020003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v0-to-v1"
+    },
+    {
+      "id": "compressed-v1-to-v0",
+      "proofMode": "compressed",
+      "decoderVersion": "v0",
+      "wireHex": "0x5034325454563100000101010108100002000002020003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V1_TO_V0_DECODER",
+      "case": "v1-to-v0"
+    },
+    {
+      "id": "compressed-v0-malformed",
+      "proofMode": "compressed",
+      "decoderVersion": "v0",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-malformed"
+    },
+    {
+      "id": "compressed-v1-malformed",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-malformed"
+    },
+    {
+      "id": "compressed-v0-trailing-byte",
+      "proofMode": "compressed",
+      "decoderVersion": "v0",
+      "wireHex": "0x02000002020003dead02ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v0-trailing-byte"
+    },
+    {
+      "id": "compressed-v1-trailing-byte",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100002000002020003dead02ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v1-trailing-byte"
+    },
+    {
+      "id": "compressed-v1-wrong-magic",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x5134325454563100000101010108100002000002020003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MAGIC",
+      "case": "v1-wrong-magic"
+    },
+    {
+      "id": "compressed-v1-wrong-version",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000201010108100002000002020003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version"
+    },
+    {
+      "id": "compressed-v0-wrong-mode",
+      "proofMode": "compressed",
+      "decoderVersion": "v0",
+      "wireHex": "0x02000002030003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v0-wrong-mode"
+    },
+    {
+      "id": "compressed-v1-wrong-mode",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100002000002030003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v1-wrong-mode"
+    },
+    {
+      "id": "compressed-v0-wrong-length",
+      "proofMode": "compressed",
+      "decoderVersion": "v0",
+      "wireHex": "0x02000002020004dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-wrong-length"
+    },
+    {
+      "id": "compressed-v1-wrong-length",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100002000002020004dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-wrong-length"
+    },
+    {
+      "id": "compressed-v1-downgrade-fallback-forbidden",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x02000002020003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v1-downgrade-fallback-forbidden"
+    },
+    {
+      "id": "compressed-v1-wrong-version-fallback-forbidden",
+      "proofMode": "compressed",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000201010108100002000002020003dead02",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version-fallback-forbidden"
+    },
+    {
+      "id": "shrink-v0-valid",
+      "proofMode": "shrink",
+      "decoderVersion": "v0",
+      "wireHex": "0x03000003030003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "legacy-v0-shrink",
+        "version": "v0",
+        "mode": "shrink",
+        "selectorHex": "0x03000003",
+        "payloadHex": "0xdead03"
+      },
+      "expectedErrorCode": null,
+      "case": "v0-valid"
+    },
+    {
+      "id": "shrink-v1-valid",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100003000003030003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "typed-v1-shrink",
+        "version": "v1",
+        "mode": "shrink",
+        "selectorHex": "0x03000003",
+        "payloadHex": "0xdead03"
+      },
+      "expectedErrorCode": null,
+      "case": "v1-valid"
+    },
+    {
+      "id": "shrink-v0-to-v1",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x03000003030003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v0-to-v1"
+    },
+    {
+      "id": "shrink-v1-to-v0",
+      "proofMode": "shrink",
+      "decoderVersion": "v0",
+      "wireHex": "0x5034325454563100000101010108100003000003030003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V1_TO_V0_DECODER",
+      "case": "v1-to-v0"
+    },
+    {
+      "id": "shrink-v0-malformed",
+      "proofMode": "shrink",
+      "decoderVersion": "v0",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-malformed"
+    },
+    {
+      "id": "shrink-v1-malformed",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-malformed"
+    },
+    {
+      "id": "shrink-v0-trailing-byte",
+      "proofMode": "shrink",
+      "decoderVersion": "v0",
+      "wireHex": "0x03000003030003dead03ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v0-trailing-byte"
+    },
+    {
+      "id": "shrink-v1-trailing-byte",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100003000003030003dead03ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v1-trailing-byte"
+    },
+    {
+      "id": "shrink-v1-wrong-magic",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x5134325454563100000101010108100003000003030003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MAGIC",
+      "case": "v1-wrong-magic"
+    },
+    {
+      "id": "shrink-v1-wrong-version",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000201010108100003000003030003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version"
+    },
+    {
+      "id": "shrink-v0-wrong-mode",
+      "proofMode": "shrink",
+      "decoderVersion": "v0",
+      "wireHex": "0x03000003040003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v0-wrong-mode"
+    },
+    {
+      "id": "shrink-v1-wrong-mode",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100003000003040003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v1-wrong-mode"
+    },
+    {
+      "id": "shrink-v0-wrong-length",
+      "proofMode": "shrink",
+      "decoderVersion": "v0",
+      "wireHex": "0x03000003030004dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-wrong-length"
+    },
+    {
+      "id": "shrink-v1-wrong-length",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000101010108100003000003030004dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-wrong-length"
+    },
+    {
+      "id": "shrink-v1-downgrade-fallback-forbidden",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x03000003030003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v1-downgrade-fallback-forbidden"
+    },
+    {
+      "id": "shrink-v1-wrong-version-fallback-forbidden",
+      "proofMode": "shrink",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000201010108100003000003030003dead03",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version-fallback-forbidden"
+    },
+    {
+      "id": "wrap-v0-valid",
+      "proofMode": "wrap",
+      "decoderVersion": "v0",
+      "wireHex": "0x04000004040003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "legacy-v0-wrap",
+        "version": "v0",
+        "mode": "wrap",
+        "selectorHex": "0x04000004",
+        "payloadHex": "0xdead04"
+      },
+      "expectedErrorCode": null,
+      "case": "v0-valid"
+    },
+    {
+      "id": "wrap-v1-valid",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000102020202030004000004040003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": {
+        "decoder": "typed-v1-wrap",
+        "version": "v1",
+        "mode": "wrap",
+        "selectorHex": "0x04000004",
+        "payloadHex": "0xdead04"
+      },
+      "expectedErrorCode": null,
+      "case": "v1-valid"
+    },
+    {
+      "id": "wrap-v0-to-v1",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x04000004040003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v0-to-v1"
+    },
+    {
+      "id": "wrap-v1-to-v0",
+      "proofMode": "wrap",
+      "decoderVersion": "v0",
+      "wireHex": "0x5034325454563100000102020202030004000004040003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V1_TO_V0_DECODER",
+      "case": "v1-to-v0"
+    },
+    {
+      "id": "wrap-v0-malformed",
+      "proofMode": "wrap",
+      "decoderVersion": "v0",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-malformed"
+    },
+    {
+      "id": "wrap-v1-malformed",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x00",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-malformed"
+    },
+    {
+      "id": "wrap-v0-trailing-byte",
+      "proofMode": "wrap",
+      "decoderVersion": "v0",
+      "wireHex": "0x04000004040003dead04ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v0-trailing-byte"
+    },
+    {
+      "id": "wrap-v1-trailing-byte",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000102020202030004000004040003dead04ff",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_TRAILING_BYTES",
+      "case": "v1-trailing-byte"
+    },
+    {
+      "id": "wrap-v1-wrong-magic",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x5134325454563100000102020202030004000004040003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MAGIC",
+      "case": "v1-wrong-magic"
+    },
+    {
+      "id": "wrap-v1-wrong-version",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000202020202030004000004040003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version"
+    },
+    {
+      "id": "wrap-v0-wrong-mode",
+      "proofMode": "wrap",
+      "decoderVersion": "v0",
+      "wireHex": "0x04000004050003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v0-wrong-mode"
+    },
+    {
+      "id": "wrap-v1-wrong-mode",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000102020202030004000004050003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "WRONG_PROOF_MODE",
+      "case": "v1-wrong-mode"
+    },
+    {
+      "id": "wrap-v0-wrong-length",
+      "proofMode": "wrap",
+      "decoderVersion": "v0",
+      "wireHex": "0x04000004040004dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v0-wrong-length"
+    },
+    {
+      "id": "wrap-v1-wrong-length",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000102020202030004000004040004dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "PROOF_WIRE_LENGTH",
+      "case": "v1-wrong-length"
+    },
+    {
+      "id": "wrap-v1-downgrade-fallback-forbidden",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x04000004040003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "V0_TO_V1_DECODER",
+      "case": "v1-downgrade-fallback-forbidden"
+    },
+    {
+      "id": "wrap-v1-wrong-version-fallback-forbidden",
+      "proofMode": "wrap",
+      "decoderVersion": "v1",
+      "wireHex": "0x5034325454563100000202020202030004000004040003dead04",
+      "fallbackAllowed": false,
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_VERSION",
+      "case": "v1-wrong-version-fallback-forbidden"
+    }
+  ],
+  "gatewayVectors": [
+    {
+      "id": "gateway-groth16-valid",
+      "case": "valid",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000102020202030011223344deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": {
+        "forwardedHex": "0x11223344deadbeef00",
+        "verifierIdentity": {
+          "mode": "groth16",
+          "selectorHex": "0x11223344",
+          "verifierAddress": "0x1111111111111111111111111111111111110001",
+          "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "circuitId": "p42-typed-v1-groth16-structural-fixture"
+        },
+        "gatewayIdentity": "p42-v1-gateway-groth16"
+      },
+      "expectedErrorCode": null
+    },
+    {
+      "id": "gateway-groth16-opaque-routing-like-payload",
+      "case": "opaque-routing-like-payload",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x50343254545631000001020202020300112233447b2261646472657373223a22307831313131313131313131313131313131313131313131313131313131313131313131313130303032222c2263697263756974223a227034322d74797065642d76312d706c6f6e6b2d7374727563747572616c2d66697874757265222c22636f646568617368223a22307863636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c226d6f6465223a22706c6f6e6b222c2273656c6563746f72223a2230786131623263336434222c22766b223a22307864646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464227d",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": {
+        "forwardedHex": "0x112233447b2261646472657373223a22307831313131313131313131313131313131313131313131313131313131313131313131313130303032222c2263697263756974223a227034322d74797065642d76312d706c6f6e6b2d7374727563747572616c2d66697874757265222c22636f646568617368223a22307863636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c226d6f6465223a22706c6f6e6b222c2273656c6563746f72223a2230786131623263336434222c22766b223a22307864646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464227d",
+        "verifierIdentity": {
+          "mode": "groth16",
+          "selectorHex": "0x11223344",
+          "verifierAddress": "0x1111111111111111111111111111111111110001",
+          "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "circuitId": "p42-typed-v1-groth16-structural-fixture"
+        },
+        "gatewayIdentity": "p42-v1-gateway-groth16"
+      },
+      "expectedErrorCode": null
+    },
+    {
+      "id": "gateway-groth16-envelope-missing",
+      "case": "envelope-missing",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x01",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MISSING"
+    },
+    {
+      "id": "gateway-groth16-legacy-without-v1-envelope",
+      "case": "legacy-without-v1-envelope",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x112233446c65676163792d6f70617175652d7061796c6f6164",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MAGIC"
+    },
+    {
+      "id": "gateway-groth16-profile-substitution",
+      "case": "profile-substitution",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000101010108100011223344deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_PROFILE"
+    },
+    {
+      "id": "gateway-groth16-parameter-substitution",
+      "case": "parameter-substitution",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000102020203030011223344deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_PARAMETERS"
+    },
+    {
+      "id": "gateway-groth16-wrong-configured-selector",
+      "case": "wrong-configured-selector",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000102020202030011223344deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0xffffffff",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_CONFIG_SELECTOR"
+    },
+    {
+      "id": "gateway-groth16-wrong-address",
+      "case": "wrong-address",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000102020202030011223344deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x2222222222222222222222222222222222222222",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_ADDRESS"
+    },
+    {
+      "id": "gateway-groth16-wrong-codehash",
+      "case": "wrong-codehash",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000102020202030011223344deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_CODEHASH"
+    },
+    {
+      "id": "gateway-groth16-wrong-vk",
+      "case": "wrong-vk",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000102020202030011223344deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0x3333333333333333333333333333333333333333333333333333333333333333",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_VK"
+    },
+    {
+      "id": "gateway-groth16-wrong-circuit",
+      "case": "wrong-circuit",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000102020202030011223344deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-wrong-circuit"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_CIRCUIT"
+    },
+    {
+      "id": "gateway-groth16-wrong-wire-selector",
+      "case": "wrong-wire-selector",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x50343254545631000001020202020300ffffffffdeadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_SELECTOR_MISMATCH"
+    },
+    {
+      "id": "gateway-groth16-cross-mode-config",
+      "case": "cross-mode-config",
+      "trustedEntryPointMode": "groth16",
+      "wireHex": "0x5034325454563100000102020202030011223344deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_MODE"
+    },
+    {
+      "id": "gateway-plonk-valid",
+      "case": "valid",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": {
+        "forwardedHex": "0xa1b2c3d4deadbeef00",
+        "verifierIdentity": {
+          "mode": "plonk",
+          "selectorHex": "0xa1b2c3d4",
+          "verifierAddress": "0x1111111111111111111111111111111111110002",
+          "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "circuitId": "p42-typed-v1-plonk-structural-fixture"
+        },
+        "gatewayIdentity": "p42-v1-gateway-plonk"
+      },
+      "expectedErrorCode": null
+    },
+    {
+      "id": "gateway-plonk-opaque-routing-like-payload",
+      "case": "opaque-routing-like-payload",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d47b2261646472657373223a22307831313131313131313131313131313131313131313131313131313131313131313131313130303031222c2263697263756974223a227034322d74797065642d76312d67726f746831362d7374727563747572616c2d66697874757265222c22636f646568617368223a22307861616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c226d6f6465223a2267726f74683136222c2273656c6563746f72223a2230783131323233333434222c22766b223a22307862626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262227d",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": {
+        "forwardedHex": "0xa1b2c3d47b2261646472657373223a22307831313131313131313131313131313131313131313131313131313131313131313131313130303031222c2263697263756974223a227034322d74797065642d76312d67726f746831362d7374727563747572616c2d66697874757265222c22636f646568617368223a22307861616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c226d6f6465223a2267726f74683136222c2273656c6563746f72223a2230783131323233333434222c22766b223a22307862626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262227d",
+        "verifierIdentity": {
+          "mode": "plonk",
+          "selectorHex": "0xa1b2c3d4",
+          "verifierAddress": "0x1111111111111111111111111111111111110002",
+          "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "circuitId": "p42-typed-v1-plonk-structural-fixture"
+        },
+        "gatewayIdentity": "p42-v1-gateway-plonk"
+      },
+      "expectedErrorCode": null
+    },
+    {
+      "id": "gateway-plonk-envelope-missing",
+      "case": "envelope-missing",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x01",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MISSING"
+    },
+    {
+      "id": "gateway-plonk-legacy-without-v1-envelope",
+      "case": "legacy-without-v1-envelope",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0xa1b2c3d46c65676163792d6f70617175652d7061796c6f6164",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_MAGIC"
+    },
+    {
+      "id": "gateway-plonk-profile-substitution",
+      "case": "profile-substitution",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001010101081000a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_PROFILE"
+    },
+    {
+      "id": "gateway-plonk-parameter-substitution",
+      "case": "parameter-substitution",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202030300a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "ENVELOPE_PARAMETERS"
+    },
+    {
+      "id": "gateway-plonk-wrong-configured-selector",
+      "case": "wrong-configured-selector",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xffffffff",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_CONFIG_SELECTOR"
+    },
+    {
+      "id": "gateway-plonk-wrong-address",
+      "case": "wrong-address",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x2222222222222222222222222222222222222222",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_ADDRESS"
+    },
+    {
+      "id": "gateway-plonk-wrong-codehash",
+      "case": "wrong-codehash",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_CODEHASH"
+    },
+    {
+      "id": "gateway-plonk-wrong-vk",
+      "case": "wrong-vk",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0x3333333333333333333333333333333333333333333333333333333333333333",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_VK"
+    },
+    {
+      "id": "gateway-plonk-wrong-circuit",
+      "case": "wrong-circuit",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-wrong-circuit"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_CIRCUIT"
+    },
+    {
+      "id": "gateway-plonk-wrong-wire-selector",
+      "case": "wrong-wire-selector",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300ffffffffdeadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "plonk",
+        "selectorHex": "0xa1b2c3d4",
+        "verifierAddress": "0x1111111111111111111111111111111111110002",
+        "verifierCodehash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vkId": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "circuitId": "p42-typed-v1-plonk-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_SELECTOR_MISMATCH"
+    },
+    {
+      "id": "gateway-plonk-cross-mode-config",
+      "case": "cross-mode-config",
+      "trustedEntryPointMode": "plonk",
+      "wireHex": "0x50343254545631000001020202020300a1b2c3d4deadbeef00",
+      "trustedDeploymentConfig": {
+        "mode": "groth16",
+        "selectorHex": "0x11223344",
+        "verifierAddress": "0x1111111111111111111111111111111111110001",
+        "verifierCodehash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "vkId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "circuitId": "p42-typed-v1-groth16-structural-fixture"
+      },
+      "expectedOutcome": null,
+      "expectedErrorCode": "GATEWAY_VERIFIER_MODE"
+    }
+  ],
+  "hostileOutcomeMutations": [
+    {
+      "id": "contradict-decoder-success-with-error",
+      "targetCategory": "proof-decoding",
+      "targetIndex": 0,
+      "sourceCategory": "proof-decoding",
+      "sourceIndex": 2,
+      "expectedErrorCode": "CONTRADICTORY_VECTOR_OUTCOME"
+    },
+    {
+      "id": "contradict-gateway-rejection-with-outcome",
+      "targetCategory": "gateway",
+      "targetIndex": 2,
+      "sourceCategory": "gateway",
+      "sourceIndex": 0,
+      "expectedErrorCode": "CONTRADICTORY_VECTOR_OUTCOME"
+    }
+  ]
+}

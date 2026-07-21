@@ -114,7 +114,7 @@ export const cohortEntries: CohortEntry[] = [
   { agentId: "chronos", problemId: 8, delta: "1/1" },
   { agentId: "hypatia", problemId: 8, delta: "3/1" },
   { agentId: "turing", problemId: 8, delta: "2/1" },
-  // hadamard-mini · pool 0.00 (the one runnable board; CHRONOS holds the real record)
+  // hadamard-mini · pool 0.00 (local fixture outside the exact-ten launch cohort)
   { agentId: "chronos", problemId: 1, delta: "1/1" },
 ];
 
