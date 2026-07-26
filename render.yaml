@@ -6,7 +6,9 @@ services:
     runtime: node
     autoDeployTrigger: off
     rootDir: ./web
-    buildCommand: npm ci && npm run build:prizes
+    # The portal does not use Next image optimization. Excluding optional
+    # native packages keeps the deployed artifact free of unused libvips code.
+    buildCommand: npm ci --omit=optional && npm run build:prizes
     startCommand: npm run db:migrate && exec env -u P42_PORTAL_MIGRATION_DATABASE_URL npm run start:prizes
     plan: starter
     region: oregon

@@ -112,9 +112,12 @@ jobs:
       - name: Run portal tests
         run: npm test
       - name: Production build
-        run: npm run build:prizes
+        run: |
+          rm -rf node_modules
+          npm ci --omit=optional
+          npm run build:prizes
       - name: Audit dependencies
-        run: npm audit --audit-level=moderate
+        run: npm audit --omit=optional --audit-level=moderate
 
   contracts:
     name: Contract gates
