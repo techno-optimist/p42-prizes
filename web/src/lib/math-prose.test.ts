@@ -40,4 +40,14 @@ describe("Atlas math prose", () => {
     expect(markup).toContain("katex");
     expect(markup).not.toContain("katex-error");
   });
+
+  it("labels legacy snapshot verdicts as historical context", () => {
+    const corrected = atlasEntries.find((entry) => entry.id === 552);
+    expect(corrected).toBeDefined();
+    const markup = renderToStaticMarkup(createElement(AtlasDossier, { entry: corrected! }));
+
+    expect(markup).toContain("Current frontier evidence");
+    expect(markup).toContain("Historical snapshot assessment");
+    expect(markup).toContain("Current routing follows the frontier evidence and charted compute above.");
+  });
 });
