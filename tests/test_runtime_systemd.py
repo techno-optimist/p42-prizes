@@ -329,9 +329,9 @@ def test_rootless_launcher_rejects_an_unbound_command() -> None:
         ),
         (
             "deployments/p42-verifier-docker.service.example",
-            "Conflicts=docker.service docker.socket",
-            "Conflicts=docker.service",
-            "Conflicts=docker.service docker.socket",
+            "InaccessiblePaths=/run/docker.sock /var/run/docker.sock",
+            "InaccessiblePaths=/run/docker.sock",
+            "/run/docker.sock /var/run/docker.sock",
         ),
         (
             "deployments/p42-verifier-docker.service.example",

@@ -52,7 +52,9 @@ line "$executor" 'LoadCredential=resolver-rerun-attestor-key:/etc/p42/verifier-e
 line "$executor" 'ReadOnlyPaths=/etc/p42/verifier-executor /opt/p42 /var/lib/p42/resolver-rerun-requests /var/lib/p42/resolver-rerun'
 line "$docker" 'User=p42-verifier-executor'
 line "$docker" 'Group=p42-verifier-executor'
-line "$docker" 'Conflicts=docker.service docker.socket'
+absent "$docker" '^Conflicts=docker\.service|^ConditionPathExists=!/run/docker\.sock|^ConditionPathExists=!/var/run/docker\.sock' 'must coexist with an unrelated rootful daemon'
+line "$docker" 'InaccessiblePaths=/run/docker.sock /var/run/docker.sock'
+grep -Fq '/run/docker.sock /var/run/docker.sock' "$executor" || fail 'executor must not see rootful Docker sockets'
 grep -Fq '/usr/bin/dockerd-rootless.sh --host' "$docker" || fail 'verifier Docker must use dockerd-rootless.sh'
 line "$docker" 'RuntimeDirectoryMode=0700'
 line "$docker" 'AppArmorProfile=p42-rootless-runtime'
@@ -95,9 +97,6 @@ PY
 if $PYTHON "$root/scripts/generate_production_executor_config.py" --check "$boards" >/dev/null 2>&1; then
   fail 'test-only executor board sample must be unreachable by the production validator'
 fi
-line "$docker" 'ConditionPathExists=!/run/docker.sock'
-line "$docker" 'ConditionPathExists=!/var/run/docker.sock'
-
 for f in "$operator" "$executor" "$resolver" "$indexer"; do
   line "$f" 'Restart=on-failure'; line "$f" 'RestartSec=15s'; line "$f" 'OOMPolicy=kill'; line "$f" 'LimitCORE=0'
   line "$f" 'KillMode=mixed'; line "$f" 'SendSIGKILL=yes'; line "$f" 'MemorySwapMax=0'

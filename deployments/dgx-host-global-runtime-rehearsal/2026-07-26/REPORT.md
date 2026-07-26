@@ -59,7 +59,9 @@ and enabled user namespaces. It also found all of the following absent:
 - dedicated `/etc/subuid` range
 - dedicated `/etc/subgid` range
 
-The existing rootful Docker daemon and workloads were left untouched. No unit,
+The existing rootful Docker daemon and workloads were left untouched. The
+post-rehearsal service hardening permits coexistence while making both rootful
+socket paths inaccessible to the P42 daemon and executor namespaces. No unit,
 account, group, subordinate-ID range, socket, image, queue, credential, signer,
 RPC, or chain action was installed or exercised.
 
