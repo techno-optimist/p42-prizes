@@ -16,7 +16,7 @@ verifier cgroup could therefore admit a large verifier while unrelated workloads
 had already put the host under sustained memory pressure.
 
 The patched capacity snapshot uses the lower of effective cgroup headroom and
-host `MemAvailable`, and carries host-wide swap usage into the existing swap
+host `MemAvailable` after retaining the configured daemon reserve, and carries host-wide swap usage into the existing swap
 guard. The finite cgroup, no-swap container policy, serialized queue, and cgroup
 OOM counters remain independently enforced.
 

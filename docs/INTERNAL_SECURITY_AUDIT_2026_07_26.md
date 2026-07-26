@@ -128,7 +128,8 @@ workloads could drive the host into sustained swapping while the verifier cgroup
 still appeared empty enough to start an 8 GiB verifier.
 
 The patched executor takes the lower of cgroup headroom and host
-`MemAvailable`, and applies the swap threshold to host-wide swap usage. The
+`MemAvailable` after retaining the configured daemon reserve, and applies the
+swap threshold to host-wide swap usage. The
 unsigned DGX rehearsal observed 9,348 MiB swap used, returned
 `swap_guard_tripped`, and made no Docker invocation. Targeted queue/executor
 coverage passes 103 tests. The dedicated service account, submitter group, and

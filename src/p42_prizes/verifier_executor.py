@@ -112,9 +112,10 @@ def host_capacity_snapshot(
         raise VerifierExecutorError("effective rootless Docker cgroup cannot attribute OOM events")
     mib = 1024 * 1024
     host_memory = memory_snapshot_from_proc(meminfo_path)
+    host_available_after_reserve = max(0, host_memory.available_mb - daemon_mb)
     memory = MemorySnapshot(
         min(maximum // mib, host_memory.total_mb),
-        min(max(0, maximum - current) // mib, host_memory.available_mb),
+        min(max(0, maximum - current) // mib, host_available_after_reserve),
         host_memory.swap_used_mb,
     )
     return HostCapacity(memory, values["oom_kill"], attestation["boot_id"], required_mb, daemon_mb,

@@ -61,7 +61,7 @@ def test_capacity_reads_attested_effective_cgroup_memory_and_oom_counter(tmp_pat
     monkeypatch.setattr("p42_prizes.verifier_executor.read_boot_id", lambda: "boot-a")
     capacity = host_capacity_snapshot(attestation, cgroup_root=cgroup_root, meminfo_path=meminfo)
     assert capacity.oom_kills == 4
-    assert capacity.memory == MemorySnapshot(10 * 1024, 9 * 1024, 512)
+    assert capacity.memory == MemorySnapshot(10 * 1024, 11_000 - 2048, 512)
 
     meminfo.write_text(
         "MemTotal:       13107200 kB\n"
@@ -71,7 +71,7 @@ def test_capacity_reads_attested_effective_cgroup_memory_and_oom_counter(tmp_pat
         encoding="ascii",
     )
     constrained = host_capacity_snapshot(attestation, cgroup_root=cgroup_root, meminfo_path=meminfo)
-    assert constrained.memory == MemorySnapshot(10 * 1024, 4 * 1024, 2 * 1024)
+    assert constrained.memory == MemorySnapshot(10 * 1024, 2 * 1024, 2 * 1024)
 
     (cgroup / "memory.max").write_text("max\n", encoding="ascii")
     with pytest.raises(VerifierExecutorError, match="finite and numeric"):

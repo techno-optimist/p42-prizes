@@ -34,7 +34,7 @@
       "type": "object", "additionalProperties": false, "required": ["path", "sha256", "schema_version", "schema_sha256"],
       "properties": {
         "path": {"const": "protocol/production-board-bindings-v1.json"},
-        "sha256": {"const": "sha256:73467aab1eec16c3fd563ad011eca21b686224cbac4b64c3842a194106a7c399"},
+        "sha256": {"const": "sha256:ec42a7822ab4bf475e1b3d572ddc05e465dabd71cf9e05a8e81430ab2faea057"},
         "schema_version": {"const": "p42-prizes/production-board-bindings/v1"},
         "schema_sha256": {"const": "sha256:8c88f88842c8c32dd8699b250ae339a454faa95fc112049cd24148c967869f98"}
       }
