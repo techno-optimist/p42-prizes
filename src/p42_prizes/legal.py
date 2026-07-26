@@ -889,7 +889,7 @@ def _validate_trust_registry(registry: Mapping[str, Any], error_type: type[Value
         raise error_type("trust_registry.registrations must be an array")
     seen: set[tuple[str, str, tuple[tuple[str, str], ...], str, datetime, datetime | None]] = set()
     key_authorities: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {}
-    identity_authorities: dict[tuple[tuple[str, str], ...], tuple[str, str]] = {}
+    identity_authorities: dict[str, str] = {}
     for index, registration in enumerate(registrations):
         prefix = f"trust_registry.registrations[{index}]"
         if not isinstance(registration, Mapping):
@@ -915,8 +915,9 @@ def _validate_trust_registry(registry: Mapping[str, Any], error_type: type[Value
         key_authority = key_authorities.setdefault(public_key, (signer_role, core_identity))
         if key_authority != (signer_role, core_identity):
             raise error_type(f"{prefix}.public_key is already assigned to a different signer authority")
-        identity_authority = identity_authorities.setdefault(core_identity, (signer_role, public_key))
-        if identity_authority != (signer_role, public_key):
+        professional_email = str(identity["professional_email"]).strip().casefold()
+        identity_authority = identity_authorities.setdefault(professional_email, signer_role)
+        if identity_authority != signer_role:
             raise error_type(f"{prefix}.identity is already assigned to a different signer authority")
         valid_from = _require_utc(registration.get("valid_from_utc"), f"{prefix}.valid_from_utc", error_type)
         if valid_from < created_at:

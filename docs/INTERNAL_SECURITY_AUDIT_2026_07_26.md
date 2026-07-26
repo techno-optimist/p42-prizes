@@ -144,10 +144,11 @@ one named identity could use multiple keys under different roles. A single
 actor could satisfy nominally independent legal, security, and governance
 signatures while every individual signature remained valid.
 
-Registry validation now binds each core real-world identity and public key to
-exactly one signer role. Reuse across evidence classes remains possible only
-for the same identity, key, and role. Regression tests cover both key relabeling
-and identity relabeling.
+Registry validation now binds each professional identity and public key to
+exactly one signer role. Key rotation remains possible for the same identity
+and role, and key reuse across evidence classes remains possible only for the
+same identity and role. Regression tests cover key relabeling, identity
+relabeling, and legitimate same-role key rotation.
 
 ### P2-01: Contract test command is not package-hermetic
 
@@ -168,7 +169,7 @@ close independent review or live-state reachability.
 
 ## Local Gate Results
 
-- `make all`: pass; 2,059 Python tests passed, 3 skipped, all 17 problem
+- `make all`: pass; 2,066 Python tests passed, 3 skipped, all 17 problem
   packages validated and linted, exact-ten bindings passed, and all 17 seed
   reports replayed.
 - contracts: 370 Hardhat tests plus 20 release-capsule tests passed; npm audit

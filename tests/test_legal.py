@@ -585,6 +585,24 @@ def test_trust_registry_allows_same_authority_role_across_evidence_classes(tmp_p
     assert normalize(report, fixture, registry)["legal_hash"].startswith("sha256:")
 
 
+def test_trust_registry_allows_key_rotation_for_same_identity_and_role(tmp_path: Path) -> None:
+    report, fixture, registry = valid_legal_memo(tmp_path)
+    replacement = fixture.identity(
+        "replacement-authority",
+        "Emmy Noether",
+        "external-counsel",
+        organization="Independent Security Lab",
+    )
+    registration = dict(registry["registrations"][0])
+    registration.update(
+        attestation_class="p42-incident-drill/v2",
+        public_key=replacement["public_key"],
+    )
+    registry["registrations"].append(registration)
+
+    assert normalize(report, fixture, registry)["legal_hash"].startswith("sha256:")
+
+
 def test_legal_memo_rejects_unresolved_or_tampered_artifact_bytes(tmp_path: Path) -> None:
     report, fixture, registry = valid_legal_memo(tmp_path)
     artifact_path = fixture.root / report["memo_artifact"]["local_path"]
