@@ -445,7 +445,7 @@ export function computeAtlasPreflight(input: AtlasPreflightRequest, now = new Da
       decision: "STOP",
       reason_code: "CERTIFIED_EXCLUSION",
       go: false,
-      reason: "The requested parameter region is covered by a certified exclusion. Review the pinned certificate before proposing new compute.",
+      reason: "The requested parameter region is closed by pinned exclusion evidence. Review the cited result before proposing new compute.",
       ...base,
     };
   }

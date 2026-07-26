@@ -60,8 +60,8 @@ describe("Erdős frontier atlas", () => {
       recommended_unpacked: 0,
       reserve_unpacked: 6,
     });
-    expect(meta.provenance.commit).toBe("1afebbdc0e56166d8b0e5f0afa2b323070e9037c");
-    expect(meta.provenance.sha256).toBe("d72891f56359bb5d01c30b9938abc724c1af3bb73547416cd483bae2d30b7470");
+    expect(meta.provenance.commit).toBe("49e70f25e4bab48969293059cb9c95674de2aec0");
+    expect(meta.provenance.sha256).toBe("ed1148db84bf33d9d3beb0f5cba24e9a84dfd30314527fc800a57bc291d08e80");
     expect(getAtlasEntry(67)?.frontier?.summary).toContain("130,000");
     expect(getAtlasEntry(552)).toMatchObject({
       frontier: { summary: expect.stringContaining("a(12..16)") },
