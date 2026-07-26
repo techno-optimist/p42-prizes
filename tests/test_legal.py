@@ -543,6 +543,48 @@ def test_legal_memo_rejects_self_invented_unregistered_signer(tmp_path: Path) ->
         normalize(report, fixture, registry)
 
 
+def test_trust_registry_rejects_one_key_across_distinct_authority_roles(tmp_path: Path) -> None:
+    report, fixture, registry = valid_legal_memo(tmp_path)
+    registration = dict(registry["registrations"][0])
+    registration.update(
+        attestation_class="p42-security-audit/v2",
+        signer_role="security-owner",
+    )
+    registry["registrations"].append(registration)
+
+    with pytest.raises(LegalMemoError, match="public_key is already assigned"):
+        normalize(report, fixture, registry)
+
+
+def test_trust_registry_rejects_one_identity_across_distinct_authority_roles(tmp_path: Path) -> None:
+    report, fixture, registry = valid_legal_memo(tmp_path)
+    alternate = fixture.identity(
+        "alternate-authority",
+        "Emmy Noether",
+        "security-owner",
+        organization="Independent Security Lab",
+    )
+    registration = dict(registry["registrations"][0])
+    registration.update(
+        attestation_class="p42-security-audit/v2",
+        signer_role="security-owner",
+        public_key=alternate["public_key"],
+    )
+    registry["registrations"].append(registration)
+
+    with pytest.raises(LegalMemoError, match="identity is already assigned"):
+        normalize(report, fixture, registry)
+
+
+def test_trust_registry_allows_same_authority_role_across_evidence_classes(tmp_path: Path) -> None:
+    report, fixture, registry = valid_legal_memo(tmp_path)
+    registration = dict(registry["registrations"][0])
+    registration["attestation_class"] = "p42-incident-drill/v2"
+    registry["registrations"].append(registration)
+
+    assert normalize(report, fixture, registry)["legal_hash"].startswith("sha256:")
+
+
 def test_legal_memo_rejects_unresolved_or_tampered_artifact_bytes(tmp_path: Path) -> None:
     report, fixture, registry = valid_legal_memo(tmp_path)
     artifact_path = fixture.root / report["memo_artifact"]["local_path"]

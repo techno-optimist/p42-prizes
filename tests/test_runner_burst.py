@@ -186,7 +186,10 @@ def test_one_real_world_identity_cannot_use_three_keys(tmp_path: Path) -> None:
         value["attestation"] = _signed(observer, "host-observer", value, "2026-07-08T22:59:00Z")
     _rewrite(tmp_path, report, "authority_resolution", resign_authority)
     _rewrite(tmp_path, report, "host_observations", resign_observer)
-    with pytest.raises(RunnerBurstError, match="distinct identities"):
+    with pytest.raises(
+        RunnerBurstError,
+        match="distinct identities|identity is already assigned to a different signer authority",
+    ):
         normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=registry)
 
 

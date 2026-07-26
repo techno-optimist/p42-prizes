@@ -32,6 +32,9 @@ manifest and finalized on-chain governance state.
 
 The packet also requires:
 
+- a production attestation registry that binds each real-world identity and
+  Ed25519 key to exactly one signer role; reuse across evidence classes is
+  permitted only for the same identity, key, and role;
 - distinct, evidenced identities and Ed25519 keys for the governance owner,
   security owner, pause guardian, and at least five multisig signers;
 - a strict-majority threshold of at least three and one independent signer;

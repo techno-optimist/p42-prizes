@@ -136,6 +136,19 @@ coverage passes 103 tests. The dedicated service account, submitter group, and
 subordinate UID/GID ranges are not yet provisioned, so this source-level fix
 does not close the deployment rehearsal gate.
 
+### P1-05: Trust registry allowed cross-role authority collapse - fixed
+
+The production trust registry previously validated registrations independently.
+One Ed25519 key could therefore be registered under multiple signer roles, or
+one named identity could use multiple keys under different roles. A single
+actor could satisfy nominally independent legal, security, and governance
+signatures while every individual signature remained valid.
+
+Registry validation now binds each core real-world identity and public key to
+exactly one signer role. Reuse across evidence classes remains possible only
+for the same identity, key, and role. Regression tests cover both key relabeling
+and identity relabeling.
+
 ### P2-01: Contract test command is not package-hermetic
 
 `contracts/npm test` imports agent modules and fails in a fresh checkout unless

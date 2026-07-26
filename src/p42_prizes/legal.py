@@ -888,6 +888,8 @@ def _validate_trust_registry(registry: Mapping[str, Any], error_type: type[Value
     if not isinstance(registrations, (list, tuple)):
         raise error_type("trust_registry.registrations must be an array")
     seen: set[tuple[str, str, tuple[tuple[str, str], ...], str, datetime, datetime | None]] = set()
+    key_authorities: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {}
+    identity_authorities: dict[tuple[tuple[str, str], ...], tuple[str, str]] = {}
     for index, registration in enumerate(registrations):
         prefix = f"trust_registry.registrations[{index}]"
         if not isinstance(registration, Mapping):
@@ -906,6 +908,16 @@ def _validate_trust_registry(registry: Mapping[str, Any], error_type: type[Value
             _validate_real_world_field(identity.get(field_name), f"{prefix}.identity.{field_name}", error_type, min_length=3)
         if EMAIL_RE.fullmatch(str(identity["professional_email"])) is None:
             raise error_type(f"{prefix}.identity.professional_email must be a professional email address")
+        core_identity = tuple(
+            (field_name, str(identity[field_name]).strip().casefold())
+            for field_name in ("name", "organization", "professional_email")
+        )
+        key_authority = key_authorities.setdefault(public_key, (signer_role, core_identity))
+        if key_authority != (signer_role, core_identity):
+            raise error_type(f"{prefix}.public_key is already assigned to a different signer authority")
+        identity_authority = identity_authorities.setdefault(core_identity, (signer_role, public_key))
+        if identity_authority != (signer_role, public_key):
+            raise error_type(f"{prefix}.identity is already assigned to a different signer authority")
         valid_from = _require_utc(registration.get("valid_from_utc"), f"{prefix}.valid_from_utc", error_type)
         if valid_from < created_at:
             raise error_type(f"{prefix}.valid_from_utc must not predate trust_registry.created_at_utc")
