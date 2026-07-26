@@ -61,7 +61,10 @@ and enabled user namespaces. It also found all of the following absent:
 
 The existing rootful Docker daemon and workloads were left untouched. The
 post-rehearsal service hardening permits coexistence while making both rootful
-socket paths inaccessible to the P42 daemon and executor namespaces. No unit,
+socket paths inaccessible to the P42 daemon and executor namespaces. A
+transient PID 1 system-manager unit running as `chronos` returned `EACCES`
+(errno 13) for connection attempts to both paths; the rootful daemon ID was
+`671acdd1-bdc7-4048-8b23-5078a136a12c` before and after the probe. No persistent unit,
 account, group, subordinate-ID range, socket, image, queue, credential, signer,
 RPC, or chain action was installed or exercised.
 
