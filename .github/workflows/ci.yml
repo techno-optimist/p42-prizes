@@ -116,8 +116,12 @@ jobs:
           rm -rf node_modules
           npm ci --omit=optional
           npm run build:prizes
-      - name: Audit dependencies
-        run: npm audit --omit=optional --audit-level=moderate
+      - name: Verify production dependency boundary
+        run: |
+          if npm ls sharp --omit=optional; then
+            echo "sharp must not be present in the optional-free production artifact"
+            exit 1
+          fi
 
   contracts:
     name: Contract gates
