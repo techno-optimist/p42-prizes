@@ -34,11 +34,11 @@ export function AtlasDossier({ entry: value }: { entry: unknown }) {
     </header>
     <div className="atlas-dossier-grid">
       <div className="atlas-dossier-body">
-        <DossierSection no="01" title="The frontier" value={frontierText(entry)} />
+        <DossierSection no="01" title="Current frontier evidence" value={frontierText(entry)} />
         <DossierSection no="02" title="Finite object" value={read(entry, "finite_object")} />
         <DossierSection no="03" title="Verifier" value={read(entry, "verifier")} />
         <DossierSection no="04" title="Attack lane" value={read(entry, "attack")} />
-        <DossierSection no="05" title="Routing verdict" value={read(entry, "verdict")} />
+        <HistoricalAssessment value={read(entry, "verdict")} />
         <DossierSection no="06" title="Why this verifier class" value={read(entry, "board_class_reason")} />
         <DossierSection no="07" title="Why pursue or stop" value={read(entry, "beatable_reason", "wall_reason")} />
         <DossierSection no="08" title="Prior campaign findings" value={read(entry, "campaign_finding")} />
@@ -53,6 +53,15 @@ export function AtlasDossier({ entry: value }: { entry: unknown }) {
       </aside>
     </div>
   </article>;
+}
+
+function HistoricalAssessment({ value }: { value: unknown }) {
+  if (value === undefined || value === null) return null;
+  return <section className="atlas-dossier-section atlas-historical-assessment"><span>05</span><div>
+    <h2>Historical snapshot assessment</h2>
+    <p className="atlas-assessment-note">Retained for provenance. Current routing follows the frontier evidence and charted compute above.</p>
+    <p><MathProse>{words(value)}</MathProse></p>
+  </div></section>;
 }
 
 function ComputeCoverage({ value }: { value: unknown }) {
