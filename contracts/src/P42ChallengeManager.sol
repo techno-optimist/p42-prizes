@@ -20,6 +20,7 @@ interface IP42SubmissionChallengeHook {
     function markChallenged(uint256 submissionId) external;
     function resolveChallenge(uint256 submissionId, bool challengerWins, address beneficiary) external;
     function cancelChallenge(uint256 submissionId) external;
+    function resolveChallengeTimeout(uint256 submissionId) external;
     function resolveObjectiveChallenge(uint256 submissionId, bool challengerWins, address beneficiary) external;
     function disputedEntitlementWei(uint256 submissionId) external view returns (uint256);
     function solverOf(uint256 submissionId) external view returns (address);
@@ -453,12 +454,10 @@ contract P42ChallengeManager {
         emit Resolved(submissionId, challengerWins, expectedChallengeInstanceHash);
     }
 
-    /// @notice Permissionless timeout resolving a stalled challenge in the
-    /// solver's favor once the dispute window closes without a resolver decision.
-    /// Without this an offline or colluding resolver could freeze a Challenged
-    /// submission forever, which also blocks the payout ledger's close() and
-    /// therefore locks the whole pool (M1). Because no adjudication took place,
-    /// the challenger's posted bond is returned to them.
+    /// @notice Permissionless fail-safe for a stalled, unadjudicated challenge.
+    /// Neither party wins: both recover their own bond, while the submission is
+    /// rejected without credit. Resolver outage can deny availability, but it
+    /// cannot make an unverified score payable or lock the whole pool.
     function expireChallenge(uint256 submissionId, bytes32 expectedChallengeInstanceHash) external {
         Challenge storage current = challenges[submissionId];
         if (current.challenger == address(0)) revert P42_UNKNOWN_CHALLENGE();
@@ -472,21 +471,12 @@ contract P42ChallengeManager {
         address challenger = current.challenger;
         uint256 refund = current.challengeBondWei;
         claimableBondWei[challenger] += refund;
-        // Clear the challenge slot instead of marking it resolved: the
-        // submission returns to Revealed with a re-armed window (see
-        // P42SubmissionManager.resolveChallenge), so a DIFFERENT party can
-        // still post a fresh challenge. Without this, a sock-puppet challenge
-        // left to expire would burn the one-shot slot and permanently immunize
-        // a fraudulent submission (F3). No resolver bond can exist on this
-        // path (resolve() was never called), so deleting the record cannot
-        // orphan resolverBonds accounting.
+        // No resolver bond can exist on this path (resolve() was never called),
+        // so deleting the record cannot orphan resolver-bond accounting.
         delete challenges[submissionId];
-        // Return the submission to Revealed so the solver can finalize; the
-        // beneficiary argument is unused because the solver prevails by default.
-        submissionManager.resolveChallenge(submissionId, false, address(0));
+        submissionManager.resolveChallengeTimeout(submissionId);
 
         emit ChallengeExpired(submissionId, challenger, refund, expectedChallengeInstanceHash);
-        emit Resolved(submissionId, false, expectedChallengeInstanceHash);
     }
 
     function releaseResolverBond(uint256 submissionId, bytes32 expectedChallengeInstanceHash) external {

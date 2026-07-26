@@ -568,13 +568,15 @@ function lifecycleFixture() {
       challengeInstanceHash: hash(703),
     }],
   ], 180);
+  tx([["challenges", "ResolverTranscriptPosted", {
+    submissionId: 3n, resolver: ADDR.resolver, transcriptHash: hash(503),
+    transcriptURI: "ipfs://transcript-c", verdictHash: hash(504), resolverBondWei: 5n,
+    resolverBondReleaseAt: 190n, challengerWins: false, challengeInstanceHash: hash(703),
+  }]], 185);
   tx([
     ["submissions", "SubmissionChallengeResolved", { submissionId: 3n, challengerWins: false }],
-    ["challenges", "ChallengeExpired", {
-      submissionId: 3n,
-      challenger: ADDR.challenger,
-      refundedBondWei: 21n,
-      challengeInstanceHash: hash(703),
+    ["challenges", "ResolverBondReleased", {
+      submissionId: 3n, resolver: ADDR.resolver, amount: 5n, challengeInstanceHash: hash(703),
     }],
     ["challenges", "Resolved", { submissionId: 3n, challengerWins: false, challengeInstanceHash: hash(703) }],
   ], 190);
@@ -1353,8 +1355,8 @@ describe("P42 deterministic indexer replay", () => {
     assert.equal(replay.submissions["3"].status, "Finalized");
     assert.equal(replay.submissionClaimableBondWei[ADDR.solverA], 50n);
     assert.equal(replay.submissionClaimableBondWei[ADDR.challenger], 40n);
-    assert.equal(replay.challengeClaimableBondWei[ADDR.challenger], 41n);
-    assert.equal(replay.challengeClaimableBondWei[ADDR.resolver], 5n);
+    assert.equal(replay.challengeClaimableBondWei[ADDR.challenger], 20n);
+    assert.equal(replay.challengeClaimableBondWei[ADDR.resolver], 10n);
     assert.equal(replay.ledger.pausedNewActions, true);
     assert.equal(replay.pausedNewActions, true);
     assert.equal(replay.challengePausedNewActions, true);
@@ -1554,6 +1556,34 @@ describe("P42 deterministic indexer replay", () => {
       () => replayProtocolEvents(events.slice(0, -1), CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE }),
       /missing quorum public journal/,
     );
+  });
+
+  it("replays resolver timeout as rejection with both parties limited to their own bonds", () => {
+    const events = lifecycleFixture();
+    const challengedIndex = events.findIndex(
+      (event) => event.source === "challenges" && event.eventName === "Challenged"
+    );
+    events.splice(challengedIndex + 1);
+    const transactionHash = hash(88_101);
+    const common = {
+      blockNumber: 121,
+      blockHash: hash(88_100),
+      transactionHash,
+      transactionIndex: 0,
+      blockTimestamp: 130n,
+    };
+    events.push(
+      { ...common, source: "submissions", eventName: "SubmissionBondClaimable", index: 0, args: { submissionId: 2n, claimant: ADDR.solverB, amount: 40n } },
+      { ...common, source: "submissions", eventName: "SubmissionChallengeTimedOut", index: 1, args: { submissionId: 2n } },
+      { ...common, source: "challenges", eventName: "ChallengeExpired", index: 2, args: { submissionId: 2n, challenger: ADDR.challenger, refundedBondWei: 20n, challengeInstanceHash: hash(702) } },
+    );
+
+    const replay = replayProtocolEvents(events, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
+    assert.equal(replay.submissions["2"].status, "Rejected");
+    assert.equal(replay.openSubmissionCount, 0n);
+    assert.equal(replay.submissionClaimableBondWei[ADDR.solverB], 40n);
+    assert.equal(replay.challengeClaimableBondWei[ADDR.challenger], 20n);
+    assert.equal(replay.ledger.totalCreditAtoms, 0n);
   });
 
   it("chunks with overlap, retries, and deduplicates canonical logs", async () => {

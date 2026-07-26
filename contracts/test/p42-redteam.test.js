@@ -534,11 +534,10 @@ describe("P42 red-team attack coverage", function () {
     assert.equal((await challenges.challenges(submissionId)).challenger, bob.address);
   });
 
-  it("f3: an expired frivolous challenge frees the slot for a fresh challenger in the re-armed window", async function () {
+  it("f3: resolver timeout cannot turn an unverified submission into payable credit", async function () {
     const fixture = await deployFixture();
     const { alice, bob, submissions, challenges } = fixture;
-    const carol = (await ethers.getSigners())[5];
-    const { submissionId } = await revealAsAlice(fixture);
+    const { submissionId, bond } = await revealAsAlice(fixture);
     const required = await challenges.requiredChallengeBond(await submissions.disputedEntitlementWei(submissionId));
 
     // Bob posts a frivolous challenge and lets it time out unresolved.
@@ -552,29 +551,22 @@ describe("P42 red-team attack coverage", function () {
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await expireChallenge(fixture, submissionId);
 
-    // The slot is cleared, bob's bond is refunded, the submission is Revealed
-    // again — and it is NOT immunized: the solver still cannot self-challenge...
+    // Both parties recover only their own collateral, but the unadjudicated
+    // score is rejected and can never finalize into credit.
     assert.equal((await challenges.challenges(submissionId)).challenger, ethers.ZeroAddress);
     assert.equal(await challenges.claimableBondWei(bob.address), required);
-    assert.equal((await submissions.submissions(submissionId)).status, 2n);
-    await expectCustomError(
+    assert.equal(await submissions.claimableBondWei(alice.address), bond);
+    assert.equal((await submissions.submissions(submissionId)).status, 5n);
+    await assert.rejects(
       openChallenge(fixture, alice, submissionId, ethers.keccak256(ethers.toUtf8Bytes("re-burn")), {
         value: required,
       }),
-      challenges,
-      "P42_SELF_CHALLENGE"
     );
-
-    // ...and a different party can post a fresh challenge in the re-armed window.
-    await openChallenge(
-      fixture,
-      carol,
-      submissionId,
-      ethers.keccak256(ethers.toUtf8Bytes("real fraud evidence")),
-      { value: required },
+    await expectCustomError(
+      submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH),
+      submissions,
+      "P42_BAD_SUBMISSION_STATUS"
     );
-    assert.equal((await submissions.submissions(submissionId)).status, 3n);
-    assert.equal((await challenges.challenges(submissionId)).challenger, carol.address);
   });
 
   it("f5: a solver-favorable resolution re-arms the window so expireRevealed cannot instantly strip the bond", async function () {

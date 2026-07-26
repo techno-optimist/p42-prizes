@@ -1,11 +1,21 @@
 # Production Gate Ledger
 
-Status date: 2026-07-20.
+Status date: 2026-07-26.
 
 Status: Phase 0 local/testnet-shaped portal. NO-GO for real ETH and NO-GO for
 a canonical Base Sepolia settlement pilot on the current source. Not externally
 audited. Not legally reviewed. No real ETH should be accepted until every Gate 2
 item in this ledger is green.
+
+July 26 adversarial audit delta: the review found that an unadjudicated resolver
+timeout could return an invalid submission to a finalizable state. Current
+source now fails safe by rejecting that submission and returning each party
+only its own bond; corresponding contract, indexer, and bytecode-pin regressions
+are included. Portal dependency findings were also cleared and made blocking in
+CI. Real-ETH status remains NO-GO: the reachable high-severity SP1 challenger
+advisory, current-source testnet deployment, independent review, legal,
+governance, and operational gates remain open. See
+[`INTERNAL_SECURITY_AUDIT_2026_07_26.md`](INTERNAL_SECURITY_AUDIT_2026_07_26.md).
 
 July 20 snapshot: PR #196 merged the release-guard correction to `main` at
 `84f0669967baa06c3845073e3e603d186e8133c6`. Exact-main push run
@@ -358,6 +368,15 @@ open Gate 1 or Gate 2 items.
   audited deployed gateway, and no adversarial testnet/economic rehearsal has
   passed. Until those gates close, the resolver/`creditRecorder` bridge remains
   a hard real-ETH blocker (mirrors risk-register rows 4 and 13). Open.
+- **Resolver timeout now fails safe at source level.** The prior timeout path
+  returned a challenged submission to `Revealed`, so complete resolver outage
+  could eventually make an unadjudicated score payable. Current source instead
+  rejects the submission without credit, returns each party only its own bond,
+  and emits a distinct timeout hook that the deterministic indexer requires in
+  the same transaction. This closes the theft path but leaves availability
+  risk: a bonded challenger can censor a valid submission while every resolver
+  is unavailable. Canonical deployment and adversarial outage rehearsal remain
+  open Gate 1 work.
 - **ERC-20 / USDC handling.** Public and canonical build copy now state that v1
   is **native-ETH only**. There is no ERC-20 pool, deposit, fee-skim, or payout
   path implemented or audited, and the capability regression rejects copy that

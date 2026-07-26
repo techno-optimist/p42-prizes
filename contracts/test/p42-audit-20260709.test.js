@@ -503,7 +503,7 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     assert.equal((await fixture.challenges.challenges(submission.submissionId)).challenger, fixture.carol.address);
   });
 
-  it("caps repeated refunded challenges at the immutable cumulative dispute deadline", async function () {
+  it("rejects a submission after one unadjudicated challenge instead of accepting by timeout", async function () {
     const fixture = await deployFixture();
     const submission = await commitAndReveal(fixture, fixture.alice, {
       cid: "bafy-bounded-disputes",
@@ -513,20 +513,22 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
       await fixture.submissions.disputedEntitlementWei(submission.submissionId)
     );
 
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      await openChallenge(fixture, fixture.bob, submission.submissionId, ethers.id(`recycled-${attempt}`), { value: challengeBond });
-      await increaseTime(CHALLENGE_WINDOW + 1n);
-      await expireChallenge(fixture, submission.submissionId);
-    }
+    await openChallenge(fixture, fixture.bob, submission.submissionId, ethers.id("unadjudicated"), { value: challengeBond });
+    await increaseTime(CHALLENGE_WINDOW + 1n);
+    await expireChallenge(fixture, submission.submissionId);
 
-    assert.equal(await fixture.challenges.claimableBondWei(fixture.bob.address), 3n * challengeBond);
+    assert.equal(await fixture.challenges.claimableBondWei(fixture.bob.address), challengeBond);
+    assert.equal((await fixture.submissions.submissions(submission.submissionId)).status, 5n);
     await expectCustomError(
       openChallenge(fixture, fixture.bob, submission.submissionId, ethers.id("recycled-forever"), { value: challengeBond }),
       fixture.submissions,
-      "P42_CHALLENGE_WINDOW_CLOSED"
+      "P42_BAD_SUBMISSION_STATUS"
     );
-    await fixture.submissions.connect(fixture.alice).finalize(submission.submissionId, PERMANENCE_HASH);
-    assert.equal((await fixture.submissions.submissions(submission.submissionId)).status, 4n);
+    await expectCustomError(
+      fixture.submissions.connect(fixture.alice).finalize(submission.submissionId, PERMANENCE_HASH),
+      fixture.submissions,
+      "P42_BAD_SUBMISSION_STATUS"
+    );
   });
 
   it("ignores forced ETH for arming, freeze, funding, and entitlement accounting", async function () {

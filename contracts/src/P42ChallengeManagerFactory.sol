@@ -56,7 +56,7 @@ contract P42ChallengeManagerFactory {
     error P42_FACTORY_BAD_SUBMISSION_CONFIGURATION();
 
     bytes32 public constant CANONICAL_SUBMISSION_MANAGER_FACTORY_CODEHASH =
-        0xd1242748020f966c3bbed2de0e3f9a988dbb015f6661fc5ebce14580e1d2c0cb;
+        0x52f00d535c1b0c8b39c6f2360914c900331c3140e188f2e84acf9f49ed62f795;
 
     mapping(address => bool) public isCanonicalManager;
     mapping(address => bytes32) public pairConfigurationHashOf;

@@ -1150,7 +1150,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     assert.equal(await ledger.creditAtomsOf(alice.address), SEED_SCORE_ATOMS - 1000n);
   });
 
-  it("expires a stalled challenge so the solver can finalize and close can proceed (M1)", async function () {
+  it("rejects an unadjudicated submission on resolver timeout so close can proceed safely (M1)", async function () {
     const fixture = await deployFixture({ feeBps: 0 });
     const { alice, challenger, pool, ledger, submissions, challenges } = fixture;
     await pool.fund({ value: ethers.parseEther("1") });
@@ -1178,21 +1178,20 @@ describe("P42 Gate 1 contract scaffold", function () {
 
     // The resolver never posts a decision; anyone can time the challenge out.
     await expireChallenge(fixture, alice, submissionId);
-    // The one-shot challenge slot is cleared so a fresh challenge stays
-    // possible in the re-armed window (F3).
+    // The challenge record is cleared and the challenger recovers its bond.
     const expired = await challenges.challenges(submissionId);
     assert.equal(expired.challenger, ethers.ZeroAddress);
     // No adjudication occurred, so the challenger's posted bond is returned.
     assert.equal(await challenges.claimableBondWei(challenger.address), required);
 
-    // The submission is back to Revealed with a re-armed challenge window
-    // (F5); once it elapses the solver can finalize and unblock close.
-    assert.equal((await submissions.submissions(submissionId)).status, 2n);
-    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-    await submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH);
-    assert.equal((await submissions.submissions(submissionId)).status, 4n);
+    // No adjudication means no credit: the submission is rejected while the
+    // solver recovers its own posting bond. Resolver outage cannot accept fraud.
+    assert.equal((await submissions.submissions(submissionId)).status, 5n);
+    assert.equal(
+      await submissions.claimableBondWei(alice.address),
+      (await submissions.submissions(submissionId)).requiredBondWei,
+    );
     assert.equal(await submissions.openSubmissionCount(), 0n);
-    await increaseTime((await submissions.CREDIT_FINALIZE_RECOVERY_DELAY()) + 1n);
     await ledger.close();
     assert.equal(await ledger.closed(), true);
 
