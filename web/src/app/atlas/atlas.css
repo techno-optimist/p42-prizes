@@ -26,7 +26,7 @@
 .atlas-map { display: block; width: 100%; min-height: 260px; max-height: 580px; border-block: 1px solid var(--rule); background: var(--well); }
 .atlas-regions rect { fill: none; stroke: var(--rule-faint); }.atlas-regions line { stroke: var(--rule); }
 .atlas-regions text { fill: var(--muted); font: 11px var(--mono); text-transform: uppercase; }
-.atlas-map .atlas-map-hit { fill: transparent; stroke: none; opacity: 0; cursor: pointer; }
+.atlas-map .atlas-map-hit { fill: var(--paper); fill-opacity: .001; stroke: none; cursor: pointer; pointer-events: all; }
 .atlas-map .atlas-map-dot { fill: var(--seal); stroke: var(--paper); stroke-width: 2; opacity: .78; cursor: pointer; pointer-events: none; transition: r .15s ease, opacity .15s ease; }
 .atlas-map a:hover .atlas-map-dot,.atlas-map a:focus-visible .atlas-map-dot,.atlas-map .atlas-map-dot.is-selected { fill: var(--record); opacity: 1; }
 .atlas-map a:focus-visible { outline: none; }

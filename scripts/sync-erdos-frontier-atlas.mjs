@@ -6,9 +6,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const UPSTREAM_REPOSITORY = "https://github.com/techno-optimist/erdos-frontier-atlas";
-export const UPSTREAM_COMMIT = "1afebbdc0e56166d8b0e5f0afa2b323070e9037c";
+export const UPSTREAM_COMMIT = "49e70f25e4bab48969293059cb9c95674de2aec0";
 export const UPSTREAM_PATH = "atlas/problems.json";
-export const UPSTREAM_SHA256 = "d72891f56359bb5d01c30b9938abc724c1af3bb73547416cd483bae2d30b7470";
+export const UPSTREAM_SHA256 = "ed1148db84bf33d9d3beb0f5cba24e9a84dfd30314527fc800a57bc291d08e80";
 export const UPSTREAM_RAW_URL = `https://raw.githubusercontent.com/techno-optimist/erdos-frontier-atlas/${UPSTREAM_COMMIT}/${UPSTREAM_PATH}`;
 
 const outputPath = fileURLToPath(
@@ -48,7 +48,7 @@ export function buildSnapshot(sourceBytes) {
       || !coverage.some((record) => record.axis === "m" && record.start === 21 && record.end === 21
         && record.status === "CERTIFIED" && record.where?.n === 17)
       || !coverage.some((record) => record.axis === "m" && record.start === 22 && record.end === 22
-        && record.status === "UNKNOWN" && record.where?.n === 17)
+        && record.status === "EXCLUDED" && record.where?.n === 17)
       || erdos552?.p42_slug !== "c4-star-ramsey-a17") {
     throw new Error("Erdős 552 structured compute coverage is missing or changed");
   }
