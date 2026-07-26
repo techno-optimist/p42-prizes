@@ -118,6 +118,20 @@ describe("Atlas compute preflight decisions", () => {
     });
   });
 
+  it("retains matching stale coverage as non-authorizing no-duplicate context", () => {
+    const result = computeAtlasPreflight(
+      { problem_id: 552, parameter_region: { n: 17, m: 22 } },
+      new Date("2026-07-20T00:00:00.000Z"),
+    );
+    expect(result).toMatchObject({
+      decision: "STOP",
+      reason_code: "STALE_ATLAS",
+      go: false,
+      coverage_matches: [{ axis: "m", start: 22, end: 22, status: "EXCLUDED", where: { n: 17 } }],
+    });
+    expect(result.reason).toContain("matching certified or exclusion coverage");
+  });
+
   it("stops NONE and WALL classifications with scoped reasons", () => {
     expect(computeAtlasPreflight({ problem_id: 2 }, FRESH_NOW)).toMatchObject({
       decision: "STOP",

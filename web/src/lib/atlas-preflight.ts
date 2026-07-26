@@ -368,21 +368,29 @@ export function computeAtlasPreflight(input: AtlasPreflightRequest, now = new Da
   const checkedAt = now.toISOString();
   const { validUntil, snapshot } = snapshotDescriptor();
   const entry = getAtlasEntry(input.problem_id);
+  // Coverage is descriptive, not authorization. Surface a matching known region
+  // even after snapshot expiry so agents can avoid an obvious duplicate run,
+  // while the stale snapshot remains the fail-closed decision.
+  const coverage = structuredCoverage(entry);
+  const matches = coverage.filter((record) => coverageRecordMatches(record, input));
   const base = {
     checked_at: checkedAt,
     valid_until: validUntil.toISOString(),
     snapshot,
     entry: entry ? entrySummary(entry) : null,
-    coverage_matches: [] as CoverageRecord[],
+    coverage_matches: matches,
     limitations: limitations(entry),
   };
 
   if (now.getTime() >= validUntil.getTime()) {
+    const recordedStop = matches.some((record) => record.status === "CERTIFIED" || record.status === "EXCLUDED");
     return {
       decision: "STOP",
       reason_code: "STALE_ATLAS",
       go: false,
-      reason: "The pinned Atlas snapshot has exceeded its seven-day routing lifetime. Refresh and review the snapshot before allocating compute.",
+      reason: recordedStop
+        ? "The pinned Atlas snapshot has exceeded its seven-day routing lifetime. It records matching certified or exclusion coverage, but refresh and review the snapshot before relying on it."
+        : "The pinned Atlas snapshot has exceeded its seven-day routing lifetime. Refresh and review the snapshot before allocating compute.",
       ...base,
     };
   }
@@ -395,9 +403,6 @@ export function computeAtlasPreflight(input: AtlasPreflightRequest, now = new Da
       ...base,
     };
   }
-  const coverage = structuredCoverage(entry);
-  const matches = coverage.filter((record) => coverageRecordMatches(record, input));
-  base.coverage_matches.push(...matches);
   if (matches.some((record) => record.status === "ACTIVE")) {
     return {
       decision: "REVIEW",
