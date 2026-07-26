@@ -120,6 +120,21 @@ Real-ETH activation still requires at least one conflict-free contract/protocol
 reviewer, counsel approval of the operating model, named custody/governance
 signers, and signed incident-response evidence.
 
+### P1-04: Executor ignored shared-host memory pressure - fixed
+
+The host-global executor previously admitted work from delegated-cgroup
+headroom alone and represented swap usage as zero. On a shared DGX, unrelated
+workloads could drive the host into sustained swapping while the verifier cgroup
+still appeared empty enough to start an 8 GiB verifier.
+
+The patched executor takes the lower of cgroup headroom and host
+`MemAvailable`, and applies the swap threshold to host-wide swap usage. The
+unsigned DGX rehearsal observed 9,348 MiB swap used, returned
+`swap_guard_tripped`, and made no Docker invocation. Targeted queue/executor
+coverage passes 103 tests. The dedicated service account, submitter group, and
+subordinate UID/GID ranges are not yet provisioned, so this source-level fix
+does not close the deployment rehearsal gate.
+
 ### P2-01: Contract test command is not package-hermetic
 
 `contracts/npm test` imports agent modules and fails in a fresh checkout unless

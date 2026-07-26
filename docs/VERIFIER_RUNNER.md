@@ -238,6 +238,10 @@ Before and after every worker, the executor forcibly reconciles all
 addition to the verifier's manifest deadline; successful orphan reconciliation
 must complete before the next FIFO request can lease work. Capacity is checked
 again at that boundary. OOM counter changes and reboot changes fail closed.
+Admission uses the lower of effective cgroup headroom and host
+`MemAvailable`, and applies the swap threshold to host-wide swap usage. This
+keeps an otherwise-empty verifier cgroup from admitting work while unrelated
+workloads have put the shared host under memory pressure.
 Persisted holder deadlines use `CLOCK_MONOTONIC` nanoseconds bound to the kernel
 boot ID, never adjustable wall time. Reboot recovery establishes a new OOM
 baseline only after Docker reconciliation.
