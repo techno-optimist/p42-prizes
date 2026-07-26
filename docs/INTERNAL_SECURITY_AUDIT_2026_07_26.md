@@ -81,6 +81,14 @@ Required closure:
 
 No waiver is acceptable for a proof-system transcript-integrity finding.
 
+Source-level confirmation: SP1 v6.3.1 and upstream `main` at
+`c5360b91c2ac45e28a13cd15a78eda28c85d677b` resolve published crate checksum
+`b6a908924d43e4cfb93fb41c8346cac211b70314385a9037e9241f5b7f3eaf77`.
+That source retains the vulnerable `reduce_31` / `split_32` construction rather
+than the patched upstream Plonky3 implementation. The repository's pinned Rust
+reproducer executes the collision: transcripts `[7]` and `[7, 0]` yield the
+same sponge state and sampled challenge.
+
 ### P1-01: Portal production dependencies carried known advisories - fixed
 
 The direct Next.js dependency and transitive PostCSS/Sharp versions produced

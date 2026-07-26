@@ -10,7 +10,7 @@ that an exploit has been demonstrated against a P42 proof.
 
 The canonical machine report is
 [`docs/evidence/sp1-dependency-security-current.json`](evidence/sp1-dependency-security-current.json),
-SHA-256 `8ae48c07d31c559f58f10ba0682d97cf242800ebd9d07338feb254d5f80cde4c`.
+SHA-256 `0bacca4ccf19b22bef391380da5951fffffa81e1628c2aca6499b82256db93a2`.
 Run:
 
 ```bash
@@ -19,6 +19,14 @@ make objective-dependency-security-gate
 
 The command must exit nonzero while the findings remain. It also requires the
 committed report to match fresh scanner output byte for byte.
+
+Hosted CI separately runs `make objective-dependency-security-posture`. That
+command exits zero only when the scanner, policy, lock roster, committed report,
+and exact expected `blocked` result all validate. A scanner/tool/report failure
+or an unreviewed transition to `pass` fails CI. This prevents an intentionally
+blocked activation gate from being omitted or laundered as an unexplained green
+workflow. Closing the advisories requires an explicit reviewed change that
+updates the policy, report, release evidence, and CI expectation together.
 
 ## Advisory Authority
 
@@ -58,6 +66,18 @@ The reviewed release-tag sequence and its `p3-challenger` lock entry is:
 This establishes that the reviewed release locks remain inside the published
 high-severity range. It does not establish that every branch, unreleased
 commit, or future SP1 release is affected.
+
+The July 26 source audit removed any ambiguity about the `-succinct`
+prerelease label. Published crate
+`p3-challenger-0.4.3-succinct.crate` has SHA-256
+`b6a908924d43e4cfb93fb41c8346cac211b70314385a9037e9241f5b7f3eaf77`
+and retains the affected `reduce_31` / `split_32` implementation without a
+partial-chunk length tag. The pinned executable reproducer at
+`security/reproducers/sp1-challenger-transcript-collision/` proves that
+transcripts `[7]` and `[7, 0]` produce the same sponge state and challenge.
+Run `make reproduce-sp1-challenger-collision`. SP1 upstream `main` at
+`c5360b91c2ac45e28a13cd15a78eda28c85d677b` still resolves the same crate
+checksum, so no maintained fixed Succinct line existed on 2026-07-26.
 
 ## Closed Policy And Activation Binding
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -69,6 +71,21 @@ def test_current_gate_has_closed_seven_lock_roster_and_exact_findings() -> None:
         "findings": 12,
         "highFindings": 4,
     }
+
+
+def test_cli_distinguishes_expected_blocker_from_scanner_failure() -> None:
+    command = [
+        sys.executable,
+        str(ROOT / "scripts" / "check_sp1_dependency_security.py"),
+        "--report",
+        str(ROOT / "docs" / "evidence" / "sp1-dependency-security-current.json"),
+    ]
+    blocked = subprocess.run([*command, "--expect", "blocked"], check=False, capture_output=True, text=True)
+    changed = subprocess.run([*command, "--expect", "pass"], check=False, capture_output=True, text=True)
+    assert blocked.returncode == 0
+    assert "objective dependency security: blocked" in blocked.stdout
+    assert changed.returncode == 2
+    assert "posture changed" in changed.stderr
 
 
 @pytest.mark.parametrize(

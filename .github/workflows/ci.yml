@@ -41,6 +41,8 @@ jobs:
         run: make validate
       - name: Lint certified-path exactness
         run: make lint
+      - name: Verify objective dependency activation remains blocked
+        run: make objective-dependency-security-posture
       - name: Run Python tests
         run: make test
       - name: Verify seed fixtures

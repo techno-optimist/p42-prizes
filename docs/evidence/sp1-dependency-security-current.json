@@ -133,7 +133,7 @@
   "result": "blocked",
   "scanner": {
     "path": "scripts/check_sp1_dependency_security.py",
-    "sha256": "sha256:46f2d0a4b5da60e1998e352591ba87970ac07367c0490bc42ae5dacc207ef498"
+    "sha256": "sha256:523ff39afeb1f89cfd21d03ce56deba90117ded2745334955669d685bb175492"
   },
   "schema": "p42-objective-dependency-security-report/v1",
   "summary": {
