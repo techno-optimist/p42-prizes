@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { ethers } from "ethers";
 
-import { canonicalTopologyDescriptors } from "../../agent/canonical-topology.mjs";
-import { assertExactSetupOperations } from "../../agent/setup-operation-plan.mjs";
+import { canonicalTopologyDescriptors } from "p42-agent/canonical-topology.mjs";
+import { assertExactSetupOperations } from "p42-agent/setup-operation-plan.mjs";
 import {
   resolveCanonicalDeploymentStartNonce,
   validateAndReserveCanonicalDeployment,

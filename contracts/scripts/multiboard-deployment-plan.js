@@ -1,6 +1,6 @@
 import { basename, dirname, join, resolve } from "node:path";
 
-import { assertCanonicalDeploymentPlan } from "../../agent/canonical-topology.mjs";
+import { assertCanonicalDeploymentPlan } from "p42-agent/canonical-topology.mjs";
 import {
   boardCeremonyConfig,
   challengeManagerEffectiveSalt,

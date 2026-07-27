@@ -194,7 +194,10 @@ admit-host-hadamard-668:
 		--runs 2
 
 contracts-test:
-	@cd contracts && npm run build && npm run test && npm audit --audit-level=moderate
+	@npm ci
+	@npm run contracts:build
+	@npm run contracts:test
+	@npm run audit
 
 objective-core-test:
 	@cd objective-programs && cargo test --locked -p p42-objective-core

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { ethers } from "ethers";
-import { parseStrictJsonBytes } from "../../agent/strict-json.mjs";
+import { parseStrictJsonBytes } from "p42-agent/strict-json.mjs";
 import { canonicalDigest, validateReleaseCapsule } from "./release-capsule-helper.js";
 import {
   BASE_SEPOLIA_FINALITY_POLICY,

@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { Interface } from "ethers";
 
-import { CANONICAL_CONTRACT_COUNT, assertCanonicalManifestTopology } from "../../agent/canonical-topology.mjs";
-import { writeTrustedFileExclusiveSync } from "../../agent/strict-json.mjs";
+import { CANONICAL_CONTRACT_COUNT, assertCanonicalManifestTopology } from "p42-agent/canonical-topology.mjs";
+import { writeTrustedFileExclusiveSync } from "p42-agent/strict-json.mjs";
 import { assertDeploymentConfigHash } from "./deployment-ceremony-helper.js";
 import {
   assertGovernanceOperationJournal,

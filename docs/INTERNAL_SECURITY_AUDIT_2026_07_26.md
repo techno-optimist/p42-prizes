@@ -150,13 +150,16 @@ and role, and key reuse across evidence classes remains possible only for the
 same identity and role. Regression tests cover key relabeling, identity
 relabeling, and legitimate same-role key rotation.
 
-### P2-01: Contract test command is not package-hermetic
+### P2-01: Contract test command was not package-hermetic - fixed
 
-`contracts/npm test` imports agent modules and fails in a fresh checkout unless
-the agent package dependencies are installed first. Hosted CI currently installs
-them in the required order, so this is a reproducibility and contributor-safety
-risk rather than an on-chain vulnerability. The root gate should remain the
-authoritative test entry point until the package boundary is made explicit.
+`contracts/npm test` imported agent modules by sibling filesystem path and
+failed in a fresh checkout unless the agent package dependencies were installed
+first. The repository now has one Node 24.11.1/npm 11.6.2 workspace and lockfile,
+the contract package explicitly depends on the agent package, agent exports are
+closed over the shared modules, and contract imports use package identities.
+Make and hosted CI consume the same root install graph. A clean workspace install
+passes 370 Hardhat tests, 20 release-capsule tests, 488 agent tests, and a
+workspace dependency audit with zero findings.
 
 ## Static Analysis Review
 

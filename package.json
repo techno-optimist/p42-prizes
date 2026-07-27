@@ -1,0 +1,20 @@
+{
+  "name": "p42-prizes-node-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "npm@11.6.2",
+  "engines": {
+    "node": "24.11.1",
+    "npm": "11.6.2"
+  },
+  "workspaces": [
+    "agent",
+    "contracts"
+  ],
+  "scripts": {
+    "agent:test": "npm --workspace p42-agent test",
+    "contracts:build": "npm --workspace p42-prizes-contracts run build",
+    "contracts:test": "npm --workspace p42-prizes-contracts test",
+    "audit": "npm audit --workspaces --audit-level=moderate"
+  }
+}

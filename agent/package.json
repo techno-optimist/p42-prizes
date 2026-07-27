@@ -61,6 +61,18 @@
     "transcript-arweave.mjs",
     "transcript-store.mjs"
   ],
+  "exports": {
+    "./activation-rpc-endpoints.mjs": "./activation-rpc-endpoints.mjs",
+    "./canonical-topology.mjs": "./canonical-topology.mjs",
+    "./indexer.mjs": "./indexer.mjs",
+    "./lib.mjs": "./lib.mjs",
+    "./production-validation-context.mjs": "./production-validation-context.mjs",
+    "./resolver-quorum.mjs": "./resolver-quorum.mjs",
+    "./resolver.mjs": "./resolver.mjs",
+    "./role-acceptance.mjs": "./role-acceptance.mjs",
+    "./setup-operation-plan.mjs": "./setup-operation-plan.mjs",
+    "./strict-json.mjs": "./strict-json.mjs"
+  },
   "bin": {
     "p42-censorship-fallback-alert": "censorship-fallback-alert.mjs",
     "p42-solve": "solver.mjs",

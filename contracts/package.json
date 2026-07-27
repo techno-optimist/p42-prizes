@@ -25,7 +25,8 @@
     "@nomicfoundation/hardhat-node-test-runner": "3.0.17",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
-    "hardhat": "3.9.1"
+    "hardhat": "3.9.1",
+    "p42-agent": "0.1.0"
   },
   "overrides": {
     "@actions/http-client": "3.0.2",

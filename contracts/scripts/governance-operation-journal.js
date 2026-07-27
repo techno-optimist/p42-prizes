@@ -6,7 +6,7 @@ import {
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { AbiCoder, keccak256 } from "ethers";
 
-import { parseStrictJsonBytes } from "../../agent/strict-json.mjs";
+import { parseStrictJsonBytes } from "p42-agent/strict-json.mjs";
 import { withDurableJournalLock } from "./signed-deployment-journal.js";
 
 export const GOVERNANCE_OPERATION_JOURNAL_SCHEMA = "p42-prizes/governance-operation-journal/v2";

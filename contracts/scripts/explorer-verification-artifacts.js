@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 
-import { readStrictJsonFileSyncWithBytes, writeTrustedFileExclusiveSync } from "../../agent/strict-json.mjs";
+import { readStrictJsonFileSyncWithBytes, writeTrustedFileExclusiveSync } from "p42-agent/strict-json.mjs";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const canonical = (value) => value === null || typeof value !== "object"

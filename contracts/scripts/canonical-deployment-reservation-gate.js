@@ -1,7 +1,7 @@
 import {
   CANONICAL_CONTRACT_COUNT,
   assertCanonicalDeploymentPlan,
-} from "../../agent/canonical-topology.mjs";
+} from "p42-agent/canonical-topology.mjs";
 
 function deploymentMembers(definitions) {
   return definitions.map(({ id, name }) => `${id}:${name}`).sort();

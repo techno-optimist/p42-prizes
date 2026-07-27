@@ -1,12 +1,12 @@
 import { resolve } from "node:path";
 
-import { stableStringify } from "../../agent/indexer.mjs";
+import { stableStringify } from "p42-agent/indexer.mjs";
 import {
   bindActivationRpcAuthority,
   constructActivationRpcProviders,
   loadPinnedActivationRpcRegistryDigest,
   loadActivationRpcOperatorRegistry,
-} from "../../agent/activation-rpc-endpoints.mjs";
+} from "p42-agent/activation-rpc-endpoints.mjs";
 import {
   loadManifestFromPath,
   reconcileWithProvider,

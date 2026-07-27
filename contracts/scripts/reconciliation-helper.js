@@ -15,9 +15,9 @@ import {
   stableStringify,
   validateManifestEvidence,
   validateMultiBoardCheckpoint,
-} from "../../agent/indexer.mjs";
+} from "p42-agent/indexer.mjs";
 import { readContractsArtifactJson } from "./strict-json-helper.js";
-import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
+import { loadProductionValidationContext } from "p42-agent/production-validation-context.mjs";
 import { collectFinalityAnchor, recheckFinalityAnchor, validateMonotonicFinalityAnchor } from "./finality-anchor.js";
 import { canonicalRoleAcceptanceJson, readRoleAcceptancePacketExact, validateDeploymentRoleAcceptances, validateDurableRoleAcceptanceTimestamp } from "./role-acceptance-helper.js";
 import { readExplorerDossierExact, validateExplorerVerificationAnchor, validateExplorerVerificationDossier } from "./explorer-verification-helper.js";
@@ -25,7 +25,7 @@ import { readReleaseBuildJson } from "./release-capsule-helper.js";
 import {
   assertActivationRpcAuthorityRegistryMembership,
   canonicalActivationRpcEndpoint,
-} from "../../agent/activation-rpc-endpoints.mjs";
+} from "p42-agent/activation-rpc-endpoints.mjs";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532;
 const PRIVATE_FILE_MODE = 0o600;

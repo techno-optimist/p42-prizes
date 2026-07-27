@@ -4,12 +4,12 @@ import { describe, it } from "node:test";
 import { network } from "hardhat";
 import {
   buildQuorumResolveCallPolicy,
-} from "../../agent/resolver.mjs";
+} from "p42-agent/resolver.mjs";
 import {
   buildResolverQuorumDecisionPacket,
   buildResolverQuorumSignatureArtifact,
   collectResolverQuorumSignatures,
-} from "../../agent/resolver-quorum.mjs";
+} from "p42-agent/resolver-quorum.mjs";
 import { challengeManagerEffectiveSalt } from "../scripts/deployment-ceremony-helper.js";
 import { deployActiveObjectiveProofCapability } from "../test-support/objective-proof-capability.js";
 

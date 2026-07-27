@@ -1,1 +1,1 @@
-export * from "../../agent/role-acceptance.mjs";
+export * from "p42-agent/role-acceptance.mjs";
