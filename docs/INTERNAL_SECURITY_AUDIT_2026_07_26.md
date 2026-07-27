@@ -161,6 +161,23 @@ Make and hosted CI consume the same root install graph. A clean workspace instal
 passes 370 Hardhat tests, 20 release-capsule tests, 488 agent tests, and a
 workspace dependency audit with zero findings.
 
+### P2-02: Local release gate scope was ambiguous - fixed
+
+The repository had several individually useful local commands but no single
+non-network aggregate covering Python/verifier replay, the complete Node
+workspace, both portal dependency modes, and objective-program checks. The
+strict Q6 candidate transcript is also intentionally canonical-x86-specific,
+so invoking it on ARM fails on architecture-bound ELF/vkey/journal identity
+rather than on objective semantics.
+
+`make local-source-gates` now composes the full non-network source surface and
+labels its native SP1 runs as untrusted host observations. Those runs still
+require exact guest/host public-value equality, safe source closure, canonical
+JSON, and positive resource counts, but they derive native identity and cannot
+authorize it. The strict canonical x86 and hosted dual-Linux gates remain
+separate release requirements. The aggregate confirms the typed blocked
+dependency posture; it never substitutes that posture for the activation gate.
+
 ## Static Analysis Review
 
 Slither source-mode analysis completed over 61 contracts and emitted 222 raw
@@ -172,7 +189,7 @@ close independent review or live-state reachability.
 
 ## Local Gate Results
 
-- `make all`: pass; 2,066 Python tests passed, 3 skipped, all 17 problem
+- `make all`: pass; 2,068 Python tests passed, 3 skipped, all 17 problem
   packages validated and linted, exact-ten bindings passed, and all 17 seed
   reports replayed.
 - contracts: 370 Hardhat tests plus 20 release-capsule tests passed; npm audit
@@ -180,8 +197,14 @@ close independent review or live-state reachability.
 - agent: 488 tests passed; npm audit reported zero vulnerabilities.
 - portal: 373 tests, TypeScript, and the `/prizes` production build passed;
   full and optional-free npm audits reported zero vulnerabilities.
+- objective programs: 66 Python differential/reproduction tests and 152 shared
+  Python authority vectors passed; all candidate Rust cores and native SP1
+  guest/host replays passed as explicitly untrusted host observations. The Q6
+  strict canonical-x86 transcript correctly remains outside this ARM result.
 - objective dependency security: expected blocking failure, with 4 high and 12
   total findings across the 4 SP1-bearing lockfiles.
+- the pinned collision reproducer confirmed that transcripts `[7]` and
+  `[7, 0]` produce the same sponge state and challenge.
 
 These are local results in an isolated worktree. Hosted exact-commit CI remains
 required before release and cannot convert the known SP1 blocker into a pass.

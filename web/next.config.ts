@@ -1,11 +1,16 @@
 import type { NextConfig } from "next";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const rawBasePath = process.env.NEXT_PUBLIC_BASE_PATH?.trim();
 const basePath = rawBasePath && rawBasePath !== "/" ? rawBasePath.replace(/\/+$/, "") : undefined;
+const webRoot = path.dirname(fileURLToPath(import.meta.url));
 
 const nextConfig: NextConfig = {
   basePath,
+  outputFileTracingRoot: webRoot,
   poweredByHeader: false,
+  turbopack: { root: webRoot },
   typedRoutes: false,
   // Turbopack over-traces runtime-configurable portal state paths back to
   // compile-time TS inputs; the server runtime uses emitted .next chunks.

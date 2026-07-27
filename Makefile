@@ -1,5 +1,7 @@
 PYTHON ?= python3
-CARGO ?= cargo
+CARGO ?= $(if $(wildcard $(HOME)/.cargo/bin/cargo),$(HOME)/.cargo/bin/cargo,cargo)
+RUST_TOOLCHAIN ?= 1.91.1
+PINNED_CARGO = $(CARGO) +$(RUST_TOOLCHAIN)
 PYTHONPATH := $(CURDIR)/src
 P42_GIT_REMOTE ?= origin
 # Per-problem tests invoke `make verify` while the root test target is itself a
@@ -16,8 +18,10 @@ LAUNCH_PROBLEMS := $(addprefix problems/,$(LAUNCH_SLUGS))
 RESEARCH_PROBLEMS := problems/hadamard-mini problems/signed-autoconvolution-c3-upper problems/b3-ruler-11-marks problems/b3-subset-first-jump-9 problems/edp-c3-longest-sequence problems/c4-star-ramsey-a17 problems/hypercube-q7-c4-free
 PROBLEMS := $(LAUNCH_PROBLEMS) $(RESEARCH_PROBLEMS)
 
-.PHONY: install-verifier-deps test validate validate-source-release-evidence verify-production-board-bindings refresh-production-board-bindings verify-source-release-evidence-online capture-sp1-runtime-evidence verify-sp1-runtime-evidence test-sp1-runtime-attestation lint verify-seed verify-open-witness-release verify-hadamard-seed verify-erdos-seed verify-edges-seed verify-arithmetic-kakeya-seed verify-autoconvolution-c1-seed verify-autoconvolution-c2-seed verify-signed-c3-seed verify-mertens-k12000-seed verify-pnt-sparse-seed verify-hadamard-668-seed admit-host-seed admit-host-ten-board admit-host-q6 admit-host-distinct-subset-sums admit-host-erdos admit-host-edges admit-host-arithmetic-kakeya admit-host-autoconvolution-c1 admit-host-autoconvolution-c2 admit-host-signed-c3 admit-host-mertens-k12000 admit-host-pnt-sparse admit-host-hadamard-668 contracts-test objective-core-test candidate-objective-program-gates objective-program-gates objective-dependency-security-gate objective-dependency-security-posture reproduce-sp1-challenger-collision verify-sp1-objective-artifact verify-sp1-objective-resource-profile verify-render-release all
+.PHONY: install-verifier-deps test validate validate-source-release-evidence verify-production-board-bindings refresh-production-board-bindings verify-source-release-evidence-online capture-sp1-runtime-evidence verify-sp1-runtime-evidence test-sp1-runtime-attestation lint verify-seed verify-open-witness-release verify-hadamard-seed verify-erdos-seed verify-edges-seed verify-arithmetic-kakeya-seed verify-autoconvolution-c1-seed verify-autoconvolution-c2-seed verify-signed-c3-seed verify-mertens-k12000-seed verify-pnt-sparse-seed verify-hadamard-668-seed admit-host-seed admit-host-ten-board admit-host-q6 admit-host-distinct-subset-sums admit-host-erdos admit-host-edges admit-host-arithmetic-kakeya admit-host-autoconvolution-c1 admit-host-autoconvolution-c2 admit-host-signed-c3 admit-host-mertens-k12000 admit-host-pnt-sparse admit-host-hadamard-668 contracts-test node-gates web-static-gates local-source-gates objective-core-test candidate-objective-python-gates candidate-objective-host-gates candidate-objective-program-gates objective-program-gates objective-dependency-security-gate objective-dependency-security-posture reproduce-sp1-challenger-collision verify-sp1-objective-artifact verify-sp1-objective-resource-profile verify-render-release all
 
+# Historical Python/verifier aggregate. Use local-source-gates for the complete
+# non-network source regression surface.
 all: validate lint test verify-seed
 
 install-verifier-deps:
@@ -199,19 +203,44 @@ contracts-test:
 	@npm run contracts:test
 	@npm run audit
 
-objective-core-test:
-	@cd objective-programs && cargo test --locked -p p42-objective-core
+node-gates:
+	@npm ci
+	@npm run contracts:build
+	@npm run contracts:test
+	@npm run agent:test
+	@npm run audit
 
-candidate-objective-program-gates:
+web-static-gates:
+	@bash scripts/run-local-web-static-gates.sh
+
+# Necessary source evidence only. This excludes hosted dual-Linux SP1 builds,
+# PostgreSQL integrations, live chain/RPC evidence, and external attestations.
+# Funding eligibility additionally requires objective-dependency-security-gate
+# and every published Gate 1/2 artifact.
+local-source-gates: all node-gates web-static-gates objective-core-test candidate-objective-host-gates objective-dependency-security-posture
+
+objective-core-test:
+	@$(PINNED_CARGO) --version | grep -q '^cargo 1\.91\.1 '
+	@cd objective-programs && $(PINNED_CARGO) test --locked -p p42-objective-core
+
+candidate-objective-python-gates:
 	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m pytest -q \
 		problems/q6-intersecting-hypergraph/tests/test_q6_intersecting_hypergraph.py \
 		problems/arithmetic-kakeya/tests/test_arithmetic_kakeya.py \
 		tests/test_arithmetic_kakeya_sp1_differential.py \
 		tests/test_edges_sp1_differential.py \
+		tests/test_sp1_host_observation.py \
 		tests/test_sp1_objective_reproduction.py
 	@$(PYTHON) objective-programs/erdos-min-overlap/objective-shared/tests/test_python_authority.py \
 		--canonical-root . --source-mode current
-	@bash scripts/verify-candidate-objective-programs.sh
+
+candidate-objective-program-gates: candidate-objective-python-gates
+	@CARGO="$(CARGO)" RUST_TOOLCHAIN="$(RUST_TOOLCHAIN)" bash scripts/verify-candidate-objective-programs.sh
+
+# Non-authorizing native-host execution. The strict target above retains the
+# canonical x86 Q6 transcript and remains part of objective-program-gates.
+candidate-objective-host-gates: candidate-objective-python-gates
+	@CARGO="$(CARGO)" RUST_TOOLCHAIN="$(RUST_TOOLCHAIN)" bash scripts/verify-candidate-objective-programs.sh --host-observation
 
 objective-program-gates: objective-core-test \
 	candidate-objective-program-gates \
@@ -231,7 +260,7 @@ objective-dependency-security-posture:
 
 reproduce-sp1-challenger-collision:
 	@cd security/reproducers/sp1-challenger-transcript-collision && \
-		$(CARGO) run --locked
+		$(PINNED_CARGO) run --locked
 
 verify-sp1-objective-artifact:
 	@test -n "$(P42_CARGO_PROVE)" || (echo "P42_CARGO_PROVE must name the pinned SP1 v6.1 cargo-prove binary" >&2; exit 2)

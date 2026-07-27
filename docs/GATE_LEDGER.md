@@ -275,8 +275,21 @@ make verify-seed
 make admit-host-seed
 make admit-host-edges
 make contracts-test
-cd web && npm run test && npx tsc --noEmit && npm run build:prizes && npm audit --audit-level=moderate
+make local-source-gates
 ```
+
+`local-source-gates` is the canonical non-network aggregate: Python/verifier
+validation and seed replay, the complete Node workspace, portal type/tests plus
+full and optional-free `/prizes` builds, objective predicate checks, explicitly
+untrusted native-host SP1 guest/host semantic replay, and the typed
+expected-blocked SP1 posture. It is necessary but never sufficient for
+deployment. The native replay derives architecture-specific candidate identity
+and cannot authorize it. The aggregate deliberately excludes the strict
+canonical x86 transcript gate, hosted dual-Linux SP1 reproduction, PostgreSQL
+integrations, live chain/RPC evidence, immutable image/host evidence, and
+external Gate 1/2 attestations. Funding activation additionally requires
+`objective-dependency-security-gate` to pass rather than merely confirming the
+known blocked posture.
 
 Contract evidence now has a local Hardhat 3 scaffold:
 
