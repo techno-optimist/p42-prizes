@@ -38,11 +38,16 @@ def _evidence_file(path: Path, value: dict) -> str:
     return sha256_bytes(payload)
 
 
-def _artifact(evidence_root: Path, *, release_commit: str = COMMIT_R) -> dict:
+def _artifact(
+    evidence_root: Path,
+    *,
+    release_commit: str = COMMIT_R,
+    source_root: Path = ROOT,
+) -> dict:
     evidence_root.mkdir(parents=True, exist_ok=True)
-    slugs = json.loads((ROOT / "protocol/production-board-set-v1.json").read_text())["boards"]
-    records = json.loads((ROOT / "protocol/production-board-bindings-v1.json").read_text())["records"]
-    projected = json.loads((ROOT / "scripts/release-guard-problems-v1.json").read_text())["boards"]
+    slugs = json.loads((source_root / "protocol/production-board-set-v1.json").read_text())["boards"]
+    records = json.loads((source_root / "protocol/production-board-bindings-v1.json").read_text())["records"]
+    projected = json.loads((source_root / "scripts/release-guard-problems-v1.json").read_text())["boards"]
     dossier = {
         "dossier_hash": DIGEST_B,
         "verifier_source_commit": COMMIT_S,
@@ -77,7 +82,7 @@ def _artifact(evidence_root: Path, *, release_commit: str = COMMIT_R) -> dict:
         })
     boards = []
     for index, (slug, record, public) in enumerate(zip(slugs, records, projected, strict=True), start=1):
-        manifest = load_manifest(ROOT / "problems" / slug)
+        manifest = load_manifest(source_root / "problems" / slug)
         resource = {
             "memory_mb": manifest["verifier"]["max_compute"]["memory_mb"],
             "wall_seconds": manifest["verifier"]["max_compute"]["wall_seconds"],
@@ -462,7 +467,7 @@ def test_runtime_release_rejects_tracked_replacement_during_load(
         ["git", "-C", str(checkout), "rev-parse", "HEAD"],
         check=True, capture_output=True, text=True,
     ).stdout.strip()
-    value = _artifact(tmp_path / "evidence", release_commit=head)
+    value = _artifact(tmp_path / "evidence", release_commit=head, source_root=checkout)
     path = tmp_path / "runtime-release.json"
     pin = _write(path, value)
     original_load = runtime_config._load
