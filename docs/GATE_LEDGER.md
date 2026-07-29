@@ -1,11 +1,33 @@
 # Production Gate Ledger
 
-Status date: 2026-07-26.
+Status date: 2026-07-29.
 
 Status: Phase 0 local/testnet-shaped portal. NO-GO for real ETH and NO-GO for
 a canonical Base Sepolia settlement pilot on the current source. Not externally
 audited. Not legally reviewed. No real ETH should be accepted until every Gate 2
 item in this ledger is green.
+
+July 29 release-control delta: audit branch
+`codex/real-eth-audit-20260726` at `7e384cd9ea533824ec7d578c5126f95c22f837de`
+has zero findings in both the root workspace and optional-free portal npm
+audits. It pins Next.js `16.2.12`, PostCSS `8.5.23`, and Sharp `0.35.3` and
+retains the fail-closed funding boundary. The private default branch still has
+the older portal lockfile, and GitHub reports ten open Next.js/PostCSS/Sharp
+alerts there, including six high-severity findings. PR #212 contains the
+remediation but is not merge-authorized evidence: Actions run
+[`30476185734`](https://github.com/techno-optimist/p42-prizes/actions/runs/30476185734)
+failed twice before runner allocation. All seven jobs have empty step arrays,
+empty runner identities, and no logs. Branch protection is also unavailable on
+the current private repository tier. Until an exact-head hosted run executes
+and passes and the release is merged through an enforced review boundary, the
+public release must not be described as current-source green.
+
+The same audit head directly reproduces the SP1 `v6.1.0` transcript collision
+against P42's exact `p3-challenger 0.3.2-succinct` lock, in addition to the
+existing `0.4.3-succinct` reproducer for current SP1. Both `[7]` and `[7, 0]`
+produce the same sponge state and challenge. This upgrades the dependency
+finding from advisory-only evidence to version-matched executable evidence;
+it does not authorize a waiver.
 
 July 26 adversarial audit delta: the review found that an unadjudicated resolver
 timeout could return an invalid submission to a finalizable state. Current
