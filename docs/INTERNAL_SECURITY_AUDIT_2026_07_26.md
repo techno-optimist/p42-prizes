@@ -89,6 +89,18 @@ than the patched upstream Plonky3 implementation. The repository's pinned Rust
 reproducer executes the collision: transcripts `[7]` and `[7, 0]` yield the
 same sponge state and sampled challenge.
 
+The apparent upstream upgrade path is not presently usable. Open SP1 PR #2826
+adds `p3-challenger 0.6.1` while retaining `0.4.3-succinct` for transitive
+`p3-commit` and `p3-fri` consumers, and its substantive x86, ARM, verifier,
+Cargo-check, formatting, examples, and GPU checks fail. The Cargo-check failure
+includes 14 `slop-challenger` compatibility errors. Separately, SP1's
+hand-written recursive `MultiField32ChallengerVariable` retains the same
+untagged partial-chunk `reduce_31` construction. A crates.io override therefore
+cannot close the proof-system finding: native dependencies, recursive circuit
+semantics, and SLOP adapters must be repaired and tested as one transcript
+protocol, followed by rotation of all downstream cryptographic and deployment
+identities.
+
 ### P1-01: Portal production dependencies carried known advisories - fixed
 
 The direct Next.js dependency and transitive PostCSS/Sharp versions produced

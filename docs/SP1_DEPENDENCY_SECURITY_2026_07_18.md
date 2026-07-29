@@ -75,9 +75,39 @@ and retains the affected `reduce_31` / `split_32` implementation without a
 partial-chunk length tag. The pinned executable reproducer at
 `security/reproducers/sp1-challenger-transcript-collision/` proves that
 transcripts `[7]` and `[7, 0]` produce the same sponge state and challenge.
-Run `make reproduce-sp1-challenger-collision`. SP1 upstream `main` at
+The paired `sp1-v610-challenger-transcript-collision/` reproducer executes the
+same collision against P42's exact frozen `0.3.2-succinct` dependency. Run
+`make reproduce-sp1-challenger-collision`. SP1 upstream `main` at
 `c5360b91c2ac45e28a13cd15a78eda28c85d677b` still resolves the same crate
 checksum, so no maintained fixed Succinct line existed on 2026-07-26.
+
+### Partial-upgrade review
+
+Open upstream [SP1 PR #2826](https://github.com/succinctlabs/sp1/pull/2826)
+does not close this finding. At reviewed head
+`6e4e182bdbf3d3e5850941e30f2c7e58eede7140`, the PR adds
+`p3-challenger 0.6.1` alongside `0.4.3-succinct`; its lockfile still routes
+`p3-commit`, `p3-fri`, and other proof components through the affected
+`0.4.3-succinct` challenger. The PR is open, requires review, is behind its
+base, and its x86, ARM, verifier, Cargo-check, formatting, example, and GPU
+checks are failing. The Cargo-check failure includes 14 `slop-challenger`
+compile errors caused by incompatible field, permutation, and challenger
+interfaces. It is evidence that a one-package substitution is not a compatible
+security upgrade, not evidence of a maintained fixed SP1 release.
+
+The SP1 source also has a distinct recursive-circuit implementation in
+`crates/recursion/circuit/src/challenger.rs`. Its
+`MultiField32ChallengerVariable::duplexing` performs the same untagged
+partial-chunk `reduce_31` packing. Updating the crates.io dependency alone does
+not update that circuit. SLOP supplies additional challenger consumers and is
+the component that fails in the upstream partial-upgrade attempt. A qualifying
+remediation must therefore close and test all three surfaces:
+
+1. Native Plonky3 challenger dependencies and every transitive consumer.
+2. SP1's hand-written recursive challenger circuit and native/circuit
+   transcript equivalence.
+3. SLOP challenger adapters and all proof-system callers across every enabled
+   proving mode.
 
 ## Closed Policy And Activation Binding
 
@@ -100,7 +130,12 @@ or revision fails closed before broadcast.
 
 No lockfile, guest ELF, vkey, proof artifact, or frozen objective identity was
 changed here. A future upgrade is deliberate: review a new versioned policy,
-regenerate all affected lockfiles, produce a zero-finding report, then rerun the
-objective artifact and independent-release ceremonies before issuing a new
-launch authorization. Until then, historical SP1 `v6.1.0` evidence remains
-historical and funding-ineligible.
+regenerate all affected lockfiles, and prove that no affected challenger
+version remains anywhere in the resolved graph. The reviewed SP1 revision must
+also have a domain-separated native and recursive transcript construction,
+passing native/recursive equivalence tests, collision-regression tests, and the
+complete upstream workspace on x86 and ARM. Only then may P42 regenerate every
+affected ELF, vkey, journal, proof, gateway identity, verifier bytecode, release
+capsule, and launch authorization and rerun the independent-release ceremonies.
+Until then, historical SP1 `v6.1.0` evidence remains historical and
+funding-ineligible.

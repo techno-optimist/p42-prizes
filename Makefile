@@ -259,6 +259,8 @@ objective-dependency-security-posture:
 		--expect blocked
 
 reproduce-sp1-challenger-collision:
+	@cd security/reproducers/sp1-v610-challenger-transcript-collision && \
+		$(PINNED_CARGO) run --locked
 	@cd security/reproducers/sp1-challenger-transcript-collision && \
 		$(PINNED_CARGO) run --locked
 
