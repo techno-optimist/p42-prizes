@@ -63,7 +63,7 @@ RestrictSUIDSGID=true
 LockPersonality=true
 ReadOnlyPaths=/etc/p42/verifier-executor /opt/p42 /var/lib/p42/resolver-rerun-requests /var/lib/p42/resolver-rerun
 ReadWritePaths=/var/lib/p42/verifier-executor /run/p42-verifier-executor
-InaccessiblePaths=/etc/p42/operator /etc/p42/resolver /var/lib/p42/resolver /var/lib/p42/runtime-evidence
+InaccessiblePaths=/etc/p42/operator /etc/p42/resolver /var/lib/p42/resolver /var/lib/p42/runtime-evidence /run/docker.sock /var/run/docker.sock
 
 [Install]
 WantedBy=multi-user.target

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { fstatSync, readFileSync } from "node:fs";
-import { parseStrictJsonBytes } from "../../agent/strict-json.mjs";
+import { parseStrictJsonBytes } from "p42-agent/strict-json.mjs";
 import { validateExplorerVerificationDossier } from "./explorer-verification-helper.js";
 
 const [manifestFd, capsuleFd, dossierFd, operatorsJson, validationTime] = process.argv.slice(2);

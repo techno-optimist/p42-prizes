@@ -1,11 +1,43 @@
 # Production Gate Ledger
 
-Status date: 2026-07-20.
+Status date: 2026-07-29.
 
 Status: Phase 0 local/testnet-shaped portal. NO-GO for real ETH and NO-GO for
 a canonical Base Sepolia settlement pilot on the current source. Not externally
 audited. Not legally reviewed. No real ETH should be accepted until every Gate 2
 item in this ledger is green.
+
+July 29 release-control delta: audit branch
+`codex/real-eth-audit-20260726` at `7e384cd9ea533824ec7d578c5126f95c22f837de`
+has zero findings in both the root workspace and optional-free portal npm
+audits. It pins Next.js `16.2.12`, PostCSS `8.5.23`, and Sharp `0.35.3` and
+retains the fail-closed funding boundary. The private default branch still has
+the older portal lockfile, and GitHub reports ten open Next.js/PostCSS/Sharp
+alerts there, including six high-severity findings. PR #212 contains the
+remediation but is not merge-authorized evidence: Actions run
+[`30476185734`](https://github.com/techno-optimist/p42-prizes/actions/runs/30476185734)
+failed twice before runner allocation. All seven jobs have empty step arrays,
+empty runner identities, and no logs. Branch protection is also unavailable on
+the current private repository tier. Until an exact-head hosted run executes
+and passes and the release is merged through an enforced review boundary, the
+public release must not be described as current-source green.
+
+The same audit head directly reproduces the SP1 `v6.1.0` transcript collision
+against P42's exact `p3-challenger 0.3.2-succinct` lock, in addition to the
+existing `0.4.3-succinct` reproducer for current SP1. Both `[7]` and `[7, 0]`
+produce the same sponge state and challenge. This upgrades the dependency
+finding from advisory-only evidence to version-matched executable evidence;
+it does not authorize a waiver.
+
+July 26 adversarial audit delta: the review found that an unadjudicated resolver
+timeout could return an invalid submission to a finalizable state. Current
+source now fails safe by rejecting that submission and returning each party
+only its own bond; corresponding contract, indexer, and bytecode-pin regressions
+are included. Portal dependency findings were also cleared and made blocking in
+CI. Real-ETH status remains NO-GO: the reachable high-severity SP1 challenger
+advisory, current-source testnet deployment, independent review, legal,
+governance, and operational gates remain open. See
+[`INTERNAL_SECURITY_AUDIT_2026_07_26.md`](INTERNAL_SECURITY_AUDIT_2026_07_26.md).
 
 July 20 snapshot: PR #196 merged the release-guard correction to `main` at
 `84f0669967baa06c3845073e3e603d186e8133c6`. Exact-main push run
@@ -159,7 +191,7 @@ repo-owner authority cannot be replaced by agent execution.
 - [ ] Funding deposits are indexed and reconciled against problem pool balances.
 - [ ] Reveal enforces `sha256(bytes) == commitDaHash` on the canonical deployment (on-chain-DA problems carry the bytes in reveal calldata; the 3 large problems use the anchored off-chain store). *Superseded criterion:* "finalize requires permanence receipt" — `finalize`'s `permanenceHash` is now optional; see `docs/DATA_AVAILABILITY.md`.
 - [ ] DGX CHRONOS/Hermes verifier runner watches testnet reveals and publishes transcripts.
-- [ ] Runner queue/OOM guard rehearsal validates with `p42-prizes runner-burst-validate`. Credential-free DGX preflight evidence now covers the hostile sandbox and all four non-mutating wait guards, but it is not the required released-image, serialized, three-party signed burst packet.
+- [ ] Runner queue/OOM guard rehearsal validates with `p42-prizes runner-burst-validate`. Credential-free DGX preflight evidence covers the hostile sandbox and all four non-mutating wait guards. The unsigned [July 26 host-global memory rehearsal](../deployments/dgx-host-global-runtime-rehearsal/2026-07-26/REPORT.md) additionally exposed and fixed cgroup-only admission, proved host-wide swap rejection on the constrained DGX without invoking Docker, and found the dedicated account/group/subordinate-ID provisioning absent. These are not the required installed-runtime, released-image, serialized, three-party signed burst packet.
 - [ ] Invalid-reveal alerts produce agent challenge candidates with a bounded challenge key, spend cap, and revocation path (`docs/CHALLENGE_KEY_POLICY.md`).
 - [x] Challenge, resolver, expiry, and slash calls bind the exact reveal/challenge instance, with stale-transaction regressions in `contracts/test/p42-gate1.test.js`.
 - [x] Source-level resolver runtime validates finalized challenge/transcript bindings, collects exact current-epoch quorum signature artifacts, reserves collective stake per unmined decision across all board runtimes, and journals/reconciles the zero-value quorum relay call (`agent/resolver.mjs`). The operator reconstructs fresh generation-bound work from finalized and one-time historical `ChallengeExpired` events; its shared durable allocator reserves explicit nonces from two independent RPC views and serializes signing/nonblocking broadcast under a wallet-wide lock, so an unresolved expiry, stale RPC, or concurrent submission cannot silently strand a challenge. Local source/test evidence only; this does not attest deployed retrieval, independent signer policy, immutable public availability, wallet provisioning, or live operation.
@@ -167,7 +199,7 @@ repo-owner authority cannot be replaced by agent execution.
 - [ ] Resolver operations prove that each on-chain `transcriptURI` resolves to the bound immutable bytes, and a reviewed policy architecture permits autonomous dynamic resolver calls without widening the session key beyond exact decision calldata.
 - [ ] Fresh testnet adversarial run catches planted verifier exploits on the current DA-refactored canonical deployment. Historical old-bytecode campaign evidence exists in `deployments/base-sepolia/adversarial/CAMPAIGN.md`, but it is stale for this release.
 - [x] The adversarial evidence validator binds the exact 47-contract, ten-board topology; proves frozen deployment commit ancestry to the evidence-publication commit; cross-checks manifest/configuration/runtime/chain evidence; and rejects transcripts replayed against another board's submission/challenge pair. This is source-level validation only and does not replace the fresh signed Base Sepolia campaign above.
-- [x] Source-level operator, resolver, and indexer runtime templates use distinct unprivileged accounts, finite failure budgets, private atomic state, an account-separated failure sink, systemd `LoadCredential` custody for signing/RPC URLs, and `LimitCORE=0`. All board operators now require one shared host-global FIFO verifier scheduler; its fence heartbeat, capacity/swap checks, persistent OOM guard, stale-holder recovery, and boot reset prevent ten per-board queues from launching ten containers concurrently. The operator and resolver complete `ExecStart` commands share the production CLI contract enforced by the executables, with no RPC URL or rootful Docker socket in process arguments; legacy receipt/endpoints/RPC environment fallbacks fail closed. The indexer service retains the one-shot engine and atomically promotes only complete same-binding nonregressing finalized checkpoints while publishing health/staleness. The host-global executor requires reviewed rootless Docker authority, subordinate-ID/userns prerequisites, a private socket, and a pre-poll socket check; the worker additionally requires structured daemon identity, `name=rootless`, and `CgroupDriver=systemd`. The CI-called systemd aggregate checks all three runtime units plus the rootless daemon/config/preflight. The unsigned [July 18 DGX operator rehearsal](../deployments/dgx-rootless-runtime-rehearsal/2026-07-18/REPORT.md) exercised the retired per-operator Docker service and does not close target-host feasibility for this host-global architecture. A new DGX host-global executor/operator IPC/indexer rehearsal, independent signed runtime evidence, live RPCs, immutable verifier images, a real cross-board queue saturation run, durable indexer publication, signer provisioning, queue latency under load, and an on-chain poll remain open.
+- [x] Source-level operator, resolver, and indexer runtime templates use distinct unprivileged accounts, finite failure budgets, private atomic state, an account-separated failure sink, systemd `LoadCredential` custody for signing/RPC URLs, and `LimitCORE=0`. All board operators now require one shared host-global FIFO verifier scheduler; its fence heartbeat, cgroup-and-host capacity/swap checks, persistent OOM guard, stale-holder recovery, and boot reset prevent ten per-board queues from launching ten containers concurrently. The operator and resolver complete `ExecStart` commands share the production CLI contract enforced by the executables, with no RPC URL or rootful Docker socket in process arguments; legacy receipt/endpoints/RPC environment fallbacks fail closed. The indexer service retains the one-shot engine and atomically promotes only complete same-binding nonregressing finalized checkpoints while publishing health/staleness. The host-global executor requires reviewed rootless Docker authority, subordinate-ID/userns prerequisites, a private socket, and a pre-poll socket check; the worker additionally requires structured daemon identity, `name=rootless`, and `CgroupDriver=systemd`. The CI-called systemd aggregate checks all three runtime units plus the rootless daemon/config/preflight. The unsigned [July 18 DGX operator rehearsal](../deployments/dgx-rootless-runtime-rehearsal/2026-07-18/REPORT.md) exercised the retired per-operator Docker service. The unsigned [July 26 host-global memory rehearsal](../deployments/dgx-host-global-runtime-rehearsal/2026-07-26/REPORT.md) proves the corrected shared-host swap gate on the current DGX but also confirms that the dedicated account, submitter group, subordinate IDs, private daemon, and IPC are not installed. A complete DGX host-global executor/operator IPC/indexer rehearsal, independent signed runtime evidence, live RPCs, immutable verifier images, a real cross-board queue saturation run, durable indexer publication, signer provisioning, queue latency under load, and an on-chain poll remain open.
 - [x] Every known red-team attack is represented by an executable test. (`contracts/test/p42-redteam.test.js` + `contracts/test/RED_TEAM_COVERAGE.md` map all 14 risk-register rows.)
 
 ### Gate 2: Real ETH Pilot
@@ -198,7 +230,7 @@ repo-owner authority cannot be replaced by agent execution.
 
 - [ ] The source-level permissionless objective-proof path is structurally wired and locally tests package/program/gateway/runtime bindings plus both settlement outcomes. The P42-owned SP1 v6.1 Hadamard guest re-runs the exact `hadamard-668-defect` predicate, reconstructs the complete Solidity reveal/challenge/package/journal hash chain, and emits exactly 32 public bytes. Ubuntu 22.04 and 24.04 GitHub-hosted x86 runners reproduced byte-identical ELF `sha256:bada920c00cb68bb8462e461c13eeb8240bde7c1d9af17b5d517c1a54b31ecb2`, vkey `0x0033a3faf11b262f60eef30a05dd947d041abac572bdce6ea9e7f0efe678a869`, 53,275,736-instruction mock execution, and journal `0xf9be0e1ef3a8990ff478ee36b5890d3d9cf30b269269094f3f28b1b02f715546`. The A11 guest is also frozen across both images at ELF `sha256:f7350b3182568fed19536cfa7ea3f3909cbee9bd3f3a0201ac2d9e88ba1074ae`, vkey `0x00012fbcbac2981e12622a12e8c5697836479599555c8f02a6ae81f2194edb99`, 481,587 instructions, and independently recomputed journal `0x291ae6588501327ad80f26fa0bba73f06c54d93947824f8eecd6dee1bbadfffa`; its production-board guest remains deliberately `missing` and activation-ineligible. Edges now has an isolated candidate source workspace and dual-image build/mock/compare workflow support, but no hosted result from these changes is asserted here; its canonical guest record remains `missing`, activation-ineligible, and proof-free. The fresh external-runtime observation above closes only the Succinct v6.1 address/runtime observation at its recorded finalized anchors; it does not validate proofs or audit that runtime. These are same-operator x86 reproductions and mock executions, not proofs or independent hardware attestations. No genuine Groth16 proof or proof-cost benchmark exists, and the production gateway remains immutably inactive. Independent operator/hardware reproduction, proof economics, the remaining board programs, external audit, activation-time runtime recapture, a new active gateway/release/authorization version, deployment, and adversarial testnet rehearsal remain required before this gate can close or funding can be authorized.
 - [x] SP1 candidate-build provenance is fail-closed and forensics-preserving at the source-workflow layer. Exact-head run `29412253655` passed both Ubuntu producers and the cross-image reproducibility aggregator after the earlier run `29411110452` correctly rejected an over-strict installer model before compilation. Both accepted observations bind approved archive `sha256:99e68dd864dd7ee9688333346b428452c705d82a11098e51146389417e0c82c6` to the same installed tree: 101 files, 14 directories, five hardlinks, and `sha256:3d5caf4619fb3f8a2fd684b53fe9aa81f04238c8c12867c80ba06694c164f3d8`. The source binds exact paths, bytes, safe symlink/hardlink topology, directory traversal, and read/execute permission classes while permitting installer-only write-bit normalization; uses absolute `/usr/bin/env` and `/usr/bin/python3`; disables ambient Git configuration; removes cached Git checkouts; and records archive and installed trees separately before allowlist validation. Candidate and observation artifacts remain explicitly `untrusted`; only post-validation, post-equality artifacts may use `validated` names or enter the aggregator. The DGX ARM observation remains non-authorizing: official guest archive `sha256:03399c2e31561dcefd58fe1f467b8ef44fc693531f1326520513b3961a7a9267` produced a 101-file sysroot manifest `sha256:425dc79798515e5c8f133c845410313c0c7e57791f6b18e1c187a29b4534ae8b`, but source-built `cargo-prove` `sha256:f0ff2d9ec1e65ced44b5608419f02627c69a74fdcf4466d9f259ebc86bc7dc05` is not an approved release executable and clean ARM candidates drifted (`3bdce30c...` Hadamard, `64bcf886...` A11). Q6 now supplies the same counterevidence: two DGX native-ARM roots agree on candidate ELF `sha256:b4f7e621b2185e93b9cf00a0dff18bd1bc78a0e15d603a1809ee9edf467d8d05`, while rejected-run `29549595125` retained byte-identical Ubuntu 22.04/24.04 x86 forensic bundles at ELF `sha256:bfd127b762ebfacf1dacfca062c671ec7fa64c20dc5b3258eff61d571a1cb599`, vkey `0x00eb3d4a3d5ac2d12fcc55e81c2b5ac0a3af473b1d8313198e13eac5e1922fd7`, journal `0x2de2ac88744bf1f14092829ecfbc306871977d69e305312c47cfe55bf10e5968`, and 9,388,517 instructions. Embedded standard-library paths identify host-specific prebuilt sysroots as the drift source. Those bytes are counterevidence, not cross-architecture production identity, and Q6 remains unbound and activation-ineligible. The canonical frozen hashes above remain unchanged.
-- [ ] SP1 dependency security remains an activation blocker. The July 20 audit found 12 open alerts in the pinned v6.1 proof closure: four high alerts for reachable `p3-challenger 0.3.2-succinct`, plus eight low alerts involving reachable `p3-symmetric 0.3.2-succinct` and host-side `lru 0.12.5`. The current official SP1 v6.3.1 line does not repair the challenger algorithm and still retains the affected dependency families. Feature exclusion cannot remove them, and no maintained or already-audited fork closes all paths without changing native and recursive proof semantics. Do not hide the alerts or perform an evidence-destroying version bump. SP1 remains CI, benchmark, and reproducibility evidence only; it cannot authorize funding, settlement, promotion, or production proof acceptance. Activation requires a maintained release or independently audited fork with matching native/recursive challenger repair, a sponge-length proof or padded-sponge migration, `lru >= 0.16.3`, regenerated keys, adversarial rejection tests, dual-image reproduction, and no reachable high/medium alert. The read-only portal and native-verifier-only unfunded surfaces remain separable from this blocked proof tier.
+- [ ] SP1 dependency security remains an activation blocker. The July 20 audit found 12 open alerts in the pinned v6.1 proof closure: four high alerts for reachable `p3-challenger 0.3.2-succinct`, plus eight low alerts involving reachable `p3-symmetric 0.3.2-succinct` and host-side `lru 0.12.5`. The current official SP1 v6.3.1 line does not repair the challenger algorithm and still retains the affected dependency families. The July 26 source audit confirms that upstream SP1 `main` still resolves vulnerable published crate checksum `b6a908924d43e4cfb93fb41c8346cac211b70314385a9037e9241f5b7f3eaf77`; the pinned Rust reproducer proves `[7]` and `[7, 0]` yield the same sponge state and challenge. Hosted CI now validates an explicit exact `blocked` posture, while the activation gate remains nonzero; scanner failure, report drift, or an unreviewed transition to `pass` fails CI. Feature exclusion cannot remove the affected paths, and no maintained or already-audited fork closes all paths without changing native and recursive proof semantics. Do not hide the alerts or perform an evidence-destroying version bump. SP1 remains CI, benchmark, and reproducibility evidence only; it cannot authorize funding, settlement, promotion, or production proof acceptance. Activation requires a maintained release or independently audited fork with matching native/recursive challenger repair, a sponge-length proof or padded-sponge migration, `lru >= 0.16.3`, regenerated keys, adversarial rejection tests, dual-image reproduction, and no reachable high/medium alert. The read-only portal and native-verifier-only unfunded surfaces remain separable from this blocked proof tier.
 - [ ] Independent monitoring can reconstruct frontier and payout ledger from chain data.
 - [ ] Forced-inclusion/censorship fallback source and autonomous runtime are locally tested: the L1 `P42ForcedInclusionController` is immutably restricted to the canonical portal, wallet, challenge manager, and challenge selector; its L2 alias occupies a one-time wallet role separate from governance ownership; forced execution still requires exact calldata, one-call policy, chain/expiry binding, exact deposited value, and shared spend caps. `p42-censorship-fallback` requires an independent signed plan/cap authorization, durably journals signed L1 bytes before broadcast, shares the chain-plus-signer nonce allocator with ordinary challenges, resumes without replacement, rejects stale or non-independent RPC evidence, recomputes two-window then one-window signing slack, and requires finalized alias-origin policy/challenge evidence in strict order. The independent terminal verifier replays both exact L1-to-L2 provenance chains without the hot key. CI statically parses the bounded systemd service plus its account-separated alert sink, and the self-hashed CHRONOS system-manager drill proves canonical internal retry, terminal refusal, finite abnormal restart exhaustion, one post-exhaustion alert, timeout, clean stop, and cross-account write confinement (`deployments/dgx-supervisor-drill/2026-07-14/report.json`). Gate remains open pending external review, canonical L1/L2 deployment, live Base configuration binding, and a signed Base Sepolia two-deposit restart/reorg rehearsal (`docs/CENSORSHIP_FALLBACK.md`).
 - [ ] Fund-size caps reviewed and raised only after incident-free operation.
@@ -265,8 +297,21 @@ make verify-seed
 make admit-host-seed
 make admit-host-edges
 make contracts-test
-cd web && npm run test && npx tsc --noEmit && npm run build:prizes && npm audit --audit-level=moderate
+make local-source-gates
 ```
+
+`local-source-gates` is the canonical non-network aggregate: Python/verifier
+validation and seed replay, the complete Node workspace, portal type/tests plus
+full and optional-free `/prizes` builds, objective predicate checks, explicitly
+untrusted native-host SP1 guest/host semantic replay, and the typed
+expected-blocked SP1 posture. It is necessary but never sufficient for
+deployment. The native replay derives architecture-specific candidate identity
+and cannot authorize it. The aggregate deliberately excludes the strict
+canonical x86 transcript gate, hosted dual-Linux SP1 reproduction, PostgreSQL
+integrations, live chain/RPC evidence, immutable image/host evidence, and
+external Gate 1/2 attestations. Funding activation additionally requires
+`objective-dependency-security-gate` to pass rather than merely confirming the
+known blocked posture.
 
 Contract evidence now has a local Hardhat 3 scaffold:
 
@@ -358,6 +403,15 @@ open Gate 1 or Gate 2 items.
   audited deployed gateway, and no adversarial testnet/economic rehearsal has
   passed. Until those gates close, the resolver/`creditRecorder` bridge remains
   a hard real-ETH blocker (mirrors risk-register rows 4 and 13). Open.
+- **Resolver timeout now fails safe at source level.** The prior timeout path
+  returned a challenged submission to `Revealed`, so complete resolver outage
+  could eventually make an unadjudicated score payable. Current source instead
+  rejects the submission without credit, returns each party only its own bond,
+  and emits a distinct timeout hook that the deterministic indexer requires in
+  the same transaction. This closes the theft path but leaves availability
+  risk: a bonded challenger can censor a valid submission while every resolver
+  is unavailable. Canonical deployment and adversarial outage rehearsal remain
+  open Gate 1 work.
 - **ERC-20 / USDC handling.** Public and canonical build copy now state that v1
   is **native-ETH only**. There is no ERC-20 pool, deposit, fee-skim, or payout
   path implemented or audited, and the capability regression rejects copy that

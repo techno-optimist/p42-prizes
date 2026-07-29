@@ -11,7 +11,7 @@ import {
   validateManifestEvidence,
   validatePreBroadcastManifestPlan,
   writeFileAtomicSync,
-} from "../../agent/indexer.mjs";
+} from "p42-agent/indexer.mjs";
 
 import {
   assertDeploymentConfigHash,
@@ -75,10 +75,10 @@ import {
   reserveDeploymentNoncePlan,
   signedDeploymentJournalPath,
 } from "./signed-deployment-journal.js";
-import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
-import { readStrictJsonFileSyncWithBytes } from "../../agent/strict-json.mjs";
+import { loadProductionValidationContext } from "p42-agent/production-validation-context.mjs";
+import { readStrictJsonFileSyncWithBytes } from "p42-agent/strict-json.mjs";
 import { readRoleAcceptancePacketExact, roleAcceptanceBytesDigest } from "./role-acceptance-helper.js";
-import { assertExactSetupOperations } from "../../agent/setup-operation-plan.mjs";
+import { assertExactSetupOperations } from "p42-agent/setup-operation-plan.mjs";
 import { BASE_SEPOLIA_FINALITY_POLICY, collectCanonicalFinalizedBlockEvidence, collectFinalityAnchor, recheckFinalityAnchor } from "./finality-anchor.js";
 import {
   resolveCanonicalDeploymentStartNonce,

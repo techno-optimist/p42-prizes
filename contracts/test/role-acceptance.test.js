@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ethers } from "ethers";
 
-import { canonicalTopologyDescriptors } from "../../agent/canonical-topology.mjs";
+import { canonicalTopologyDescriptors } from "p42-agent/canonical-topology.mjs";
 import {
   ROLE_ACCEPTANCE_SIGNATURE_SCHEMA,
   assembleRoleAcceptancePacket,

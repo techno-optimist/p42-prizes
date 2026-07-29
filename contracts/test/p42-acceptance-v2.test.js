@@ -314,7 +314,7 @@ describe("P42 second-pass contract acceptance", () => {
       "P42_DISPUTE_WINDOW_CLOSED",
     );
     await expireChallenge(fixture, submissionId);
-    assert.equal((await submissions.submissions(submissionId)).status, 2n);
+    assert.equal((await submissions.submissions(submissionId)).status, 5n);
     assert.equal(await submissions.maxDisputeEndsAtOf(submissionId), maxDeadline);
     assert.equal(challenge.disputeEndsAt <= maxDeadline, true);
   });

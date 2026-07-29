@@ -3,7 +3,7 @@ import {
   readStrictJsonFileWithBytes,
   readStrictJsonFileSync,
   readStrictJsonFileSyncWithBytes,
-} from "../../agent/strict-json.mjs";
+} from "p42-agent/strict-json.mjs";
 
 const CONFIG_LIMITS = Object.freeze({
   maxBytes: 1024 * 1024,

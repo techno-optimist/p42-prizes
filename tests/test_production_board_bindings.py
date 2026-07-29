@@ -329,6 +329,14 @@ def test_exact_ten_board_bindings_recompute() -> None:
     assert eligibility == {record["slug"]: False for record in json.loads(DOSSIER.read_text())["records"]}
 
 
+def test_v2_authority_pins_match_exact_v1_dossier_bytes() -> None:
+    expected = _digest_bytes(DOSSIER.read_bytes())
+    schema = json.loads((ROOT / "protocol/production-board-bindings-v2.schema.json").read_text())
+
+    assert bindings_module.CANONICAL_V1_BINDINGS_DIGEST == expected
+    assert schema["$defs"]["baseBindings"]["properties"]["sha256"] == {"const": expected}
+
+
 def test_v2_validates_synthetic_evidence_but_never_promotes_it(tmp_path: Path) -> None:
     root, dossier_path, dossier = _synthetic_v2_dossier(tmp_path)
     eligibility = verify_board_bindings(root, dossier_path)

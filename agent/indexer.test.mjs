@@ -4,6 +4,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, rea
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import Ajv2020 from "ajv/dist/2020.js";
 import { ethers } from "ethers";
 
 import { atomsFromScore, canonicalJson, sha256Canonical } from "./lib.mjs";
@@ -183,15 +184,17 @@ it("activation checkpoint validation rejects a missing or mismatched SP1 report"
 });
 
 it("activation checkpoint validation remains blocked by the current SP1 report", async () => {
+  const repoRoot = realpathSync(new URL("..", import.meta.url));
+  const reportPath = realpathSync(join(repoRoot, "docs", "evidence", "sp1-dependency-security-current.json"));
   const options = activationIndexerValidatorFixture({
-    expectedReportBytes: readFileSync(realpathSync(join(process.cwd(), "..", "docs", "evidence", "sp1-dependency-security-current.json"))),
+    expectedReportBytes: readFileSync(reportPath),
   });
   options.activationPython = realpathSync(execFileSync(
     "python3", ["-c", "import sys; print(sys.executable)"], { encoding: "utf8" },
   ).trim());
-  options.activationRepoRoot = realpathSync(join(process.cwd(), ".."));
-  options.activationArtifactRoot = realpathSync(process.cwd());
-  options.sp1SecurityReportPath = realpathSync(join(process.cwd(), "..", "docs", "evidence", "sp1-dependency-security-current.json"));
+  options.activationRepoRoot = repoRoot;
+  options.activationArtifactRoot = realpathSync(new URL(".", import.meta.url));
+  options.sp1SecurityReportPath = reportPath;
   await assert.rejects(
     () => runIndexer(options),
     /SP1 dependency security gate blocks production launch authorization/,
@@ -568,13 +571,15 @@ function lifecycleFixture() {
       challengeInstanceHash: hash(703),
     }],
   ], 180);
+  tx([["challenges", "ResolverTranscriptPosted", {
+    submissionId: 3n, resolver: ADDR.resolver, transcriptHash: hash(503),
+    transcriptURI: "ipfs://transcript-c", verdictHash: hash(504), resolverBondWei: 5n,
+    resolverBondReleaseAt: 190n, challengerWins: false, challengeInstanceHash: hash(703),
+  }]], 185);
   tx([
     ["submissions", "SubmissionChallengeResolved", { submissionId: 3n, challengerWins: false }],
-    ["challenges", "ChallengeExpired", {
-      submissionId: 3n,
-      challenger: ADDR.challenger,
-      refundedBondWei: 21n,
-      challengeInstanceHash: hash(703),
+    ["challenges", "ResolverBondReleased", {
+      submissionId: 3n, resolver: ADDR.resolver, amount: 5n, challengeInstanceHash: hash(703),
     }],
     ["challenges", "Resolved", { submissionId: 3n, challengerWins: false, challengeInstanceHash: hash(703) }],
   ], 190);
@@ -742,6 +747,102 @@ const POLICY = {
   retryBaseDelayMs: 0,
   maxScanRestarts: 2,
 };
+
+function multiBoardCheckpointFixture(boardCount, { activationBound = false } = {}) {
+  const events = lifecycleFixture();
+  const registration = events.find((event) => event.source === "registry" && event.eventName === "ProblemRegistered");
+  const frozen = events.find((event) => event.source === "registry" && event.eventName === "ProblemFrozen");
+  for (let problemId = 2; problemId <= boardCount; problemId += 1) {
+    events.push(
+      {
+        ...registration,
+        index: 100 + problemId * 2,
+        args: {
+          ...registration.args,
+          problemId: BigInt(problemId),
+          metadataURI: `ipfs://problem-${problemId}`,
+        },
+      },
+      {
+        ...frozen,
+        index: 101 + problemId * 2,
+        args: { ...frozen.args, problemId: BigInt(problemId) },
+      },
+    );
+  }
+  const config = { ...CONFIG, problemCount: boardCount };
+  const replay = replayProtocolEvents(events, config, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
+  const snapshot = snapshotFromReplay(replay);
+  const checks = compareReplayToSnapshot(replay, snapshot, config);
+  const bindingBoards = Object.fromEntries(Array.from({ length: boardCount }, (_, index) => {
+    const problemId = index + 1;
+    return [String(problemId), {
+      pool: checkpointContract(problemId * 10 + 1),
+      ledger: checkpointContract(problemId * 10 + 2),
+      submissions: checkpointContract(problemId * 10 + 3),
+      challenges: checkpointContract(problemId * 10 + 4),
+    }];
+  }));
+  const activationEvidence = activationBound ? {
+    schema: "p42-funding-activation-checkpoint/v1",
+    planDigest: `sha256:${"a".repeat(64)}`,
+    finalizedBlockNumber: 21,
+    finalizedBlockHash: hash(1021),
+    completionAnchor: {
+      completionDigest: `sha256:${"b".repeat(64)}`,
+      blockNumber: 21,
+      blockHash: hash(1021),
+      blockTimestamp: 1_000,
+    },
+    rpcAuthority: {
+      schema: "p42-activation-rpc-authority/v1",
+      registryDigest: `sha256:${"c".repeat(64)}`,
+      primary: {
+        operatorId: "rpc-a",
+        endpointOrigin: "https://rpc-a.example",
+        endpointProfileDigest: `sha256:${"d".repeat(64)}`,
+        observedRawChainId: "0x14a34",
+      },
+      secondary: {
+        operatorId: "rpc-b",
+        endpointOrigin: "https://rpc-b.example",
+        endpointProfileDigest: `sha256:${"e".repeat(64)}`,
+        observedRawChainId: "0x14a34",
+      },
+    },
+    operations: ["armFunding", "setAcceptingFunds"].flatMap((suffix, phase) =>
+      Array.from({ length: 10 }, (_, index) => ({
+        sequence: 11 + phase * 10 + index,
+        label: `board.${index + 1}.${suffix}`,
+        problemId: String(index + 1),
+        operationId: hash(3_000 + phase * 10 + index),
+        state: 2,
+      }))),
+  } : null;
+  return buildMultiBoardCheckpoint({
+    binding: {
+      deploymentCommit: "a".repeat(40),
+      deploymentConfigHash: hash(99),
+      chainId: 84532,
+      startBlock: 1,
+      contracts: checkpointSharedContracts(),
+      boards: bindingBoards,
+    },
+    finalityPolicy: POLICY,
+    fromBlock: 1,
+    toBlock: 21,
+    toBlockHash: hash(1021),
+    toBlockTimestamp: 1_000,
+    activationEvidence,
+    boards: Array.from({ length: boardCount }, (_, index) => ({
+      problem: { problemId: String(index + 1), problemSlug: `board-${index + 1}` },
+      scan: { events },
+      replay,
+      snapshot,
+      checks,
+    })),
+  });
+}
 
 function fundingAuthorizationEvents({
   nonce = 0n,
@@ -1353,8 +1454,8 @@ describe("P42 deterministic indexer replay", () => {
     assert.equal(replay.submissions["3"].status, "Finalized");
     assert.equal(replay.submissionClaimableBondWei[ADDR.solverA], 50n);
     assert.equal(replay.submissionClaimableBondWei[ADDR.challenger], 40n);
-    assert.equal(replay.challengeClaimableBondWei[ADDR.challenger], 41n);
-    assert.equal(replay.challengeClaimableBondWei[ADDR.resolver], 5n);
+    assert.equal(replay.challengeClaimableBondWei[ADDR.challenger], 20n);
+    assert.equal(replay.challengeClaimableBondWei[ADDR.resolver], 10n);
     assert.equal(replay.ledger.pausedNewActions, true);
     assert.equal(replay.pausedNewActions, true);
     assert.equal(replay.challengePausedNewActions, true);
@@ -1554,6 +1655,34 @@ describe("P42 deterministic indexer replay", () => {
       () => replayProtocolEvents(events.slice(0, -1), CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE }),
       /missing quorum public journal/,
     );
+  });
+
+  it("replays resolver timeout as rejection with both parties limited to their own bonds", () => {
+    const events = lifecycleFixture();
+    const challengedIndex = events.findIndex(
+      (event) => event.source === "challenges" && event.eventName === "Challenged"
+    );
+    events.splice(challengedIndex + 1);
+    const transactionHash = hash(88_101);
+    const common = {
+      blockNumber: 121,
+      blockHash: hash(88_100),
+      transactionHash,
+      transactionIndex: 0,
+      blockTimestamp: 130n,
+    };
+    events.push(
+      { ...common, source: "submissions", eventName: "SubmissionBondClaimable", index: 0, args: { submissionId: 2n, claimant: ADDR.solverB, amount: 40n } },
+      { ...common, source: "submissions", eventName: "SubmissionChallengeTimedOut", index: 1, args: { submissionId: 2n } },
+      { ...common, source: "challenges", eventName: "ChallengeExpired", index: 2, args: { submissionId: 2n, challenger: ADDR.challenger, refundedBondWei: 20n, challengeInstanceHash: hash(702) } },
+    );
+
+    const replay = replayProtocolEvents(events, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
+    assert.equal(replay.submissions["2"].status, "Rejected");
+    assert.equal(replay.openSubmissionCount, 0n);
+    assert.equal(replay.submissionClaimableBondWei[ADDR.solverB], 40n);
+    assert.equal(replay.challengeClaimableBondWei[ADDR.challenger], 20n);
+    assert.equal(replay.ledger.totalCreditAtoms, 0n);
   });
 
   it("chunks with overlap, retries, and deduplicates canonical logs", async () => {
@@ -1881,6 +2010,51 @@ describe("P42 deterministic indexer replay", () => {
       checks,
     };
     assert.equal(stableStringify(buildCheckpoint(args)), stableStringify(buildCheckpoint(args)));
+  });
+
+  it("keeps v4 schema and semantic validation aligned on the canonical ten-board cohort", () => {
+    const schema = JSON.parse(readFileSync(
+      new URL("../schemas/indexer-checkpoint-v4.schema.json", import.meta.url),
+      "utf8",
+    ));
+    const validateSchema = new Ajv2020({ strict: false, validateFormats: false }).compile(schema);
+    const exact = multiBoardCheckpointFixture(10, { activationBound: true });
+    const nine = structuredClone(exact);
+    nine.boards.pop();
+    delete nine.manifestBinding.boards["10"];
+    const eleven = structuredClone(exact);
+    eleven.boards.push({ ...structuredClone(eleven.boards[9]), problemId: "11" });
+    eleven.manifestBinding.boards["11"] = structuredClone(eleven.manifestBinding.boards["10"]);
+    const duplicate = structuredClone(exact);
+    duplicate.boards[9].problemId = "9";
+    const reordered = structuredClone(exact);
+    [reordered.boards[0], reordered.boards[1]] = [reordered.boards[1], reordered.boards[0]];
+
+    for (const [name, checkpoint, expected] of [
+      ["nine boards", nine, false],
+      ["exact canonical cohort", exact, true],
+      ["eleven boards", eleven, false],
+      ["duplicate board id", duplicate, false],
+      ["reordered board ids", reordered, false],
+    ]) {
+      assert.equal(validateSchema(checkpoint), expected, `${name}: schema parity`);
+      assert.equal(
+        (() => {
+          try {
+            validateMultiBoardCheckpoint(checkpoint);
+            return true;
+          } catch {
+            return false;
+          }
+        })(),
+        expected,
+        `${name}: semantic parity`,
+      );
+    }
+
+    const preactivation = multiBoardCheckpointFixture(9);
+    assert.equal(preactivation.schema, "p42-prizes/indexer-checkpoint/v3");
+    assert.equal(validateMultiBoardCheckpoint(preactivation), preactivation);
   });
 
   it("keeps independent board reports in a deterministic v3 checkpoint", () => {

@@ -5,7 +5,7 @@ import { link, lstat, open, unlink } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { readStrictJsonFile, readStrictJsonFileSync, readStrictJsonFileSyncWithBytes } from "../../agent/strict-json.mjs";
+import { readStrictJsonFile, readStrictJsonFileSync, readStrictJsonFileSyncWithBytes } from "p42-agent/strict-json.mjs";
 
 export const RELEASE_CAPSULE_SCHEMA = "p42-prizes/release-capsule/v2";
 export const SP1_RUNTIME_ATTESTATION_SCHEMA = "p42-prizes/sp1-external-runtime-attestation/v1";

@@ -42,12 +42,14 @@ chmod 0755 "$WORK"
 mkdir -p "$STAGE"
 cp -L "$NODE" "$STAGE/node"
 cp -a "$ROOT/agent" "$STAGE/agent"
+cp -a "$ROOT/node_modules" "$STAGE/node_modules"
+cp "$ROOT/package.json" "$ROOT/package-lock.json" "$STAGE/"
 mkdir -p "$STAGE/policy/deployments" "$STAGE/policy/scripts"
 cp "$ROOT/deployments/p42-censorship-fallback.service.example" "$STAGE/policy/deployments/"
 cp "$ROOT/deployments/p42-censorship-fallback-alert@.service.example" "$STAGE/policy/deployments/"
 cp "$ROOT/scripts/run-censorship-fallback-systemd-drill.sh" "$STAGE/policy/scripts/"
 chmod 0555 "$STAGE/node"
-chmod -R a+rX,go-w "$STAGE/agent"
+chmod -R a+rX,go-w "$STAGE/agent" "$STAGE/node_modules"
 DRILL_NODE="$STAGE/node"
 assert_commit_file() {
   local relative=$1 staged=$2 committed="$WORK/committed-file"
@@ -62,7 +64,8 @@ verify_commit_sources() {
     agent/strict-json.mjs \
     agent/secure_path_bridge.py \
     agent/package.json \
-    agent/package-lock.json; do
+    package.json \
+    package-lock.json; do
     assert_commit_file "$relative" "$STAGE/$relative"
   done
   assert_commit_file deployments/p42-censorship-fallback.service.example "$STAGE/policy/deployments/p42-censorship-fallback.service.example"
@@ -80,7 +83,8 @@ verify_commit_sources
     "$STAGE/agent/strict-json.mjs" \
     "$STAGE/agent/secure_path_bridge.py" \
     "$STAGE/agent/package.json" \
-    "$STAGE/agent/package-lock.json" \
+    "$STAGE/package.json" \
+    "$STAGE/package-lock.json" \
     "$STAGE/policy/deployments/p42-censorship-fallback.service.example" \
     "$STAGE/policy/deployments/p42-censorship-fallback-alert@.service.example" \
     "$STAGE/policy/scripts/run-censorship-fallback-systemd-drill.sh"; do
@@ -91,8 +95,8 @@ verify_commit_sources
     fi
     printf '%s\t%s\n' "$label" "$(sha256sum "$path" | awk '{print $1}')"
   done
-  printf 'executed/agent/node_modules-tree\t%s\n' \
-    "$(cd "$STAGE/agent" && find node_modules -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
+  printf 'executed/node-workspace-tree\t%s\n' \
+    "$(cd "$STAGE" && find node_modules agent/node_modules -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
 } > "$WORK/executed-source-digests.tsv"
 useradd --system --no-create-home --shell /usr/sbin/nologin "$RUNTIME_USER"
 useradd --system --no-create-home --shell /usr/sbin/nologin "$ALERT_USER"

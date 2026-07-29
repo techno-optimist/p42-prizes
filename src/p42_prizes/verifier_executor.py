@@ -18,7 +18,7 @@ import subprocess
 import time
 from typing import Any, Callable, Mapping
 
-from .runner_queue import MemorySnapshot
+from .runner_queue import MemorySnapshot, memory_snapshot_from_proc
 from .verdict import canonical_json
 
 
@@ -66,6 +66,7 @@ def host_capacity_snapshot(
     attestation_path: Path = Path("/run/p42-verifier-docker/cgroup-attestation.json"),
     *,
     cgroup_root: Path = Path("/sys/fs/cgroup"),
+    meminfo_path: Path = Path("/proc/meminfo"),
 ) -> HostCapacity:
     try:
         attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
@@ -110,7 +111,13 @@ def host_capacity_snapshot(
     if not {"oom", "oom_kill"}.issubset(values):
         raise VerifierExecutorError("effective rootless Docker cgroup cannot attribute OOM events")
     mib = 1024 * 1024
-    memory = MemorySnapshot(maximum // mib, max(0, maximum - current) // mib, 0)
+    host_memory = memory_snapshot_from_proc(meminfo_path)
+    host_available_after_reserve = max(0, host_memory.available_mb - daemon_mb)
+    memory = MemorySnapshot(
+        min(maximum // mib, host_memory.total_mb),
+        min(max(0, maximum - current) // mib, host_available_after_reserve),
+        host_memory.swap_used_mb,
+    )
     return HostCapacity(memory, values["oom_kill"], attestation["boot_id"], required_mb, daemon_mb,
                         values["oom"])
 

@@ -238,6 +238,11 @@ Before and after every worker, the executor forcibly reconciles all
 addition to the verifier's manifest deadline; successful orphan reconciliation
 must complete before the next FIFO request can lease work. Capacity is checked
 again at that boundary. OOM counter changes and reboot changes fail closed.
+Admission uses the lower of effective cgroup headroom and host
+`MemAvailable` after retaining the configured daemon reserve, and applies the
+swap threshold to host-wide swap usage. This
+keeps an otherwise-empty verifier cgroup from admitting work while unrelated
+workloads have put the shared host under memory pressure.
 Persisted holder deadlines use `CLOCK_MONOTONIC` nanoseconds bound to the kernel
 boot ID, never adjustable wall time. Reboot recovery establishes a new OOM
 baseline only after Docker reconciliation.
@@ -549,9 +554,10 @@ and `/run/p42-verifier-docker` remain executor-only.
 Production verifier execution has one Docker authority: the dedicated
 `p42-verifier-executor` account runs `p42-verifier-docker.service`, with
 `DOCKER_HOST=unix:///run/p42-verifier-docker/docker.sock`. Only
-`p42-verifier-executor.service` receives that endpoint. The rootless
-unit conflicts with `docker.service`/`docker.socket`, rejects a rootful socket,
-uses no `docker` group, and requires `newuidmap`/`newgidmap` plus 65,536-entry
+`p42-verifier-executor.service` receives that endpoint. The rootless unit can
+coexist with an unrelated rootful daemon, but both the daemon and executor
+service namespaces make `/run/docker.sock` and `/var/run/docker.sock`
+inaccessible. It uses no `docker` group, and requires `newuidmap`/`newgidmap` plus 65,536-entry
 `/etc/subuid` and `/etc/subgid` ranges, enabled unprivileged user namespaces,
 and cgroup v2 for `p42-verifier-executor`. Its preflight parses every subordinate-ID
 file entry and rejects interval overlap, then runs `unshare --user
@@ -596,11 +602,11 @@ continue to protect the host boundary.
 own `/run/user/<uid>` bus. The dedicated nologin UID and 0700 runtime ownership
 still block other user homes and runtimes, while `ProtectSystem=strict` and the
 explicit write paths retain the filesystem boundary.
-When migrating a host from rootful Docker, stop both `docker.service` and
-`docker.socket`, prove both units inactive and prove no listener owns
-`/run/docker.sock`, then explicitly remove the stale socket node before
-starting the P42 unit. On Ubuntu, stopping the socket unit can leave that node
-behind; the P42 unit intentionally refuses to delete or reuse it.
+An unrelated rootful Docker daemon may remain active for other host workloads.
+The P42 service account must not be a member of its access group, and the
+systemd path denial remains mandatory even though every P42 Docker command also
+specifies the private rootless endpoint explicitly. Never bind, proxy, or mount
+the rootful socket into either P42 service namespace.
 The `deployments/p42-runtime.sysusers.example` fragment creates accounts only;
 host administration must install rootlesskit, setuid ID helpers, subordinate
 IDs, user-namespace policy, and cgroup support. The worker passes the validated

@@ -1,0 +1,12 @@
+[package]
+name = "p42-sp1-v610-challenger-collision"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+p3-baby-bear = "=0.3.2-succinct"
+p3-challenger = "=0.3.2-succinct"
+p3-field = "=0.3.2-succinct"
+p3-goldilocks = "=0.3.2-succinct"
+p3-symmetric = "=0.3.2-succinct"

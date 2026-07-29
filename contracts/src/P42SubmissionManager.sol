@@ -399,6 +399,7 @@ contract P42SubmissionManager {
     event SubmissionChallenged(uint256 indexed submissionId, address indexed challengeManager);
     event SubmissionChallengeResolved(uint256 indexed submissionId, bool challengerWins);
     event SubmissionChallengeCancelled(uint256 indexed submissionId, uint64 challengeEndsAt);
+    event SubmissionChallengeTimedOut(uint256 indexed submissionId);
     event SubmissionExpired(uint256 indexed submissionId, SubmissionStatus previousStatus);
     event BondToppedUp(uint256 indexed submissionId, address indexed solver, uint256 amount, uint256 newBondWei);
     event SubmissionBondClaimable(uint256 indexed submissionId, address indexed claimant, uint256 amount);
@@ -1151,6 +1152,19 @@ contract P42SubmissionManager {
         revealedSubmissionCount += 1;
         submission.challengeEndsAt = _boundedRearmDeadline(submissionId);
         emit SubmissionChallengeCancelled(submissionId, submission.challengeEndsAt);
+    }
+
+    /// @notice Fail-safe for a challenge that received no resolver decision.
+    /// The submission earns no credit and the solver recovers only its posting
+    /// bond. This keeps resolver downtime from becoming an acceptance oracle.
+    function resolveChallengeTimeout(uint256 submissionId) external onlyChallengeManager {
+        Submission storage submission = _requireSubmission(submissionId);
+        _requireStatus(submission, SubmissionStatus.Challenged);
+        challengedSubmissionCount -= 1;
+        submission.status = SubmissionStatus.Rejected;
+        _makeBondClaimable(submissionId, submission.solver);
+        _decrementOpenSubmission();
+        emit SubmissionChallengeTimedOut(submissionId);
     }
 
     /// @notice Applies a cryptographically proven challenge outcome. A proved

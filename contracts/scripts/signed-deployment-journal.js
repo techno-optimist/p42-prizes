@@ -4,7 +4,7 @@ import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openS
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { hostname } from "node:os";
 import { Transaction, getCreateAddress, getCreate2Address, keccak256, zeroPadValue } from "ethers";
-import { parseStrictJsonBytes } from "../../agent/strict-json.mjs";
+import { parseStrictJsonBytes } from "p42-agent/strict-json.mjs";
 
 export const SIGNED_DEPLOYMENT_JOURNAL_SCHEMA = "p42-prizes/signed-deployment-journal/v1";
 const STATES = Object.freeze({ planned: 0, signed: 1, broadcast: 2, mined: 3 });

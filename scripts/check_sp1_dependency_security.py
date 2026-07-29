@@ -253,11 +253,20 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--policy", type=Path, default=DEFAULT_POLICY)
     parser.add_argument("--report", type=Path, help="require exact agreement with a committed canonical report")
+    parser.add_argument(
+        "--expect",
+        choices=("blocked", "pass"),
+        help="succeed only when the validated canonical report has this posture",
+    )
     args = parser.parse_args()
     try:
         report = evaluate(args.root, args.policy)
         if args.report is not None and args.report.resolve().read_bytes() != report_bytes(report):
             raise ValueError("committed dependency security report is missing, stale, or changed")
+        if args.expect is not None and report["result"] != args.expect:
+            raise ValueError(
+                f"dependency security posture changed: expected {args.expect}, observed {report['result']}"
+            )
     except (OSError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         print(f"objective dependency security gate error: {exc}", file=sys.stderr)
         return 2
@@ -269,6 +278,8 @@ def main() -> int:
                 print(f"{result['lockfile']}: {finding['severity']} {finding['advisory']} affects {finding['package']} {finding['version']}")
         summary = report["summary"]
         print(f"objective dependency security: {report['result']} ({summary['highFindings']} high, {summary['findings']} total findings across {summary['affectedLockfiles']} lockfiles; {summary['trackedLockfiles']} tracked, {summary['sp1Lockfiles']} SP1)")
+    if args.expect is not None:
+        return 0
     return 1 if report["result"] == "blocked" else 0
 
 

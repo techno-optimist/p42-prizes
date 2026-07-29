@@ -302,6 +302,7 @@ export const EVENT_CATALOG = Object.freeze({
     "SubmissionChallenged",
     "SubmissionChallengeResolved",
     "SubmissionChallengeCancelled",
+    "SubmissionChallengeTimedOut",
     "SubmissionExpired",
     "BondToppedUp",
     "SubmissionBondClaimable",
@@ -1777,7 +1778,6 @@ function newReplayState(config, coverage) {
       allocationOf: {},
       allocationCodehashOf: {},
     },
-    pendingExpiredChallengeTxs: new Set(),
     pendingSubmissionResolutionByTx: {},
     pendingObjectiveProofByTx: {},
     recoveryByTx: {},
@@ -2316,6 +2316,15 @@ function replaySubmissionEvent(state, event) {
       state.pendingSubmissionResolutionByTx[txKey(event)] = { id, cancelled: true };
       return;
     }
+    case "SubmissionChallengeTimedOut": {
+      const submission = requireSubmission(state, id, event);
+      requireStatus(submission, "Challenged", event, id);
+      submission.status = "Rejected";
+      invariant(state.openSubmissionCount > 0n, "openSubmissionCount underflow on challenge timeout");
+      state.openSubmissionCount -= 1n;
+      state.pendingSubmissionResolutionByTx[txKey(event)] = { id, timedOut: true };
+      return;
+    }
     case "SubmissionBondClaimable": {
       const submission = requireSubmission(state, id, event);
       const amount = asBigInt(getArg(event, "amount"));
@@ -2479,11 +2488,12 @@ function replayChallengeEvent(state, event) {
       requireChallengeInstance(state, id, event);
       const challenge = state.challenges[id];
       invariant(challenge && !challenge.resolved, `expiration for absent/resolved challenge ${id}`);
+      const hook = state.pendingSubmissionResolutionByTx[txKey(event)];
+      invariant(hook?.id === id && hook.timedOut, `expired challenge ${id} missing timeout hook`);
       const refund = asBigInt(getArg(event, "refundedBondWei"));
       invariant(refund === challenge.challengeBondWei, `challenge ${id} refund mismatch`);
       increment(state.challengeClaimableBondWei, challenge.challenger, refund);
       delete state.challenges[id];
-      state.pendingExpiredChallengeTxs.add(txKey(event));
       return;
     }
     case "Resolved": {
@@ -2492,18 +2502,14 @@ function replayChallengeEvent(state, event) {
       const hook = state.pendingSubmissionResolutionByTx[txKey(event)];
       invariant(hook?.id === id && hook.challengerWins === challengerWins, `Resolved ${id} missing/mismatched submission hook`);
       const challenge = state.challenges[id];
-      if (state.pendingExpiredChallengeTxs.has(txKey(event))) {
-        invariant(!challengerWins && challenge === undefined, `expired challenge ${id} resolved inconsistently`);
-      } else {
-        invariant(challenge?.decisionPending, `Resolved ${id} missing pending resolver decision`);
-        challenge.decisionPending = false;
-        challenge.resolved = true;
-        challenge.challengerWins = challengerWins;
-        if (challengerWins) increment(state.challengeClaimableBondWei, challenge.challenger, challenge.challengeBondWei);
-        else {
-          increment(state.challengeClaimableBondWei, state.config.treasury, challenge.challengeBondWei);
-          delete state.challenges[id];
-        }
+      invariant(challenge?.decisionPending, `Resolved ${id} missing pending resolver decision`);
+      challenge.decisionPending = false;
+      challenge.resolved = true;
+      challenge.challengerWins = challengerWins;
+      if (challengerWins) increment(state.challengeClaimableBondWei, challenge.challenger, challenge.challengeBondWei);
+      else {
+        increment(state.challengeClaimableBondWei, state.config.treasury, challenge.challengeBondWei);
+        delete state.challenges[id];
       }
       return;
     }
@@ -4077,7 +4083,6 @@ function publicReplayState(state) {
   const output = { ...state };
   delete output.config;
   delete output.knownChallengeIds;
-  delete output.pendingExpiredChallengeTxs;
   delete output.pendingSubmissionResolutionByTx;
   delete output.recoveryByTx;
   delete output.claimConsumptionByTx;

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { network } from "hardhat";
 
-import { computeDeploymentConfigHash, validateManifestEvidence } from "../../agent/indexer.mjs";
+import { computeDeploymentConfigHash, validateManifestEvidence } from "p42-agent/indexer.mjs";
 import {
   ADMISSION_MATRIX_HASH_ALGORITHM,
   admissionMatrixHashForDigest,

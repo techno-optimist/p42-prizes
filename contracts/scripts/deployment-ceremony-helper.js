@@ -4,10 +4,10 @@ import { lstat, open, rename, rm } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
-import { computeDeploymentConfigHash, writeFileAtomicSync } from "../../agent/indexer.mjs";
-import { atomsFromScore, chainScoreAtoms } from "../../agent/lib.mjs";
-import { parseStrictJsonBytes } from "../../agent/strict-json.mjs";
-import { deriveBoardSetupOperations } from "../../agent/setup-operation-plan.mjs";
+import { computeDeploymentConfigHash, writeFileAtomicSync } from "p42-agent/indexer.mjs";
+import { atomsFromScore, chainScoreAtoms } from "p42-agent/lib.mjs";
+import { parseStrictJsonBytes } from "p42-agent/strict-json.mjs";
+import { deriveBoardSetupOperations } from "p42-agent/setup-operation-plan.mjs";
 import { validateDeploymentRoleAcceptances } from "./role-acceptance-helper.js";
 
 export const MANIFEST_SCHEMA = "p42-prizes/deployment-manifest/v1";

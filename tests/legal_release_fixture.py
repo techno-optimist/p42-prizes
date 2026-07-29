@@ -15,9 +15,11 @@ SCHEMA = json.loads((ROOT / "schemas" / "deployment-manifest-v2.schema.json").re
 def install_pinned_contract_build_inputs(target: Path) -> None:
     for relative in (
         Path(".gitignore"),
+        Path("package.json"),
+        Path("package-lock.json"),
+        Path("agent/package.json"),
         Path("contracts/hardhat.config.js"),
         Path("contracts/package.json"),
-        Path("contracts/package-lock.json"),
         Path("protocol/external-dependencies-v1.json"),
     ):
         destination = target / relative

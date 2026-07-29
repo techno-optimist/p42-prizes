@@ -89,6 +89,21 @@ make admit-host-seed
 make contracts-test
 ```
 
+Run the complete non-network source regression surface with:
+
+```bash
+make local-source-gates
+```
+
+That command is necessary source evidence, not launch authorization. It excludes
+the canonical x86 and hosted dual-Linux SP1 reproduction gates. Its native SP1
+replay is an explicitly untrusted host observation that checks guest/host
+semantic equality without accepting architecture-specific ELF, vkey, journal,
+or instruction-count drift as release identity. It also excludes PostgreSQL
+integrations, live chain/RPC evidence, and external Gate 1/2 attestations. The
+separate `make objective-dependency-security-gate` must remain failing while the
+pinned SP1 transcript vulnerability is reachable.
+
 `make admit-host-seed` emits one local host-evidence artifact for the Hadamard
 fixture. A real funded problem still needs `p42-prizes admit-matrix` over four
 distinct hosts covering x86_64, ARM/aarch64, and two glibc versions.

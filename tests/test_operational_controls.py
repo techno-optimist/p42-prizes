@@ -1572,7 +1572,10 @@ def test_rejects_role_identity_or_public_key_collision(tmp_path: Path, collision
         signer["public_key"] = owner["public_key"]
         registration["public_key"] = owner["public_key"]
     _resign_report(report)
-    with pytest.raises(OperationalControlsError, match="distinct identity fingerprints and public keys"):
+    with pytest.raises(
+        OperationalControlsError,
+        match="distinct identity fingerprints and public keys|already assigned to a different signer authority",
+    ):
         normalize(report, fixture, registry)
 
 

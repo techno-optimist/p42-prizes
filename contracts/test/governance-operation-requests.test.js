@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { AbiCoder, Interface, keccak256 } from "ethers";
 
-import { CANONICAL_BOARD_CONTRACTS, CANONICAL_SHARED_CONTRACTS } from "../../agent/canonical-topology.mjs";
+import { CANONICAL_BOARD_CONTRACTS, CANONICAL_SHARED_CONTRACTS } from "p42-agent/canonical-topology.mjs";
 import { bindDeploymentConfigHash } from "../scripts/deployment-ceremony-helper.js";
 import { buildGovernanceOperationJournal, reserveGovernanceOperationJournal } from "../scripts/governance-operation-journal.js";
 import {

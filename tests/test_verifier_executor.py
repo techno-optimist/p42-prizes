@@ -42,6 +42,14 @@ def test_capacity_reads_attested_effective_cgroup_memory_and_oom_counter(tmp_pat
     (cgroup / "memory.current").write_text(str(1024**3), encoding="ascii")
     (cgroup / "memory.max").write_text(str(10 * 1024**3), encoding="ascii")
     (cgroup / "memory.events").write_text("low 0\nhigh 2\noom 3\noom_kill 4\n", encoding="ascii")
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(
+        "MemTotal:       13107200 kB\n"
+        "MemAvailable:   11264000 kB\n"
+        "SwapTotal:       2097152 kB\n"
+        "SwapFree:        1572864 kB\n",
+        encoding="ascii",
+    )
     attestation = tmp_path / "cgroup.json"
     attestation.write_text(json.dumps({
         "schema_version": "p42-rootless-docker-cgroup/v1", "boot_id": "boot-a",
@@ -51,13 +59,23 @@ def test_capacity_reads_attested_effective_cgroup_memory_and_oom_counter(tmp_pat
         "required_container_memory_mb": 8192, "daemon_headroom_mb": 2048,
     }), encoding="utf-8")
     monkeypatch.setattr("p42_prizes.verifier_executor.read_boot_id", lambda: "boot-a")
-    capacity = host_capacity_snapshot(attestation, cgroup_root=cgroup_root)
+    capacity = host_capacity_snapshot(attestation, cgroup_root=cgroup_root, meminfo_path=meminfo)
     assert capacity.oom_kills == 4
-    assert capacity.memory == MemorySnapshot(10 * 1024, 9 * 1024, 0)
+    assert capacity.memory == MemorySnapshot(10 * 1024, 11_000 - 2048, 512)
+
+    meminfo.write_text(
+        "MemTotal:       13107200 kB\n"
+        "MemAvailable:    4194304 kB\n"
+        "SwapTotal:       2097152 kB\n"
+        "SwapFree:              0 kB\n",
+        encoding="ascii",
+    )
+    constrained = host_capacity_snapshot(attestation, cgroup_root=cgroup_root, meminfo_path=meminfo)
+    assert constrained.memory == MemorySnapshot(10 * 1024, 2 * 1024, 2 * 1024)
 
     (cgroup / "memory.max").write_text("max\n", encoding="ascii")
     with pytest.raises(VerifierExecutorError, match="finite and numeric"):
-        host_capacity_snapshot(attestation, cgroup_root=cgroup_root)
+        host_capacity_snapshot(attestation, cgroup_root=cgroup_root, meminfo_path=meminfo)
 
 
 class FakeDocker:
@@ -273,6 +291,23 @@ def test_admission_uses_effective_cgroup_headroom_without_double_counting_daemon
     command = commands[0]
     assert command[command.index("--reserve-memory-mb") + 1] == "0"
     assert command[command.index("--available-memory-mb") + 1] == "200"
+
+
+def test_host_swap_pressure_rejects_before_worker_spawn(tmp_path: Path, monkeypatch) -> None:
+    events = []
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("swap guard must reject before worker spawn"),
+    )
+    service = executor(tmp_path, FakeDocker(events))
+    service.capacity_reader = lambda: HostCapacity(MemorySnapshot(10_000, 9_000, 1), 0, "boot-a")
+
+    assert service.execute(request()) == {
+        "reason": "swap_guard_tripped",
+        "selected_job_id": None,
+    }
+    assert events == ["reconcile"]
 
 
 def test_holder_state_is_boot_bound_monotonic_not_wall_clock(tmp_path: Path, monkeypatch) -> None:

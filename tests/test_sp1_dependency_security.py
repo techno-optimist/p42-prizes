@@ -3,6 +3,9 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import subprocess
+import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -17,6 +20,7 @@ assert SPEC is not None and SPEC.loader is not None
 security = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(security)
 POLICY = json.loads((ROOT / "security" / "sp1-dependency-policy-v1.json").read_text())
+V610_REPRODUCER = ROOT / "security" / "reproducers" / "sp1-v610-challenger-transcript-collision"
 
 
 def package_block(name: str, version: str, source: str | None = None) -> str:
@@ -69,6 +73,42 @@ def test_current_gate_has_closed_seven_lock_roster_and_exact_findings() -> None:
         "findings": 12,
         "highFindings": 4,
     }
+
+
+def test_v610_collision_reproducer_is_pinned_to_the_activated_dependency() -> None:
+    manifest = tomllib.loads((V610_REPRODUCER / "Cargo.toml").read_text(encoding="utf-8"))
+    assert manifest["package"]["name"] == "p42-sp1-v610-challenger-collision"
+    assert manifest["dependencies"] == {
+        "p3-baby-bear": "=0.3.2-succinct",
+        "p3-challenger": "=0.3.2-succinct",
+        "p3-field": "=0.3.2-succinct",
+        "p3-goldilocks": "=0.3.2-succinct",
+        "p3-symmetric": "=0.3.2-succinct",
+    }
+    lock = tomllib.loads((V610_REPRODUCER / "Cargo.lock").read_text(encoding="utf-8"))
+    challenger = [package for package in lock["package"] if package["name"] == "p3-challenger"]
+    assert challenger == [{
+        "name": "p3-challenger",
+        "version": "0.3.2-succinct",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "42b725b453bbb35117a1abf0ddfd900b0676063d6e4231e0fa6bb0d76018d8ad",
+        "dependencies": ["p3-field", "p3-maybe-rayon", "p3-symmetric", "p3-util", "serde", "tracing"],
+    }]
+
+
+def test_cli_distinguishes_expected_blocker_from_scanner_failure() -> None:
+    command = [
+        sys.executable,
+        str(ROOT / "scripts" / "check_sp1_dependency_security.py"),
+        "--report",
+        str(ROOT / "docs" / "evidence" / "sp1-dependency-security-current.json"),
+    ]
+    blocked = subprocess.run([*command, "--expect", "blocked"], check=False, capture_output=True, text=True)
+    changed = subprocess.run([*command, "--expect", "pass"], check=False, capture_output=True, text=True)
+    assert blocked.returncode == 0
+    assert "objective dependency security: blocked" in blocked.stdout
+    assert changed.returncode == 2
+    assert "posture changed" in changed.stderr
 
 
 @pytest.mark.parametrize(

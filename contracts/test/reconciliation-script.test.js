@@ -9,7 +9,7 @@ import {
   computeDeploymentConfigHash,
   STALE_BASE_SEPOLIA_RELEASE_GUARDS,
   validateManifestEvidence,
-} from "../../agent/indexer.mjs";
+} from "p42-agent/indexer.mjs";
 import {
   assertReconciliationPublishable,
   assertReconciliationReportsAgree,
@@ -17,7 +17,7 @@ import {
   reconcileWithProvider,
 } from "../scripts/reconciliation-helper.js";
 import { validateMonotonicFinalityAnchor } from "../scripts/finality-anchor.js";
-import { sha256Canonical } from "../../agent/lib.mjs";
+import { sha256Canonical } from "p42-agent/lib.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../..");
