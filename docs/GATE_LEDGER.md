@@ -265,7 +265,7 @@ make verify-seed
 make admit-host-seed
 make admit-host-edges
 make contracts-test
-cd web && npm run test && npx tsc --noEmit && npm run build:prizes && npm audit --audit-level=moderate
+cd web && npm run test && npx tsc --noEmit && npm run build:prizes && npm audit --omit=optional --audit-level=moderate
 ```
 
 Contract evidence now has a local Hardhat 3 scaffold:

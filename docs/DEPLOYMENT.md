@@ -19,7 +19,7 @@ configuration.
 Build command:
 
 ```bash
-cd web && npm ci && npm run build:prizes
+cd web && npm ci --omit=optional && npm run build:prizes
 ```
 
 Start command:
