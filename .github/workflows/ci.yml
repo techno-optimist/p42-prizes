@@ -125,6 +125,15 @@ jobs:
             echo "sharp must not be present in the optional-free production artifact"
             exit 1
           fi
+      # npm audit resolves advisories from package-lock.json, not from the
+      # installed node_modules, so this gate does not depend on install order or
+      # on where the step sits. --omit=optional is what narrows the audited set
+      # to the tree render.yaml builds ("npm ci --omit=optional"); the optional
+      # subtree it excludes is asserted absent from production by the
+      # "Verify production dependency boundary" step above. Do not drop that
+      # flag on the assumption that step position supplies the scoping.
+      - name: Audit dependencies
+        run: npm audit --omit=optional --audit-level=moderate
 
   contracts:
     name: Contract gates
