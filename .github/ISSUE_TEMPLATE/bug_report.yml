@@ -1,0 +1,58 @@
+name: Bug report
+description: Something behaves differently from what the code or docs say it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        **Stop if this is exploitable.** If the bug could let a verifier be
+        fooled, a bond be stolen, a payout be mis-assigned, or a resolver
+        decision be forged, use the private route in `SECURITY.md` instead.
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: Output of `git rev-parse HEAD`, or the deployed URL you observed.
+      placeholder: 38b9d00
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what makes you expect it
+      description: >-
+        Cite the file, doc, or spec line that sets the expectation. "The docs say
+        X at AGENTS.md:39" is much more actionable than "this seems wrong".
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: Paste real output — commands, exit codes, counts, error text.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Smallest sequence of commands that shows it.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: >-
+        OS, architecture, and the versions that matter for the surface you hit —
+        node, python, glibc. Cross-platform differences are real defects in this
+        project, so this field is load-bearing for anything verifier-related.
+    validations:
+      required: false

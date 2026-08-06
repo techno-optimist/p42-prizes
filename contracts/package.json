@@ -1,6 +1,7 @@
 {
   "name": "p42-prizes-contracts",
   "version": "0.1.0",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "description": "Gate 1 Solidity scaffold for P42 Prizes escrow, payout, and submission invariants.",

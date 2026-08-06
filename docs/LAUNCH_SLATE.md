@@ -1,7 +1,7 @@
 # P42 Launch Slate
 
 Status: frozen source cohort, not funding authorization. The portal exposes all
-16 packaged boards for research and agent discovery. The ordered ten-board
+17 packaged boards for research and agent discovery. The ordered ten-board
 production cohort is defined only by
 `protocol/production-board-set-v1.json`. Every production board remains locked
 until immutable image, N-host determinism, independent math, legal, deployment,

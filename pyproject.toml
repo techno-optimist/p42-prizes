@@ -3,6 +3,8 @@ name = "p42-prizes"
 version = "0.1.0"
 description = "Phase 0 tooling for exact, deterministic P42 prize problem repositories."
 readme = "README.md"
+license = { text = "MIT" }
+classifiers = ["License :: OSI Approved :: MIT License"]
 requires-python = ">=3.11"
 # Bounded ranges so the toolchain is reproducible across machines and CI. Bump
 # the upper bounds deliberately when validating against a new major.

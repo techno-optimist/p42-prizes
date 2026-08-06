@@ -36,7 +36,7 @@ make verify-seed
 make admit-host-seed
 make contracts-test
 P42_CARGO_PROVE=/path/to/pinned/v6.1/cargo-prove make objective-program-gates
-cd web && npm test && npx tsc --noEmit && npm run build:prizes && npm audit --audit-level=moderate
+cd web && npm test && npx tsc --noEmit && npm run build:prizes && npm audit --omit=optional --audit-level=moderate
 ```
 
 Run the subset relevant to a small docs-only change, but do not skip contract
@@ -48,8 +48,13 @@ a gate claim changes.
 Build:
 
 ```bash
-cd web && npm ci && npm run build:prizes
+cd web && npm ci --omit=optional && npm run build:prizes
 ```
+
+`--omit=optional` is load-bearing, not incidental: it is what keeps the unused
+`sharp`/libvips optional subtree out of the internet-facing artifact, and
+`render.yaml` builds with it. Keep this command, the `render.yaml`
+`buildCommand`, and the web CI audit flag in agreement.
 
 Start:
 
@@ -63,10 +68,13 @@ Required env:
 NEXT_PUBLIC_BASE_PATH=/prizes
 ```
 
-Render auto-deploys `main` when a change touches its `web/` root directory.
-Docs-only and release-tooling-only commits intentionally do not trigger a
-no-op service build. Use a manual deploy only when the release guard reports a
-missing or failed deploy-relevant change; it never substitutes for the guard:
+Render does **not** auto-deploy. `render.yaml` sets `autoDeployTrigger: off`,
+and `scripts/verify-render-release.mjs` hard-requires that setting, so every
+deploy is manual and merging to `main` never publishes itself. A deploy-relevant
+commit (one touching `web/` or `render.yaml`) therefore leaves the live service
+behind `main` until an operator runs the command below; docs-only and
+release-tooling-only commits do not change the deploy-relevant head at all.
+A manual deploy never substitutes for the guard:
 
 ```bash
 render deploys create srv-d96pokeq1p3s73foqk60 --wait --confirm
@@ -117,11 +125,16 @@ curl -fsS https://projectforty2.ai/prizes/skill.md >/dev/null
 - Treat `docs/HUMAN_ACTIONS.md` as the list of known owner/external actions. If
   this agent token hits `workflow` scope, deployer-key, audit, legal, or repo
   settings limits, document the blocker instead of bypassing the gate.
-- `.github/workflows/ci.yml` is published. The current Git OAuth remote still
-  cannot update workflow files and returns
-  `refusing to allow an OAuth App to create or update workflow ... without workflow scope`.
-  For a future workflow revision, use a workflow-capable owner credential or
-  the GitHub connector, then require a fresh successful `main` CI run.
+- `.github/workflows/ci.yml` is published. A previously recorded limitation —
+  that the Git OAuth remote returned
+  `refusing to allow an OAuth App to create or update workflow ... without workflow scope`
+  — no longer reproduces: a push updating `ci.yml` succeeded on
+  2026-08-05 from a session-scoped credential. Do not treat workflow edits as
+  blocked without re-testing. Any workflow revision still requires a fresh
+  successful `main` CI run before it counts as evidence.
+- `ci.yml` runs `push` only on `main`; every other branch gets CI solely through
+  an open pull request. A branch with no PR has **no** CI evidence, however
+  green it looks locally. Never take release evidence from a PR-less branch head.
 
 ## Contract Gate
 
