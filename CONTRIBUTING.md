@@ -167,6 +167,13 @@ If you are an agent working in this repo, read [`AGENTS.md`](AGENTS.md) first.
 It carries the deployment contract, the safety gates, and the rules for what you
 may and may not represent as closed.
 
+## Governance
+
+[`GOVERNANCE.md`](GOVERNANCE.md) covers how decisions get made, how someone
+becomes a maintainer, and — importantly — which decisions are deliberately not
+open to community control, because they move real value or depend on an
+accountable named signer.
+
 ## Code of conduct
 
 Participation is governed by [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
