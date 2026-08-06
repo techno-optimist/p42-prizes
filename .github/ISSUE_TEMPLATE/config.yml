@@ -1,0 +1,13 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability (do not open a public issue)
+    url: https://github.com/techno-optimist/p42-prizes/security/policy
+    about: >-
+      Anything that could let a verifier be fooled, a bond be stolen, a payout be
+      mis-assigned, or a resolver decision be forged. Use the private disclosure
+      route in SECURITY.md instead of a public issue.
+  - name: What is actually live versus specified
+    url: https://github.com/techno-optimist/p42-prizes/blob/main/docs/GATE_LEDGER.md
+    about: >-
+      Before filing "X is not implemented", check the gate ledger. It is the
+      canonical record of what is live, what is source-only, and what is blocked.

@@ -1,0 +1,89 @@
+name: New problem board proposal
+description: Propose a new bounty board following the p42-problem standard
+labels: ["problem-board", "needs-scope-review"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Open this **before** doing heavy work, so scope can be checked early.
+        Read `docs/P42_PROBLEM_V1.md` for the repo contract and start from
+        `problems/hadamard-mini/` as the reference fixture.
+
+  - type: input
+    id: slug
+    attributes:
+      label: Proposed slug
+      placeholder: erdos-min-overlap
+    validations:
+      required: true
+
+  - type: textarea
+    id: statement
+    attributes:
+      label: Literal public statement
+      description: >-
+        The exact mathematical claim, stated so a reader can tell what would
+        count as progress. Include the objective direction (minimise/maximise)
+        and units.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: exactness
+    attributes:
+      label: How is the verdict decided exactly?
+      description: >-
+        No unenclosed floating-point result may decide a verdict. If you cannot
+        pick one of these, the problem is not admissible in its current form.
+      options:
+        - Integer or rational arithmetic only
+        - Rigorously enclosed interval arithmetic (directed rounding)
+        - Finite exhaustive enumeration
+        - Mixed — explain below
+    validations:
+      required: true
+
+  - type: textarea
+    id: verifier
+    attributes:
+      label: Verifier sketch
+      description: >-
+        What the verifier checks, and its worst-case time and memory. State the
+        witness format and the exact rejection conditions.
+    validations:
+      required: true
+
+  - type: textarea
+    id: frontier
+    attributes:
+      label: Known frontier and provenance
+      description: >-
+        The best known value, where it comes from, and a retrievable citation.
+        Be explicit about which parts are established results, which are scoped
+        warm-ups, which are finite computations, and which are conjecture.
+    validations:
+      required: true
+
+  - type: textarea
+    id: seed
+    attributes:
+      label: Seed witness
+      description: >-
+        Do you have a witness that verifies? Is it bundled, or does the board
+        need open-witness seeding? Say plainly if you do not have one.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: Acknowledgements
+      options:
+        - label: >-
+            I understand a board being packaged does not make it fundable, and
+            that admission additionally requires an immutable verifier image, an
+            N-host determinism matrix, and independent mathematical review.
+          required: true
+        - label: >-
+            I am not claiming this board is admitted, reviewed, or funded.
+          required: true

@@ -63,6 +63,21 @@ The hardest part of any on-chain bounty is the **oracle**: how does the chain kn
 2. Reverse-engineered EinsteinArena boards (kissing / Thomson / edges-triangles) — the adversarial pilot targets.
 3. **Arithmetic Kakeya** (Epoch FrontierMath Open Problems) — the marquee "real open problem, real money" bounty.
 
+## Contributing
+
+P42 Prizes is an open source, community-led project under the
+[MIT License](LICENSE). Start with [`CONTRIBUTING.md`](CONTRIBUTING.md) — it
+covers the evidence discipline this repo runs on, how to propose a new problem
+board, and what contributors structurally cannot close.
+
+The highest-value contributions are **new problem boards** (the
+[`p42-problem` standard](docs/P42_PROBLEM_V1.md)) and **breaking the verifiers**.
+If you can make an exact verifier accept a wrong answer, reject a right one, or
+disagree across two hosts, that is the most valuable bug you can file — via the
+private route in [`SECURITY.md`](SECURITY.md), not a public issue.
+
+Participation is governed by [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+
 ## Status
 
 Design spec, **not audited, not legally reviewed.** Real ETH is gated behind the Phase-2 (audit + legal + verifiable-resolver) milestones in the roadmap. This repo is the hand-off; the next step is Phase 0 — freeze the `p42-problem` v1.0 template and package one seed problem from the spec alone.
