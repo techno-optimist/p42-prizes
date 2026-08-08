@@ -5,6 +5,11 @@ on:
     branches:
       - main
   pull_request:
+  # Manual dispatch exists for one purpose: obtaining hosted evidence on a
+  # commit whose push event produced no run. During the 2026-08-05/06 Actions
+  # outage three main pushes (dd6f0b0's branch, 38b9d00, e2deb19) created no
+  # workflow run and there was no recovery path short of pushing a new commit.
+  workflow_dispatch:
 
 # CI needs repository contents only. Release/deployment credentials never run here.
 permissions:
