@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/problems/erdos-szekeres-n7/solution.schema.json",
+  "x-p42-max-bytes": 16384,
+  "type": "object",
+  "required": ["points"],
+  "additionalProperties": false,
+  "properties": {
+    "points": {
+      "type": "array",
+      "minItems": 32,
+      "maxItems": 33,
+      "uniqueItems": true,
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": {
+          "type": "integer",
+          "x-p42-require-integer-token": true,
+          "minimum": -1000000000000,
+          "maximum": 1000000000000
+        }
+      }
+    },
+    "source": {"type": "string", "maxLength": 1024},
+    "claimed_score": {"type": "string", "maxLength": 128},
+    "claimed_improvement": {"type": "string", "maxLength": 128}
+  }
+}
