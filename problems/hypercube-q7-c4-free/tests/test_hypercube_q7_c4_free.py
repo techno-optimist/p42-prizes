@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 from fractions import Fraction
@@ -56,6 +57,64 @@ def load_verifier():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_canonical_upstream_replay_receipt_and_both_exact_verdicts() -> None:
+    receipt_path = PROBLEM / "provenance" / "replay-v1.json"
+    raw_receipt = receipt_path.read_bytes()
+    receipt = json.loads(raw_receipt)
+    assert raw_receipt == (
+        json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        + "\n"
+    ).encode("ascii")
+    assert receipt["schema_version"] == "p42-q7-source-replay/v1"
+
+    seed_path = PROBLEM / receipt["local"]["seed_path"]
+    assert sha256(seed_path) == receipt["local"]["seed_sha256"]
+    seed = json.loads(seed_path.read_text(encoding="utf-8"))
+    transform = receipt["transformation"]
+    assert seed["source"] == transform["added"]["source"]
+    discarded = transform["discarded"]
+    upstream_record = {
+        "hash": discarded["hash"],
+        "run": discarded["run"],
+        "elapsed": discarded["elapsed"],
+        "edges": seed["edges"],
+    }
+    upstream_line = (json.dumps(upstream_record) + "\n").encode("ascii")
+    assert hashlib.sha256(upstream_line).hexdigest() == receipt["upstream"]["source_line_sha256"]
+
+    checker_path = PROBLEM / "provenance" / "upstream_verify.py"
+    assert sha256(checker_path) == receipt["upstream"]["checker_sha256"]
+    license_path = PROBLEM / "provenance" / "upstream_LICENSE"
+    assert sha256(license_path) == receipt["upstream"]["license_sha256"]
+    assert license_path.read_text(encoding="utf-8").strip() in (
+        PROBLEM / "NOTICE.md"
+    ).read_text(encoding="utf-8")
+    upstream = load_module("q7_pinned_upstream_verify", checker_path)
+    arguments = receipt["upstream"]["verdict"]["arguments"]
+    result = upstream.verify_solution(
+        seed["edges"], arguments["n"], arguments["expected_edges"]
+    )
+    assert list(result) == receipt["upstream"]["verdict"]["result"]
+    assert len(list(upstream.four_cycle_corners(arguments["n"]))) == 672
+
+    code, local = run_verify(receipt["local"]["seed_path"])
+    expected = receipt["local"]["verdict"]
+    assert code != 0
+    assert {key: local[key] for key in expected} == expected
 
 
 def test_seed_is_exact_frontier_fixture() -> None:

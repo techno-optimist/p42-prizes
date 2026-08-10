@@ -961,7 +961,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:bb0653e42c03fa5f19e843c0d363f1e41932625f523599b5288876fc0af59b69",
+        "source_tree_sha256": "sha256:a26e8df1d738d0a0866195743718b9cb50d65ccd2ebe34a7f3a6df37049d2d5f",
         "version": "0.1.1"
       }
     },

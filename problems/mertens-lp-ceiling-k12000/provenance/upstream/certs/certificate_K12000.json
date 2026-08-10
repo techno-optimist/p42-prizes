@@ -1,0 +1,46 @@
+{
+ "problem": "EinsteinArena PNT board (id 7) \u2014 CEILING theorem, weak-duality certificate",
+ "scope_K": 12000,
+ "scope_M": 119999,
+ "TOL": 1.0001,
+ "box": [
+  -10,
+  10
+ ],
+ "bound_statement": "S*(12000) <= 0.9974876103072528157057480",
+ "B_upper_decimal_25_roundup": "0.9974876103072528157057480",
+ "B_nearest_float": "0.9974876103072527",
+ "term1_TOL_times_sum_y_nearest_float": "0.9974602833869327",
+ "sum_abs_r_certified_upper_float": "2.73269203200084e-06",
+ "ten_times_sum_abs_r_certified_upper_float": "2.73269203200084e-05",
+ "sum_y_exact_fraction": [
+  280732036832458,
+  281474976710656
+ ],
+ "sum_y_float": "0.9973605473321996",
+ "denom_pow": 48,
+ "n_dual_rows": 12058,
+ "n_negative_Y_clipped": 0,
+ "n_columns_k": 11999,
+ "y_hash_sha256": "2089d81dde22f590ef27e4aeaa4ead55932a8138250d3d05d2299d12647baffd",
+ "y_source_npz": "duals/certified_dual_K12000.npz",
+ "mp_prec_bits": 400,
+ "diagnostics_float": {
+  "sum_abs_r_float": 2.7326920355656597e-06,
+  "max_abs_r_float": 3.9697153891507126e-10
+ },
+ "sanity": {
+  "ceiling_sanity": 1.0002,
+  "B_lt_ceiling": true,
+  "B_positive": true,
+  "primal_LP": 0.9974602829380588,
+  "primal_feasible": 0.9974600430839198,
+  "B_ge_primal_LP": true,
+  "B_ge_primal_feasible": true,
+  "all_sane": true
+ },
+ "scope_ledger": {
+  "certifies": "S*(12000) for the FULL integer-constraint program (all m in [1,119999], TOL=1.0001, keys 2..12000, boxes [-10,10], verifier f(1) adjustment).",
+  "monotone_note": "Measured in all solves; not proven; not used in the certificate."
+ }
+}
