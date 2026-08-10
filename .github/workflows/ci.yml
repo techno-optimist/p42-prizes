@@ -308,7 +308,7 @@ jobs:
           /usr/bin/env -i HOME="$HOME" PATH="$clean_path" PYTHONPATH="$GITHUB_WORKSPACE/src" \
             /usr/bin/python3 erdos-min-overlap/objective-shared/tests/test_python_authority.py \
             --canonical-root "$GITHUB_WORKSPACE" --source-mode current
-      - name: Build objective guests on x86 Linux
+      - name: Build frozen objective guests on x86 Linux
         working-directory: objective-programs
         shell: bash
         run: |
@@ -318,12 +318,31 @@ jobs:
           "${clean_env[@]}" "$HOME/.cargo/bin/cargo" build --locked \
             -p p42-hadamard-668-objective-script \
             -p p42-distinct-subset-sums-a11-objective-script
+      - name: Build Q6 objective guest on x86 Linux
+        working-directory: objective-programs
+        shell: bash
+        run: |
+          set -euo pipefail
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          clean_env=(/usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
           "${clean_env[@]}" "$HOME/.cargo/bin/cargo" build --locked \
             --manifest-path q6-intersecting-hypergraph/Cargo.toml \
             -p p42-q6-objective-script
+      - name: Build Edges objective guest on x86 Linux
+        working-directory: objective-programs
+        shell: bash
+        run: |
+          set -euo pipefail
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          clean_env=(/usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
           "${clean_env[@]}" "$HOME/.cargo/bin/cargo" build --locked \
             --manifest-path edges-vs-triangles/Cargo.toml \
             -p p42-edges-objective-script
+      - name: Validate objective guest path hygiene
+        working-directory: objective-programs
+        shell: bash
+        run: |
+          set -euo pipefail
           for rebuilt in \
             target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-hadamard-668-objective-program \
             target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-distinct-subset-sums-a11-objective-program \
@@ -339,6 +358,13 @@ jobs:
                 exit 1
               fi
           done
+      - name: Capture frozen objective identities and A11 execution
+        working-directory: objective-programs
+        shell: bash
+        run: |
+          set -euo pipefail
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          clean_env=(/usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
           hadamard=target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-hadamard-668-objective-program
           hadamard_audit=target/hadamard-reproducibility
           mkdir -p "$hadamard_audit"
@@ -354,6 +380,13 @@ jobs:
           "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked -p p42-distinct-subset-sums-a11-objective-script -- \
             execute-fixture-elf "$a11" ../problems/distinct-subset-sums-a11/tests/conway-guy-594.json \
             > "$audit/execution.json"
+      - name: Capture Q6 reproduction bundle
+        working-directory: objective-programs
+        shell: bash
+        run: |
+          set -euo pipefail
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          clean_env=(/usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
           q6_elf=q6-intersecting-hypergraph/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-q6-objective-program
           q6_audit=target/q6-reproducibility
           mkdir -p "$q6_audit"
@@ -371,6 +404,13 @@ jobs:
             --program q6-intersecting-hypergraph \
             --directory "$q6_audit" \
             --write-source-manifest
+      - name: Capture Edges reproduction bundle
+        working-directory: objective-programs
+        shell: bash
+        run: |
+          set -euo pipefail
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          clean_env=(/usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
           edges_elf=edges-vs-triangles/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-edges-objective-program
           edges_audit=target/edges-reproducibility
           mkdir -p "$edges_audit"

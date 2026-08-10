@@ -1912,6 +1912,40 @@ def test_repository_tree_closure_covers_run_commands_in_current_ci() -> None:
     assert manifested_paths == tracked_paths
 
 
+def test_sp1_guest_builds_remain_sequential_isolated_and_observable() -> None:
+    document = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    steps = document["jobs"]["objective-program"]["steps"]
+    names = [step.get("name") for step in steps]
+    expected = [
+        "Build frozen objective guests on x86 Linux",
+        "Build Q6 objective guest on x86 Linux",
+        "Build Edges objective guest on x86 Linux",
+        "Validate objective guest path hygiene",
+        "Capture frozen objective identities and A11 execution",
+        "Capture Q6 reproduction bundle",
+        "Capture Edges reproduction bundle",
+    ]
+    start = names.index(expected[0])
+    assert names[start:start + len(expected)] == expected
+
+    runs = {step.get("name"): step.get("run", "") for step in steps}
+    clean_steps = expected[:3] + expected[4:]
+    for name in clean_steps:
+        assert "clean_env=(/usr/bin/env -i" in runs[name]
+        assert "GIT_CONFIG_GLOBAL=/dev/null" in runs[name]
+        assert "GIT_CONFIG_NOSYSTEM=1" in runs[name]
+
+    assert "--manifest-path q6-intersecting-hypergraph/Cargo.toml" not in runs[expected[0]]
+    assert "--manifest-path edges-vs-triangles/Cargo.toml" not in runs[expected[0]]
+    assert "--manifest-path q6-intersecting-hypergraph/Cargo.toml" in runs[expected[1]]
+    assert "--manifest-path edges-vs-triangles/Cargo.toml" in runs[expected[2]]
+    assert "guest ELF leaked a host-specific source path" in runs[expected[3]]
+
+    for step in steps:
+        if str(step.get("uses", "")).startswith("actions/cache@"):
+            assert "target" not in str(step.get("with", {}).get("path", ""))
+
+
 def test_guard_command_is_bound_to_committed_deep_check_program(
     current: CurrentFixture,
 ) -> None:
