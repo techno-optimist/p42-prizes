@@ -6,7 +6,7 @@
   "required": ["n", "denominator_power", "values"],
   "additionalProperties": false,
   "properties": {
-    "n": { "const": 2400 },
+    "n": { "type": "integer", "minimum": 2, "maximum": 4096 },
     "source": { "type": "string" },
     "claimed_improvement": { "type": "string" },
     "claimed_lag": { "type": "integer" },
@@ -18,8 +18,8 @@
     },
     "values": {
       "type": "array",
-      "minItems": 2400,
-      "maxItems": 2400,
+      "minItems": 2,
+      "maxItems": 4096,
       "items": {
         "type": "integer",
         "minimum": 0,
